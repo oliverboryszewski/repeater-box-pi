@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a Repeater Box hotspot visibility request
+
+[Path]
+PathChanged=/var/lib/repeater-dashboard/wifi-visibility-request.json
+Unit=repeater-wifi-visibility.service
+
+[Install]
+WantedBy=multi-user.target

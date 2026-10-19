@@ -1,0 +1,21 @@
+[Unit]
+Description=Repeater Box SvxLink bench engine (no radio hardware)
+After=network.target sound.target
+
+[Service]
+Type=simple
+User=svxlink
+Group=svxlink
+SupplementaryGroups=audio dialout repeater-recordings
+RuntimeDirectory=repeater-box
+RuntimeDirectoryMode=0750
+ExecStartPre=/usr/bin/python3 /opt/repeater-box/check-bench-config.py /etc/repeater-box/svxlink-bench.conf
+ExecStart=/usr/bin/svxlink --config=/etc/repeater-box/svxlink-bench.conf
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

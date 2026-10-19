@@ -1,0 +1,19 @@
+[Unit]
+Description=Check or install a fixed-origin Repeater Box dashboard update
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=repeaterdash
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/bin/python3 /opt/repeater-box/scripts/apply-software-update.py
+TimeoutStartSec=360
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/repeater-box /var/lib/repeater-dashboard
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+UMask=0027

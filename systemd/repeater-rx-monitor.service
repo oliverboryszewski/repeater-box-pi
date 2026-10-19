@@ -1,0 +1,22 @@
+[Unit]
+Description=Repeater Box SvxLink receive-only audio monitor
+After=network.target sound.target repeater-engine.service svxlink.service
+Conflicts=repeater-engine.service svxlink.service
+
+[Service]
+Type=simple
+User=svxlink
+Group=svxlink
+SupplementaryGroups=audio
+RuntimeDirectory=repeater-rx-monitor
+RuntimeDirectoryMode=0750
+ExecStartPre=/usr/bin/python3 /opt/repeater-box/check-bench-config.py /etc/repeater-box/svxlink-rx-monitor.conf --rx-monitor
+ExecStart=/usr/bin/svxlink --config=/etc/repeater-box/svxlink-rx-monitor.conf
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

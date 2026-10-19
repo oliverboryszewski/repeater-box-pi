@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#18282e">
+  <title>Repeater Box · Local dashboard</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="site-header">
+    <div class="header-inner">
+      <a class="brand" href="#overview" aria-label="Repeater Box dashboard"><span class="brand-mark" aria-hidden="true">RB</span><span>Repeater Box<small>Local station monitor</small></span></a>
+      <span class="pill pill-dark"><span class="status-dot"></span>Local access</span>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="page-heading" aria-labelledby="page-title">
+      <div><p class="eyebrow">Portable repeater / bench setup</p><h1 id="page-title">Station overview</h1><p class="intro" id="page-intro">Pi health, radio interfaces, and your portable station at a glance.</p></div>
+      <button class="button secondary" id="refresh-button" type="button"><span aria-hidden="true">↻</span> Refresh</button>
+    </section>
+
+    <div id="connection-banner" class="connection-banner pending" role="status" aria-live="polite"><span class="status-dot"></span><span id="connection-message">Connecting to the Pi…</span></div>
+
+    <nav class="tab-nav" aria-label="Dashboard sections" role="tablist">
+      <button type="button" role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true" tabindex="0" data-tab="overview">Overview</button>
+      <button type="button" role="tab" id="tab-live" aria-controls="panel-live" aria-selected="false" tabindex="-1" data-tab="live">Live audio <span class="tab-live-dot" id="tab-live-dot" hidden aria-label="Listening"></span></button>
+      <button type="button" role="tab" id="tab-archives" aria-controls="panel-archives" aria-selected="false" tabindex="-1" data-tab="archives">Audio archives</button>
+      <button type="button" role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1" data-tab="settings">Settings / Admin</button>
+    </nav>
+    <div class="listening-strip" id="listening-strip" hidden><span class="status-dot"></span><span>Live audio is playing on this device.</span><button type="button" class="text-button" id="strip-stop">Stop listening</button></div>
+    <section id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
+    <section class="radio-panel" aria-labelledby="channels-title">
+      <div class="section-heading"><div><p class="eyebrow">Radio configuration</p><h2 id="channels-title">Planned radio channels</h2></div><span class="pill pill-amber" id="phase-badge">Bench preparation</span></div>
+      <div class="frequencies">
+        <div class="frequency-block rx"><span class="channel-label">Box receive · input</span><p class="frequency"><span id="rx-frequency">—</span><span class="unit">MHz</span></p><p>Handhelds transmit on this frequency.</p></div>
+        <div class="frequency-block tx"><span class="channel-label">Box transmit · output</span><p class="frequency"><span id="tx-frequency">—</span><span class="unit">MHz</span></p><p>Handhelds listen on this frequency.</p></div>
+      </div>
+      <div class="radio-detail"><span>Planned tone <strong id="tone-frequency">Unavailable</strong></span><span>Planned TX power <strong id="radio-power">Unavailable</strong></span></div>
+      <div class="commission-notice"><span class="notice-icon" aria-hidden="true">i</span><p id="rf-notice"><strong>RF control is not commissioned.</strong> This dashboard monitors the Pi. These are planned settings, not live receive or transmit indicators.</p></div>
+    </section>
+
+    <section class="metrics" aria-label="Pi health">
+      <article class="metric-card"><p class="metric-label">CPU temperature</p><p class="metric-value" id="cpu-temp">Unavailable</p><p class="metric-note" id="cpu-load">Load unavailable</p></article>
+      <article class="metric-card"><p class="metric-label">Pi uptime</p><p class="metric-value" id="uptime">Unavailable</p><p class="metric-note" id="hostname">Waiting for device</p></article>
+      <article class="metric-card"><p class="metric-label">Storage available</p><p class="metric-value" id="disk-free">Unavailable</p><p class="metric-note" id="disk-total">Total unavailable</p></article>
+      <article class="metric-card"><p class="metric-label">Pi power status</p><p class="metric-value text-value" id="power-status">Unavailable</p><p class="metric-note" id="power-note">No battery level sensor is connected.</p></article>
+    </section>
+
+    <div class="two-column">
+      <section class="card" aria-labelledby="network-title">
+        <div class="section-heading"><h2 id="network-title">Wireless access</h2><span class="pill pill-muted" id="hotspot-status">Waiting</span></div>
+        <dl class="detail-list"><div><dt>Wi-Fi network</dt><dd id="network-ssid">Unavailable</dd></div><div><dt>Dashboard address</dt><dd id="dashboard-address">Unavailable</dd></div><div><dt>Pi addresses</dt><dd id="network-addresses">Unavailable</dd></div><div><dt>Internet required</dt><dd>No</dd></div></dl>
+        <p class="help-text" id="network-setup-help" hidden>Join the box’s Wi-Fi and open its dashboard address in a browser. Your device may report “no internet”; stay connected to this network.</p>
+      </section>
+      <section class="card" aria-labelledby="software-title">
+        <div class="section-heading"><h2 id="software-title">Repeater software</h2><span class="pill pill-muted" id="svxlink-state">Waiting</span></div>
+        <dl class="detail-list"><div><dt>SvxLink</dt><dd id="svxlink-installed">Unavailable</dd></div><div><dt>Transmit control</dt><dd>Not configured</dd></div><div><dt>Available memory</dt><dd id="memory-available">Unavailable</dd></div><div><dt>System clock</dt><dd id="clock-status">Unavailable</dd></div></dl>
+        <p class="help-text">Audio routing, receive detection, PTT, station identification, and time-out limits must be commissioned before on-air use.</p>
+      </section>
+    </div>
+
+    <section class="card" aria-labelledby="interfaces-title">
+      <div class="section-heading"><div><p class="eyebrow">USB hardware</p><h2 id="interfaces-title">Radio interfaces</h2></div><span class="pill pill-muted" id="aioc-count">AIOCs unavailable</span></div>
+      <p class="section-description">Detected devices are listed as the operating system sees them. Input and output roles still need to be assigned.</p>
+      <div class="interface-grid"><div><h3>Audio capture</h3><ul class="device-list" id="capture-devices"><li class="empty-item">Waiting for device information.</li></ul></div><div><h3>Audio playback</h3><ul class="device-list" id="playback-devices"><li class="empty-item">Waiting for device information.</li></ul></div><div><h3>Serial / PTT ports</h3><ul class="device-list" id="serial-devices"><li class="empty-item">Waiting for device information.</li></ul></div></div>
+    </section>
+
+    <section class="card commissioning" aria-labelledby="commissioning-title">
+      <div class="section-heading"><div><p class="eyebrow">Bring-up sequence</p><h2 id="commissioning-title">Before the first transmission</h2></div><span class="small-text">Bench checklist</span></div>
+      <ol class="checklist"><li id="checklist-pi" hidden><span class="step-number">1</span><div><h3>Prepare the SD card</h3><p>Install the supported Pi OS image and dashboard package, then boot the Pi.</p></div></li><li id="checklist-wifi" hidden><span class="step-number">2</span><div><h3>Set up wireless access</h3><p>Configure the box’s Wi-Fi, then join it from a phone or computer and open this dashboard.</p></div></li><li><span class="step-number">3</span><div><h3>Assign both AIOCs</h3><p>Identify each interface, label RX and TX, and confirm stable audio and serial device mappings.</p></div></li><li><span class="step-number">4</span><div><h3>Commission radio control</h3><p>Verify PTT and receive detection, adjust audio levels, and configure identification and time-out limits before on-air testing.</p></div></li></ol>
+      <ul class="setup-notes" id="setup-notes" hidden></ul>
+    </section>
+
+    </section>
+    <section id="panel-live" role="tabpanel" aria-labelledby="tab-live" tabindex="0" hidden>
+      <section class="card live-card" aria-labelledby="live-title">
+        <div class="section-heading"><div><p class="eyebrow">Listen over the box’s Wi-Fi</p><h2 id="live-title">Live receiver audio</h2></div><span class="pill pill-muted" id="live-source-state">Waiting</span></div>
+        <p class="section-description">Listen to incoming transmissions from this phone, iPad, or laptop. Outgoing IDs are not mixed into this feed. This page cannot transmit.</p>
+        <div class="live-player">
+          <div class="audio-emblem" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+          <h3 id="live-player-state">Ready when the receiver is connected</h3>
+          <p id="live-player-description">The Pi will stream receiver audio once its audio source is configured.</p>
+          <div class="listen-buttons"><button type="button" class="button primary" id="listen-button" disabled>Start listening</button><button type="button" class="button secondary" id="stop-button" disabled>Stop</button></div>
+          <div class="volume-control"><label for="listen-volume">Listening volume</label><input type="range" id="listen-volume" min="0" max="100" value="75"><output id="volume-value" for="listen-volume">75%</output></div>
+        </div>
+        <p class="form-message" id="live-error" role="status" aria-live="polite"></p>
+        <dl class="detail-list live-details"><div><dt>Receive source</dt><dd id="live-input-state">Unavailable</dd></div><div><dt>Connected listeners</dt><dd id="live-listeners">Unavailable</dd></div><div><dt>Stream format</dt><dd id="live-format">Unavailable</dd></div><div><dt>Last audio packet</dt><dd id="live-last-packet">Unavailable</dd></div></dl>
+        <p class="help-text">Tap Start listening to allow browser audio. Use your device’s volume controls as well. A short delay is normal. Listening continues when you change dashboard tabs; leaving or reloading this page stops it.</p>
+      </section>
+      <div class="two-column"><section class="card"><h2>Live listening and recording</h2><p class="help-text">Listening and recording are independent. You can listen while recording is off, or keep recording with no browser connected. Recording controls are in Audio archives.</p></section><section class="card" id="audio-setup-help" hidden><h2>First audio setup</h2><p class="help-text">The receive AIOC must be assigned and the Pi audio service enabled before this player can receive traffic. A connected USB interface alone does not confirm radio audio.</p></section></div>
+    </section>
+    <section id="panel-archives" role="tabpanel" aria-labelledby="tab-archives" tabindex="0" hidden>
+    <section class="card" aria-labelledby="recordings-title">
+      <div class="section-heading"><div><p class="eyebrow">Local audio archive</p><h2 id="recordings-title">Traffic recordings</h2></div><span id="recording-summary" class="small-text">Waiting for recordings</span></div>
+      <p class="section-description">Saved receive audio stays on the Pi. Select a file to listen or download.</p>
+      <div class="recorder-control">
+        <div><h3>Traffic recording</h3><p class="small-text" id="recorder-description">Waiting for recording status.</p></div>
+        <label class="toggle-control"><input type="checkbox" id="recording-toggle" role="switch" disabled><span class="toggle-track" aria-hidden="true"></span><span>Record traffic</span></label>
+      </div>
+      <div class="inline-status" role="status" aria-live="polite"><span class="pill pill-muted" id="recorder-state">Waiting</span><span id="recorder-message" class="small-text">Connect to the Pi to check the recorder.</span></div>
+      <p class="help-text" id="recording-auth-note">Admin sign-in is required to change recording. <button type="button" class="text-button" id="recording-admin-link">Open Settings / Admin</button></p>
+      <p class="form-message" id="recording-action-message" role="status" aria-live="polite"></p>
+      <div id="recordings-empty" class="empty-state"><span class="empty-symbol" aria-hidden="true">♫</span><p id="recordings-empty-text">Waiting for the Pi’s recording inventory.</p></div>
+      <div id="recording-workspace" hidden>
+        <div class="recording-picker"><label for="recording-select">Recording</label><select id="recording-select"><option value="">Select a recording…</option></select></div>
+        <div id="recording-player" class="player" hidden><div class="player-heading"><div><p class="player-name" id="recording-name"></p><p class="small-text" id="recording-detail"></p></div><a class="button secondary" id="recording-download" download>Download</a></div><audio id="recording-audio" controls preload="none">Your browser does not support audio playback. Use the download link instead.</audio></div>
+      </div>
+    </section>
+
+    </section>
+    <section id="panel-settings" role="tabpanel" aria-labelledby="tab-settings" tabindex="0" hidden>
+      <div class="two-column settings-layout">
+        <section class="card" aria-labelledby="admin-title">
+          <div class="section-heading"><div><p class="eyebrow">Local administration</p><h2 id="admin-title">Admin access</h2></div><span class="pill pill-muted" id="admin-state">Checking</span></div>
+          <p class="section-description" id="admin-description">Station monitoring and listening are available without signing in.</p>
+          <form id="admin-login-form" hidden><label class="field-label" for="admin-password">Admin password</label><input class="text-input" type="password" id="admin-password" name="password" autocomplete="current-password" required maxlength="1024"><button type="submit" class="button primary" id="login-button">Sign in</button></form>
+          <button class="button secondary" id="logout-button" type="button" hidden>Sign out</button>
+          <p class="form-message" id="admin-message" role="status" aria-live="polite"></p>
+          <p class="help-text" id="admin-setup-help" hidden>This is a local dashboard on your box’s Wi-Fi. The Wi-Fi password and admin password serve different purposes. Set the admin password on the Pi during installation.</p>
+        </section>
+        <section class="card" aria-labelledby="access-title"><p class="eyebrow">Connect from any browser</p><h2 id="access-title">Your portable dashboard</h2><p class="help-text" id="access-setup-help" hidden>Join the box’s password-protected Wi-Fi on your phone, laptop, or iPad. Keep the connection if your device warns that there is no internet.</p><dl class="detail-list access-details"><div><dt>Wi-Fi network</dt><dd id="settings-ssid">Unavailable</dd></div><div><dt>Dashboard address</dt><dd id="settings-address">Unavailable</dd></div></dl><p class="help-text" id="hotspot-setup-help" hidden>Set up hotspot credentials on the Pi using the setup script. The Wi-Fi control below changes whether its name is broadcast.</p></section>
+      </div>
+      <section class="card" aria-labelledby="wifi-visibility-title">
+        <div class="section-heading"><div><p class="eyebrow">Wireless access</p><h2 id="wifi-visibility-title">Wi-Fi network visibility</h2></div><span class="pill pill-muted" id="wifi-visibility-state">Checking</span></div>
+        <p class="section-description">Choose whether the box’s network name appears in nearby Wi-Fi lists. The Wi-Fi network stays on. Hidden networks still use the same Wi-Fi password.</p>
+        <dl class="detail-list wifi-visibility-details"><div><dt>Wi-Fi network name</dt><dd id="wifi-visibility-ssid">Unavailable</dd></div><div><dt>Saved visibility</dt><dd id="wifi-visibility-current">Unknown</dd></div></dl>
+        <fieldset id="wifi-visibility-fields" disabled>
+          <button type="button" class="wifi-visibility-switch" id="wifi-broadcast" role="switch" aria-checked="false" aria-labelledby="wifi-switch-label" aria-describedby="wifi-visibility-help" aria-haspopup="dialog" aria-controls="wifi-confirm-dialog">
+            <span id="wifi-switch-label">Broadcast Wi-Fi network name</span>
+            <span class="wifi-switch-value" id="wifi-switch-value" aria-hidden="true">Off</span>
+            <span class="wifi-switch-track" aria-hidden="true"></span>
+          </button>
+          <p class="help-text" id="wifi-visibility-help">Toggle to review and confirm the change. Wi-Fi may briefly disconnect when applied. The network name and password stay the same.</p>
+        </fieldset>
+        <p class="help-text" id="wifi-visibility-lock-note">Admin sign-in required to edit</p>
+        <p class="form-message" id="wifi-visibility-message" role="status" aria-live="polite">Checking the Pi’s Wi-Fi configuration…</p>
+      </section>
+      <section class="card" aria-labelledby="software-updates-title">
+        <div class="section-heading"><div><p class="eyebrow">Dashboard maintenance</p><h2 id="software-updates-title">Software updates</h2></div><span class="pill pill-muted" id="software-updates-state">Checking</span></div>
+        <p class="section-description">Get dashboard updates from <a href="https://github.com/oliverboryszewski/repeater-box-pi" target="_blank" rel="noopener noreferrer">GitHub</a>. Connect the Pi to the internet through Ethernet before checking or installing.</p>
+        <dl class="detail-list software-update-details"><div><dt>Installed version</dt><dd id="software-current-version">Unavailable</dd></div><div><dt>Latest version</dt><dd id="software-latest-version">Not checked</dd></div><div><dt>Last checked</dt><dd id="software-checked-at">Not checked</dd></div></dl>
+        <p class="help-text">Updates the dashboard app. Wi-Fi, passwords, saved settings, archives, and radio configuration are preserved.</p>
+        <div class="software-update-actions"><button type="button" class="button secondary" id="software-check" disabled>Check for updates</button><button type="button" class="button primary" id="software-install" aria-haspopup="dialog" aria-controls="software-confirm-dialog" disabled>Update software</button></div>
+        <p class="help-text" id="software-updates-lock-note">Admin sign-in required to manage updates</p>
+        <p class="form-message" id="software-updates-message" role="status" aria-live="polite">Checking software update status…</p>
+      </section>
+      <section class="card" aria-labelledby="settings-title"><div class="section-heading"><div><p class="eyebrow">Dashboard and receive audio</p><h2 id="settings-title">Station settings</h2></div><span class="small-text" id="settings-lock-note">Admin sign-in required to edit</span></div>
+        <form id="settings-form">
+          <fieldset id="settings-fields" disabled>
+            <div class="settings-grid"><div class="field"><label class="field-label" for="station-name">Station name</label><input class="text-input" id="station-name" name="station_name" type="text" maxlength="48" required><p class="field-help">Shown in this dashboard.</p></div><div class="field"><label class="field-label" for="retention-days">Keep recordings for</label><div class="number-field"><input class="text-input" id="retention-days" name="retention_days" type="number" min="1" max="90" required><span>days</span></div><p class="field-help">Older archived files are removed automatically.</p></div><div class="field"><label class="field-label" for="archive-limit">Archive storage limit</label><div class="number-field"><input class="text-input" id="archive-limit" name="max_archive_mb" type="number" min="64" max="16384" required><span>MB</span></div><p class="field-help">Oldest files are removed when this limit is reached.</p></div></div>
+            <div class="settings-switches">
+              <label class="settings-switch-row"><span class="settings-switch-copy"><strong id="input-enabled-label">Enable receiver audio feed</strong><small id="input-enabled-help">Accept receiver audio for listening and recording.</small><small id="input-setup-help" hidden>Assign the receive source and enable its audio service on the Pi first.</small></span><span class="toggle-control"><input id="input-enabled" name="input_enabled" type="checkbox" role="switch" aria-labelledby="input-enabled-label" aria-describedby="input-enabled-help"><span class="toggle-track" aria-hidden="true"></span><span id="input-enabled-value" aria-hidden="true">Off</span></span></label>
+              <label class="settings-switch-row"><span class="settings-switch-copy"><strong id="record-startup-label">Record automatically after a restart</strong><small id="record-startup-help">Start with recording enabled when the dashboard service restarts. The Archives switch changes recording now.</small></span><span class="toggle-control"><input id="record-startup" name="record_on_startup" type="checkbox" role="switch" aria-labelledby="record-startup-label" aria-describedby="record-startup-help"><span class="toggle-track" aria-hidden="true"></span><span id="record-startup-value" aria-hidden="true">Off</span></span></label>
+              <label class="settings-switch-row"><span class="settings-switch-copy"><strong id="keep-indefinitely-label">Keep recordings indefinitely</strong><small id="keep-indefinitely-help">Keep clips until storage space is needed. The oldest clips are removed first.</small></span><span class="toggle-control"><input id="keep-indefinitely" name="keep_indefinitely" type="checkbox" role="switch" aria-labelledby="keep-indefinitely-label" aria-describedby="keep-indefinitely-help"><span class="toggle-track" aria-hidden="true"></span><span id="keep-indefinitely-value" aria-hidden="true">Off</span></span></label>
+            </div>
+            <div class="field advanced-setting threshold-setting">
+              <div class="threshold-heading"><label class="field-label" for="recording-threshold">Recording threshold</label><output id="recording-threshold-value" for="recording-threshold" aria-hidden="true">-45 dBFS</output></div>
+              <input class="threshold-slider" id="recording-threshold" name="recording_threshold_dbfs" type="range" min="-70" max="-10" step="1" value="-45" aria-describedby="recording-threshold-description recording-threshold-help" aria-valuetext="-45 dBFS. Medium sensitivity: adjust against your receiver’s normal speech and idle noise.">
+              <div class="threshold-endpoints" aria-hidden="true"><span>More sensitive</span><span>Less sensitive</span></div>
+              <p class="threshold-description" id="recording-threshold-description">Medium sensitivity: adjust against your receiver’s normal speech and idle noise.</p>
+              <p class="field-help" id="recording-threshold-help">Lower values catch quieter audio and may also record background noise. Higher values require louder audio. Select Save settings to apply. This changes archive recording detection only.</p>
+            </div>
+            <button type="submit" class="button primary" id="save-settings">Save settings</button>
+          </fieldset>
+        </form><p class="form-message" id="settings-message" role="status" aria-live="polite"></p>
+      </section>
+    </section>
+    <footer class="page-footer"><span>Repeater Box <span id="version-label"></span> · Local station dashboard</span><span id="updated-label">Waiting for first update</span></footer>
+  </main>
+  <dialog class="confirm-dialog" id="wifi-confirm-dialog" aria-labelledby="wifi-confirm-title" aria-describedby="wifi-confirm-description">
+    <p class="eyebrow">Wi-Fi visibility</p>
+    <h2 id="wifi-confirm-title">Change network visibility?</h2>
+    <p id="wifi-confirm-description"></p>
+    <p class="help-text" id="wifi-confirm-preview" hidden>Preview only — this dialog cannot change Wi-Fi on your Mac.</p>
+    <div class="dialog-actions">
+      <button type="button" class="button secondary" id="wifi-confirm-cancel" autofocus>Cancel</button>
+      <button type="button" class="button primary" id="wifi-confirm-apply">Confirm change</button>
+    </div>
+  </dialog>
+  <dialog class="confirm-dialog" id="software-confirm-dialog" aria-labelledby="software-confirm-title" aria-describedby="software-confirm-description software-confirm-impact">
+    <p class="eyebrow">Software update</p>
+    <h2 id="software-confirm-title">Update the dashboard?</h2>
+    <p id="software-confirm-description"></p>
+    <p id="software-confirm-impact">The dashboard will restart and interrupt live listening and recording. Recording returns to your “Record automatically after a restart” preference. Reload this page and sign in again afterwards.</p>
+    <p class="help-text">Keep the Pi powered and connected to the internet through Ethernet. Wi-Fi, passwords, saved settings, archives, and radio configuration are preserved.</p>
+    <div class="dialog-actions"><button type="button" class="button secondary" id="software-confirm-cancel" autofocus>Cancel</button><button type="button" class="button primary" id="software-confirm-apply">Install update</button></div>
+  </dialog>
+</body>
+</html>

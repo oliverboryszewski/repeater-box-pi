@@ -1,0 +1,29 @@
+[Unit]
+Description=Repeater Box local dashboard and RX audio monitor
+After=network.target
+
+[Service]
+Type=simple
+User=repeaterdash
+Group=repeaterdash
+SupplementaryGroups=repeater-recordings audio
+WorkingDirectory=/opt/repeater-box/dashboard
+ExecStart=/usr/bin/python3 /opt/repeater-box/dashboard/server.py --host 0.0.0.0 --port 80 --recordings /var/lib/svxlink/recordings --state-dir /var/lib/repeater-dashboard --admin-file /etc/repeater-box/admin.json
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+NoNewPrivileges=true
+ProtectSystem=strict
+StateDirectory=repeater-dashboard
+StateDirectoryMode=0750
+ReadWritePaths=/var/lib/svxlink/recordings
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
