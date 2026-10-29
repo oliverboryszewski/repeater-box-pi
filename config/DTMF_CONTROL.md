@@ -6,7 +6,7 @@ Commission the [receive-only audio monitor](LIVE_AUDIO.md) first. SvxLink is the
 
 ## Set or change the DTMF password
 
-In **Settings / Admin**, sign in and find **Radio DTMF control**. Use **Change DTMF password**, enter the new password in its single visible field, then enter the current dashboard admin password. The DTMF field accepts at most six characters from `0–9` and `A–D`, converts lowercase letters to uppercase, and removes unsupported characters. Save only after all six characters are entered. The keypad's `#` means submit and `*` means cancel, so neither belongs in the password. Use a different password from the dashboard admin and Wi-Fi passwords.
+In **Settings / Admin**, sign in and find **Radio DTMF control**. Use **Change DTMF password**, enter the new password in the six visible monospace character boxes, then enter the current dashboard admin password. Each box accepts one character from `0–9` and `A–D`, converts lowercase letters to uppercase, and rejects unsupported characters immediately. Typing advances to the next box; pasting fills the remaining boxes without exceeding six characters. Save only after all six characters are entered. The keypad's `#` means submit and `*` means cancel, so neither belongs in the password. Use a different password from the dashboard admin and Wi-Fi passwords.
 
 There is no default password. It is never returned to the browser or displayed after saving. The local root worker receives a salted PBKDF2 hash for persistence rather than the plaintext password. Changing the password ends any active RF menu session.
 

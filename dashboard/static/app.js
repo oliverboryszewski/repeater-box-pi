@@ -22,6 +22,7 @@
   let dtmfError = "";
   let dtmfCodeError = "";
   let dtmfFormCsrf = null;
+  const dtmfCodeIds = Array.from({length:6},(_,index) => `dtmf-code-${index+1}`);
   let wifiVisibilityProposal = null;
   let wifiVisibilityBusy = false;
   let wifiVisibilityError = "";
@@ -91,12 +92,12 @@
   const audioNodes = new Set();
   let liveState = "stopped";
   let liveGeneration = 0;
-  const tabNames = ["overview", "live", "data", "archives", "settings"];
+  const tabNames = ["overview", "live", "archives", "data", "settings"];
   const tabCopy = {
     overview: ["Station overview", "Pi health, radio interfaces, and your portable station at a glance."],
     live: ["Live audio", "Radio audio, directly over the box’s Wi-Fi."],
+    archives: ["Recording", "Control traffic recording and listen to saved radio audio."],
     data: ["Data", "Receive packets and pictures over the box’s radio input."],
-    archives: ["Audio archives", "Control traffic recording and listen to saved radio audio."],
     settings: ["Settings / Admin", "Manage the dashboard and radio audio service on your Pi."]
   };
 
@@ -1196,7 +1197,7 @@
   }
 
   function clearDtmfPasswords() {
-    for (const id of ["dtmf-new-code","dtmf-admin-password"]) byId(id).value="";
+    for (const id of [...dtmfCodeIds,"dtmf-admin-password"]) byId(id).value="";
   }
 
   function renderDtmf() {
@@ -1224,7 +1225,8 @@
       : "Toggle to review and confirm the change.");
     message("dtmf-message",dtmfError,dtmfError ? "error" : "");
     const canPassword = canChangeDtmfPassword();
-    for (const id of ["dtmf-new-code","dtmf-admin-password"]) byId(id).disabled=!canPassword;
+    for (const id of [...dtmfCodeIds,"dtmf-admin-password"]) byId(id).disabled=!canPassword;
+    byId("dtmf-code-fields").disabled=!canPassword;
     byId("dtmf-change-code").disabled=!canPassword;
     const change=value?.code_change;
     message("dtmf-code-message",dtmfCodeError || change?.message || (!canPassword ? "The Pi password helper and admin sign-in are required." : ""),dtmfCodeError || change?.success === false ? "error" : change?.success === true ? "success" : "");
@@ -1238,6 +1240,7 @@
   }
 
   function closeDtmfConfirmation() {
+    clearDtmfPasswords();
     dtmfProposal=null;
     if (byId("dtmf-confirm-dialog").open) byId("dtmf-confirm-dialog").close();
     renderDtmf();
@@ -2002,7 +2005,7 @@
       label = "Check audio"; kind = "error"; detail = recorder.last_error;
     }
     pill("recorder-state", label, kind);
-    setText("recorder-description", recorder.enabled === true ? "Recording is enabled for the selected radio audio feed." : "Recording is turned off. Existing archives remain available.");
+    setText("recorder-description", recorder.enabled === true ? "Recording is enabled for the selected radio audio feed." : "Recording is turned off. Saved recordings remain available.");
     setText("recorder-message", detail);
   }
 
@@ -2035,7 +2038,7 @@
     byId("stop-button").disabled = liveState === "stopped";
     if (liveState === "stopped") {
       setText("live-player-state", !audioSupported() ? "Browser audio is unavailable" : !live ? "Waiting for the Pi" : sourceError ? "Check the radio feed" : !configured ? "Ready when the receiver is connected" : "Ready to listen");
-      setText("live-player-description", !audioSupported() ? "Try a current Safari, Chrome, Firefox, or Edge browser, or use the audio archives."
+      setText("live-player-description", !audioSupported() ? "Try a current Safari, Chrome, Firefox, or Edge browser, or open Recording to play saved audio."
         : sourceError ? live.last_error : !configured ? "Assign the receiver audio source and enable its feed on the Pi to start listening."
         : outgoing ? "Tap Start listening to hear received traffic, menu replies, identification and broadcast messages. This is the Pi’s audio feed, not an off-air reception test."
         : "Tap Start listening to hear the receiver. Outgoing repeater audio is not included in the current feed.");
@@ -2449,7 +2452,7 @@
         try { detail = (await response.json()).error; } catch (_) { /* Plain HTTP error. */ }
         throw new Error(typeof detail === "string" ? detail : `The radio stream is unavailable (${response.status}). Check the Pi audio setup.`);
       }
-      if (!response.body || !response.body.getReader) throw new Error("This browser cannot stream live audio. Try another browser or use the audio archives.");
+      if (!response.body || !response.body.getReader) throw new Error("This browser cannot stream live audio. Try another browser or open Recording to play saved audio.");
       const reader = response.body.getReader();
       let remainder = new Uint8Array(0);
       while (generation === liveGeneration) {
@@ -2521,7 +2524,7 @@
       wifiVisibilityAttempt = null;
       renderSettings(latestStatus?.settings);
       renderWifiVisibility(latestStatus?.wifi_visibility);
-      message("admin-message", "Signed out. Listening and archives remain available.", "success");
+      message("admin-message", "Signed out. Listening and saved recordings remain available.", "success");
       message("settings-message", "");
     } catch (error) { message("admin-message", error.message, "error"); }
     finally { mutationBusy = false; renderAdmin(); }
@@ -2731,29 +2734,62 @@
   function filteredDtmfCode(value) {
     return value.toUpperCase().replace(/[^0-9ABCD]/g, "").slice(0,6);
   }
-  byId("dtmf-new-code").addEventListener("input",(event) => {
-    const field=event.target, value=field.value, cursor=field.selectionStart;
-    field.value=filteredDtmfCode(value);
-    if (typeof cursor === "number" && typeof field.setSelectionRange === "function") {
-      const position=filteredDtmfCode(value.slice(0,cursor)).length;
-      field.setSelectionRange(position,position);
-    }
-  });
-  byId("dtmf-new-code").addEventListener("paste",(event) => {
-    if (!event.clipboardData || typeof event.clipboardData.getData !== "function") return;
-    event.preventDefault();
-    const field=event.target, start=field.selectionStart ?? field.value.length, end=field.selectionEnd ?? start;
-    const inserted=filteredDtmfCode(event.clipboardData.getData("text"));
-    field.value=filteredDtmfCode(field.value.slice(0,start)+inserted+field.value.slice(end));
-    const position=Math.min(start+inserted.length,field.value.length);
-    if (typeof field.setSelectionRange === "function") field.setSelectionRange(position,position);
+  function focusDtmfCell(index) {
+    const field=byId(dtmfCodeIds[Math.max(0,Math.min(5,index))]);
+    if (field.disabled) return;
+    field.focus();
+    if (typeof field.setSelectionRange === "function") field.setSelectionRange(0,field.value.length);
+  }
+  function fillDtmfCells(index,raw) {
+    const inserted=filteredDtmfCode(raw).slice(0,6-index);
+    for (let offset=0;offset<inserted.length;offset++) byId(dtmfCodeIds[index+offset]).value=inserted[offset];
+    if (inserted.length) focusDtmfCell(Math.min(5,index+inserted.length));
+  }
+  for (const [index,id] of dtmfCodeIds.entries()) {
+    const field=byId(id);
+    field.addEventListener("beforeinput",event => {
+      if (!canChangeDtmfPassword()) { event.preventDefault();clearDtmfPasswords();return; }
+      if (typeof event.data !== "string" || !event.inputType?.startsWith("insert")) return;
+      event.preventDefault();
+      fillDtmfCells(index,event.data);
+    });
+    field.addEventListener("input",event => {
+      if (!canChangeDtmfPassword()) { clearDtmfPasswords();return; }
+      const raw=event.target.value;
+      event.target.value=filteredDtmfCode(raw).slice(0,1);
+      fillDtmfCells(index,raw);
+    });
+    field.addEventListener("paste",event => {
+      if (!event.clipboardData || typeof event.clipboardData.getData !== "function") return;
+      event.preventDefault();
+      if (!canChangeDtmfPassword()) { clearDtmfPasswords();return; }
+      fillDtmfCells(index,event.clipboardData.getData("text"));
+    });
+    field.addEventListener("keydown",event => {
+      if (!canChangeDtmfPassword() || event.ctrlKey || event.metaKey || event.altKey) return;
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();focusDtmfCell(index+(event.key === "ArrowLeft" ? -1 : 1));
+      } else if (event.key === "Backspace") {
+        event.preventDefault();
+        if (field.value) field.value="";
+        else if (index>0) { byId(dtmfCodeIds[index-1]).value="";focusDtmfCell(index-1); }
+      } else if (event.key === "Delete") {
+        event.preventDefault();field.value="";
+      }
+    });
+    field.addEventListener("focus",() => {
+      if (typeof field.setSelectionRange === "function") field.setSelectionRange(0,field.value.length);
+    });
+  }
+  byId("dtmf-password-tools").addEventListener("toggle",() => {
+    if (!byId("dtmf-password-tools").open) clearDtmfPasswords();
   });
   byId("dtmf-code-form").addEventListener("submit",async(event) => {
     event.preventDefault();
     if (!canChangeDtmfPassword()) return;
-    const code=byId("dtmf-new-code").value;
+    const cells=dtmfCodeIds.map(id => byId(id).value), code=cells.join("");
     const password=byId("dtmf-admin-password").value, csrf=session.csrf_token;
-    if (!/^[0-9ABCD]{6}$/.test(code) || !password || password.length > 256) {
+    if (cells.some(value => !/^[0-9ABCD]$/.test(value)) || !/^[0-9ABCD]{6}$/.test(code) || !password || password.length > 256) {
       clearDtmfPasswords();dtmfCodeError="Enter a six-character DTMF password using 0–9, uppercase A–D, and your current admin password.";renderDtmf();return;
     }
     const state=dtmfKey(latestStatus.dtmf_control);
@@ -3043,7 +3079,7 @@
     try {
       const result = await postJson("/api/recording", { enabled });
       if (result.recorder) renderRecorder(result.recorder);
-      message("recording-action-message", enabled ? "Recording enabled. It will save audio when the selected radio feed is active." : "Recording turned off. Saved archives are kept.", "success");
+      message("recording-action-message", enabled ? "Recording enabled. It will save audio when the selected radio feed is active." : "Recording turned off. Saved recordings are kept.", "success");
     } catch (error) { message("recording-action-message", error.message, "error"); }
     finally {
       mutationBusy = false; await refreshAfterMutation(); renderAdmin();

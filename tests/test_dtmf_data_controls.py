@@ -1,5 +1,7 @@
 """Extended DTMF controls retain the legacy native protocol during upgrades."""
+from contextlib import redirect_stdout
 import hashlib
+import io
 import importlib.util
 import json
 import os
@@ -58,6 +60,52 @@ class DtmfDataControlsTests(unittest.TestCase):
         selected = self.command(option)
         self.assertEqual(selected["result"], "choose_aprs" if option == "4" else "choose_sstv")
         return self.command(value)
+
+    def test_command_diagnostic_logs_only_fixed_outcomes_without_credentials(self):
+        self.bridge.prompt_feedback = True
+        output = io.StringIO()
+        with redirect_stdout(output):
+            response = self.command()
+            self.bridge.command({"schema": 2, "command": CODE}, 999)
+            self.bridge.rf_command_lock.acquire()
+            try:
+                self.command()
+            finally:
+                self.bridge.rf_command_lock.release()
+        self.assertEqual(response["result"], "authenticated")
+        self.assertEqual(output.getvalue(), "RF control outcome: authenticated\n"
+                         "RF control outcome: denied\nRF control outcome: denied\n")
+        self.assertNotIn(CODE, output.getvalue())
+        self.assertEqual(len(response["prompt_id"]), 32)
+        self.assertNotIn(response["prompt_id"], output.getvalue())
+
+    def test_command_diagnostic_never_echoes_an_unrecognized_response_value(self):
+        for value in ("private request must not be logged", ["private payload"], None):
+            output = io.StringIO()
+            with mock.patch.object(self.bridge, "_command", return_value={"result": value, "body": CODE}), redirect_stdout(output):
+                self.command()
+            self.assertEqual(output.getvalue(), "RF control outcome: unavailable\n")
+
+    def test_command_diagnostic_keeps_exception_details_private_and_releases_lock(self):
+        output = io.StringIO()
+        with mock.patch.object(self.bridge, "_command", side_effect=ValueError("private " + CODE)), redirect_stdout(output):
+            with self.assertRaises(ValueError):
+                self.command()
+        self.assertEqual(output.getvalue(), "RF control outcome: unavailable\n")
+        self.assertTrue(self.bridge.rf_command_lock.acquire(blocking=False))
+        self.bridge.rf_command_lock.release()
+
+    def test_prompt_feedback_and_its_busy_acknowledgment_are_not_logged(self):
+        output = io.StringIO()
+        with mock.patch.object(self.bridge, "_prompt_finished", return_value={"schema": 1, "accepted": True}), redirect_stdout(output):
+            response = self.bridge.command({"schema": 1, "prompt_finished": "a" * 32}, 123)
+            self.bridge.rf_command_lock.acquire()
+            try:
+                busy = self.bridge.command({"schema": 1, "prompt_finished": "a" * 32}, 123)
+            finally:
+                self.bridge.rf_command_lock.release()
+        self.assertTrue(response["accepted"]);self.assertFalse(busy["accepted"])
+        self.assertEqual(output.getvalue(), "")
 
     def test_authenticated_options_toggle_and_persist_only_the_selected_decoder(self):
         for option, attribute, setting, label in (("4", "data_decoder", "data_decode_enabled", "aprs"),

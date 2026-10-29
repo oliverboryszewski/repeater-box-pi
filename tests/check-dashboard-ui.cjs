@@ -235,6 +235,11 @@ async function selectMediaAll(h,kind,value=true) {
 }
 async function reviewBulkMedia(h,kind) { await h.el(`${kind==='recording'?'recording':'sstv'}-delete-selected`).dispatch('click'); }
 
+const DTMF_CODE_IDS=Array.from({length:6},(_,index)=>`dtmf-code-${index+1}`);
+function setDtmfCode(h,raw) {
+ for(const[index,id]of DTMF_CODE_IDS.entries())h.el(id).value=index===5?raw.slice(index):raw[index]||'';
+}
+function dtmfCode(h) {return DTMF_CODE_IDS.map(id=>h.el(id).value).join('');}
 function messageHarness(options={}) {
  return pairHarness({...options,messages:{messages:[messageEntry()],...options.messages}});
 }
@@ -268,6 +273,14 @@ function dashboardMarkup() {
       assert.equal(ids.get(`${prefix}-delete-selected`).attrs['aria-controls'],'media-delete-dialog');
     }
     assert.equal(ids.get('media-delete-items').tag,'ul');
+  });
+  await check('Recording precedes Data in navigation, panel order and compatible archives route',async()=>{
+    const {html,nodes}=dashboardMarkup();
+    assert.deepEqual(nodes.filter(node=>node.attrs.role==='tab').map(node=>node.attrs.id),['tab-overview','tab-live','tab-archives','tab-data','tab-settings']);
+    assert.deepEqual(nodes.filter(node=>node.attrs.role==='tabpanel').map(node=>node.attrs.id),['panel-overview','panel-live','panel-archives','panel-data','panel-settings']);
+    assert.match(html,/<button[^>]*id="tab-archives"[^>]*>Recording<\/button>/);
+    assert.doesNotMatch(html,/Audio archives|The Archives switch/);
+    const h=harness();h.ctx.testApi.tab('archives');assert.equal(h.el('page-title').textContent,'Recording');assert.equal(h.el('panel-archives').hidden,false);
   });
   await check('Data cards follow the APRS then SSTV radio-menu order',async()=>{
     const {html}=dashboardMarkup();assert.ok(html.indexOf('id="data-card"')<html.indexOf('id="sstv-card"'));
@@ -612,7 +625,9 @@ function dashboardMarkup() {
   await check('Data tab is independent of Live audio and keyboard navigation includes it',async()=>{
     const h=dataHarness({sstv:{enabled:true}});h.ctx.testApi.tab('data');await Promise.resolve();assert.equal(h.el('panel-data').hidden,false);assert.equal(h.el('panel-live').hidden,true);assert.equal(h.el('page-title').textContent,'Data');
     h.ctx.testApi.tab('live');assert.equal(h.el('panel-data').hidden,true);assert.equal([...h.timers.values()].some(timer=>timer.ms===1000),false);
-    await h.el('tab-live').dispatch('keydown',{key:'ArrowRight'});assert.equal(h.el('panel-data').hidden,false);assert.equal(h.focused,'tab-data');
+    await h.el('tab-live').dispatch('keydown',{key:'ArrowRight'});assert.equal(h.el('panel-archives').hidden,false);assert.equal(h.focused,'tab-archives');assert.equal(h.el('page-title').textContent,'Recording');
+    await h.el('tab-archives').dispatch('keydown',{key:'ArrowRight'});assert.equal(h.el('panel-data').hidden,false);assert.equal(h.focused,'tab-data');
+    await h.el('tab-data').dispatch('keydown',{key:'ArrowLeft'});assert.equal(h.el('panel-archives').hidden,false);assert.equal(h.focused,'tab-archives');
   });
   await check('SSTV enable sends one CSRF-protected boolean without touching APRS audio recording or RF',async()=>{
     const h=dataHarness();h.el('sstv-enabled').checked=true;await h.el('sstv-enabled').dispatch('change');assert.equal(h.posts().length,1);
@@ -1432,16 +1447,16 @@ function dashboardMarkup() {
   });
   await check('Expired authentication from status polling hides options and closes every pending admin dialog',async()=>{
     const h=harness();for(const id of['wifi-confirm-dialog','software-confirm-dialog','radio-confirm-dialog','radio-pair-confirm-dialog','dtmf-confirm-dialog','station-id-confirm-dialog'])h.el(id).showModal();
-    h.el('dtmf-new-code').value='ABCD12';h.el('dtmf-admin-password').value='current-admin';h.el('radio-pair-confirm-password').value='current-admin';
+    setDtmfCode(h,'ABCD12');h.el('dtmf-admin-password').value='current-admin';h.el('radio-pair-confirm-password').value='current-admin';
     h.status.admin.authenticated=false;await h.ctx.testApi.refresh();
     assert.equal(h.el('admin-options').hidden,true);assert.equal(h.el('recorder-admin-controls').hidden,true);
     for(const id of['wifi-confirm-dialog','software-confirm-dialog','radio-confirm-dialog','radio-pair-confirm-dialog','dtmf-confirm-dialog','station-id-confirm-dialog'])assert.equal(h.el(id).open,false);
-    for(const id of['dtmf-new-code','dtmf-admin-password','radio-pair-confirm-password'])assert.equal(h.el(id).value,'');
+    for(const id of[...DTMF_CODE_IDS,'dtmf-admin-password','radio-pair-confirm-password'])assert.equal(h.el(id).value,'');
   });
   await check('Sign-out hides options immediately after confirmation and clears the visible code',async()=>{
-    const h=harness();h.el('dtmf-new-code').value='ABCD12';h.el('dtmf-admin-password').value='current-admin';
+    const h=harness();setDtmfCode(h,'ABCD12');h.el('dtmf-admin-password').value='current-admin';
     await h.el('logout-button').dispatch('click');assert.equal(h.posts().length,1);assert.equal(h.posts()[0].path,'/api/admin/logout');
-    assert.equal(h.el('admin-options').hidden,true);assert.equal(h.el('recorder-admin-controls').hidden,true);assert.equal(h.el('dtmf-new-code').value,'');assert.equal(h.el('dtmf-admin-password').value,'');
+    assert.equal(h.el('admin-options').hidden,true);assert.equal(h.el('recorder-admin-controls').hidden,true);assert.equal(dtmfCode(h),'');assert.equal(h.el('dtmf-admin-password').value,'');
   });
   await check('Automatic identification has an accessible switch and separate Cancel-default dialog inside admin options',async()=>{
     const html=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/index.html'),'utf8');
@@ -1566,41 +1581,69 @@ function dashboardMarkup() {
     await h.el('dtmf-confirm-apply').dispatch('click');assert.deepEqual(JSON.parse(h.posts()[0].options.body),{status_announcements:false});
     assert.equal(h.status.dtmf_control.enabled,false);assert.equal(h.el('dtmf-announcements').attrs['aria-checked'],'false');
   });
-  await check('New DTMF password uses one visible bounded field without a repeat field',async()=>{
-    const html=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/index.html'),'utf8');
-    const input=html.match(/<input[^>]*id="dtmf-new-code"[^>]*>/)?.[0];assert.ok(input);
-    for(const attr of['type="text"','maxlength="6"','minlength="6"','pattern="[0-9ABCD]{6}"','autocapitalize="characters"','autocorrect="off"','spellcheck="false"'])assert.ok(input.includes(attr));
+  await check('New DTMF password uses six visible accessible one-character cells without a repeat field',async()=>{
+    const {html,ids,inside}=dashboardMarkup();
+    assert.equal(ids.get('dtmf-code-fields').tag,'fieldset');assert.equal(inside('dtmf-code-1','dtmf-code-fields'),true);
+    assert.match(html,/class="dtmf-code-cells"/);assert.equal(ids.has('dtmf-new-code'),false);
+    for(const[index,id]of DTMF_CODE_IDS.entries()){
+      const input=ids.get(id);assert.equal(input.tag,'input');
+      for(const[attr,value]of Object.entries({type:'text',maxlength:'1',pattern:'[0-9ABCD]',inputmode:'text',autocomplete:'off',autocapitalize:'characters',autocorrect:'off',spellcheck:'false','aria-label':`Character ${index+1} of 6`}))assert.equal(input.attrs[attr],value);
+      assert.match(input.attrs.class,/dtmf-code-cell/);assert.ok(Object.hasOwn(input.attrs,'required'));
+    }
     assert.equal(html.includes('dtmf-confirm-code'),false);
   });
-  await check('DTMF typing uppercases a-d, strips unsupported characters and truncates at six',async()=>{
-    const h=harness();for(const [raw,wanted] of[['a','A'],['ab12cd','AB12CD'],['aB!2#*c3d4','AB2C3D'],['123456789','123456'],['zZxy!@','']]){
-      h.el('dtmf-new-code').value=raw;h.el('dtmf-new-code').setSelectionRange(raw.length,raw.length);await h.el('dtmf-new-code').dispatch('input');
-      assert.equal(h.el('dtmf-new-code').value,wanted);assert.equal(h.el('dtmf-new-code').selectionStart,wanted.length);
+  await check('DTMF cell typing uppercases valid characters and advances without accepting reserved or invalid input',async()=>{
+    const h=harness();
+    for(const[index,raw]of ['a','2','c','4','b','9'].entries()){
+      const event=await h.el(DTMF_CODE_IDS[index]).dispatch('beforeinput',{inputType:'insertText',data:raw});
+      assert.equal(event.defaultPrevented,true);assert.equal(h.el(DTMF_CODE_IDS[index]).value,raw.toUpperCase());assert.equal(h.focused,DTMF_CODE_IDS[Math.min(5,index+1)]);
     }
+    assert.equal(dtmfCode(h),'A2C4B9');
+    for(const raw of['#','*','z','é','１','!']){
+      await h.el(DTMF_CODE_IDS[0]).dispatch('beforeinput',{inputType:'insertText',data:raw});assert.equal(h.el(DTMF_CODE_IDS[0]).value,'A');
+    }
+    h.el(DTMF_CODE_IDS[0]).value='!a';await h.el(DTMF_CODE_IDS[0]).dispatch('input');assert.equal(h.el(DTMF_CODE_IDS[0]).value,'A');
+    h.el(DTMF_CODE_IDS[1]).value='#*x';await h.el(DTMF_CODE_IDS[1]).dispatch('input');assert.equal(h.el(DTMF_CODE_IDS[1]).value,'');
+    assert.equal(h.posts().length,0);
   });
-  await check('DTMF filtering preserves a middle edit cursor and paste keeps valid characters after invalid ones',async()=>{
-    const h=harness();h.el('dtmf-new-code').value='a!b12';h.el('dtmf-new-code').setSelectionRange(3,3);await h.el('dtmf-new-code').dispatch('input');
-    assert.equal(h.el('dtmf-new-code').value,'AB12');assert.equal(h.el('dtmf-new-code').selectionStart,2);
-    h.el('dtmf-new-code').value='';h.el('dtmf-new-code').setSelectionRange(0,0);
-    const pasted=await h.el('dtmf-new-code').dispatch('paste',{clipboardData:{getData:()=> '!@#$abcd123456'}});
-    assert.equal(pasted.defaultPrevented,true);assert.equal(h.el('dtmf-new-code').value,'ABCD12');assert.equal(h.el('dtmf-new-code').selectionStart,6);
-    h.el('dtmf-new-code').value='123456';h.el('dtmf-new-code').setSelectionRange(2,4);
-    await h.el('dtmf-new-code').dispatch('paste',{clipboardData:{getData:()=> 'a?b'}});
-    assert.equal(h.el('dtmf-new-code').value,'12AB56');assert.equal(h.el('dtmf-new-code').selectionStart,4);
+  await check('DTMF paste filters and bounds six cells and can replace from a middle cell',async()=>{
+    const h=harness();const pasted=await h.el(DTMF_CODE_IDS[0]).dispatch('paste',{clipboardData:{getData:()=> '!@#$abcd123456'}});
+    assert.equal(pasted.defaultPrevented,true);assert.equal(dtmfCode(h),'ABCD12');assert.equal(h.focused,DTMF_CODE_IDS[5]);
+    setDtmfCode(h,'123456');await h.el(DTMF_CODE_IDS[2]).dispatch('paste',{clipboardData:{getData:()=> 'a?#*b'}});
+    assert.equal(dtmfCode(h),'12AB56');assert.equal(h.focused,DTMF_CODE_IDS[4]);
+    await h.el(DTMF_CODE_IDS[5]).dispatch('paste',{clipboardData:{getData:()=> 'abcd999'}});assert.equal(dtmfCode(h),'12AB5A');
+    await h.el(DTMF_CODE_IDS[0]).dispatch('paste',{clipboardData:{getData:()=> '#*xyz'}});assert.equal(dtmfCode(h),'12AB5A');assert.equal(h.posts().length,0);
+  });
+  await check('DTMF cells support backspace, deletion and arrow navigation without submitting',async()=>{
+    const h=harness();setDtmfCode(h,'ABCD12');
+    await h.el(DTMF_CODE_IDS[3]).dispatch('keydown',{key:'Backspace'});assert.equal(h.el(DTMF_CODE_IDS[3]).value,'');
+    await h.el(DTMF_CODE_IDS[3]).dispatch('keydown',{key:'Backspace'});assert.equal(h.el(DTMF_CODE_IDS[2]).value,'');assert.equal(h.focused,DTMF_CODE_IDS[2]);
+    await h.el(DTMF_CODE_IDS[2]).dispatch('keydown',{key:'ArrowLeft'});assert.equal(h.focused,DTMF_CODE_IDS[1]);
+    await h.el(DTMF_CODE_IDS[1]).dispatch('keydown',{key:'ArrowRight'});assert.equal(h.focused,DTMF_CODE_IDS[2]);
+    await h.el(DTMF_CODE_IDS[0]).dispatch('keydown',{key:'ArrowLeft'});assert.equal(h.focused,DTMF_CODE_IDS[0]);
+    await h.el(DTMF_CODE_IDS[5]).dispatch('keydown',{key:'ArrowRight'});assert.equal(h.focused,DTMF_CODE_IDS[5]);
+    await h.el(DTMF_CODE_IDS[5]).dispatch('keydown',{key:'Delete'});assert.equal(h.el(DTMF_CODE_IDS[5]).value,'');assert.equal(h.posts().length,0);
+  });
+  await check('Closing password tools or cancelling a DTMF review clears all six cells and reauthentication',async()=>{
+    const h=harness();setDtmfCode(h,'ABCD12');h.el('dtmf-admin-password').value='temporary-admin';
+    h.el('dtmf-password-tools').open=false;await h.el('dtmf-password-tools').dispatch('toggle');
+    assert.equal(dtmfCode(h),'');assert.equal(h.el('dtmf-admin-password').value,'');
+    setDtmfCode(h,'ABCD12');h.el('dtmf-admin-password').value='temporary-admin';await h.el('dtmf-enabled').dispatch('click');await h.el('dtmf-confirm-cancel').dispatch('click');
+    assert.equal(dtmfCode(h),'');assert.equal(h.el('dtmf-admin-password').value,'');assert.equal(h.posts().length,0);
   });
   await check('New DTMF code is exactly six supported characters and needs a fresh admin password',async()=>{
     for(const [code,password] of[['12345','admin'],['1234567','admin'],['ABCd12','admin'],['ABC#12','admin'],['ABCD*1','admin'],['ABCD12','']]){
-      const h=harness();h.el('dtmf-new-code').value=code;h.el('dtmf-admin-password').value=password;
+      const h=harness();setDtmfCode(h,code);h.el('dtmf-admin-password').value=password;
       await h.el('dtmf-code-form').dispatch('submit');assert.equal(h.posts().length,0);assert.match(h.el('dtmf-code-message').textContent,/six-character/);
-      assert.equal(h.el('dtmf-new-code').value,'');assert.equal(h.el('dtmf-admin-password').value,'');
+      assert.equal(dtmfCode(h),'');assert.equal(h.el('dtmf-admin-password').value,'');
     }
   });
   await check('Confirmed password form refreshes state, sends current admin reauth and clears every secret input',async()=>{
-    const h=harness();h.el('dtmf-new-code').value='ABCD12';h.el('dtmf-admin-password').value='current-admin';
+    const h=harness();setDtmfCode(h,'ABCD12');h.el('dtmf-admin-password').value='current-admin';
     await h.el('dtmf-code-form').dispatch('submit');assert.equal(h.calls[0].path,'/api/status');assert.equal(h.posts().length,1);
     const post=h.posts()[0];assert.equal(post.path,'/api/dtmf-password');assert.equal(post.options.headers['X-CSRF-Token'],'token-1');
     assert.deepEqual(JSON.parse(post.options.body),{code:'ABCD12',admin_password:'current-admin'});
-    for(const id of['dtmf-new-code','dtmf-admin-password'])assert.equal(h.el(id).value,'');
+    for(const id of[...DTMF_CODE_IDS,'dtmf-admin-password'])assert.equal(h.el(id).value,'');
     assert.equal(h.el('dtmf-change-code').disabled,true);assert.equal(h.el('dtmf-enabled').disabled,true);assert.equal(h.el('software-check').disabled,true);
     assert.equal(h.el('radio-inspect-rx').disabled,true);assert.equal(h.el('settings-fields').disabled,true);
   });
@@ -1611,24 +1654,24 @@ function dashboardMarkup() {
     ['admin token',h=>{h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'changed'});}],
     ['sign-out',h=>{h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});}]
   ])await check(`Changed ${label} during password review clears secret inputs and prevents a stale request`,async()=>{
-    const h=harness();h.el('dtmf-new-code').value='ABCD12';h.el('dtmf-admin-password').value='current-admin';
+    const h=harness();setDtmfCode(h,'ABCD12');h.el('dtmf-admin-password').value='current-admin';
     h.onStatus=()=>change(h);await h.el('dtmf-code-form').dispatch('submit');assert.equal(h.posts().length,0);
-    for(const id of['dtmf-new-code','dtmf-admin-password'])assert.equal(h.el(id).value,'');
+    for(const id of[...DTMF_CODE_IDS,'dtmf-admin-password'])assert.equal(h.el(id).value,'');
   });
   await check('Failed status refresh never sends password change or retains fields',async()=>{
-    const h=harness();h.el('dtmf-new-code').value='ABCD12';h.el('dtmf-admin-password').value='current-admin';
+    const h=harness();setDtmfCode(h,'ABCD12');h.el('dtmf-admin-password').value='current-admin';
     h.failRefresh=true;await h.el('dtmf-code-form').dispatch('submit');assert.equal(h.posts().length,0);assert.equal(h.el('dtmf-admin-password').value,'');
   });
   await check('Sign-out or session-token replacement erases a partially filled DTMF password form',async()=>{
-    const h=harness();for(const id of['dtmf-new-code','dtmf-admin-password'])h.el(id).value='secret';
+    const h=harness();for(const id of[...DTMF_CODE_IDS,'dtmf-admin-password'])h.el(id).value='secret';
     h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'changed'});
-    for(const id of['dtmf-new-code','dtmf-admin-password'])assert.equal(h.el(id).value,'');
+    for(const id of[...DTMF_CODE_IDS,'dtmf-admin-password'])assert.equal(h.el(id).value,'');
   });
   await check('Password completion polling restores controls and renders only its public result',async()=>{
     const h=harness();h.status.dtmf_control.code_change={available:true,pending:true,request_id:'9'.repeat(32),success:null,message:'Changing the private DTMF password.'};h.ctx.testApi.status(h.status);
-    assert.equal(h.el('dtmf-new-code').disabled,true);assert.equal(h.el('dtmf-announcements').disabled,true);
+    for(const id of DTMF_CODE_IDS)assert.equal(h.el(id).disabled,true);assert.equal(h.el('dtmf-announcements').disabled,true);
     Object.assign(h.status.dtmf_control.code_change,{pending:false,success:true,message:'DTMF password changed. Authenticate again over the radio.'});h.ctx.testApi.status(h.status);
-    assert.equal(h.el('dtmf-new-code').disabled,false);assert.match(h.el('dtmf-code-message').textContent,/password changed/);
+    for(const id of DTMF_CODE_IDS)assert.equal(h.el(id).disabled,false);assert.match(h.el('dtmf-code-message').textContent,/password changed/);
   });
   await check('Private labels through the schema limit remain selectable and longer labels are rejected',async()=>{
     for(const size of[60,61,80,81]){

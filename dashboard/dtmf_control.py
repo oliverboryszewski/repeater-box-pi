@@ -369,12 +369,26 @@ class DtmfControl:
         # A single RX source has one menu. Concurrent duplicate frames cannot
         # erase or reuse the authorization being consumed by another frame.
         feedback = isinstance(request, dict) and "prompt_finished" in request
-        if not self.rf_command_lock.acquire(blocking=False):
-            return self.prompt_ack() if feedback else self.response("denied")
+        response = None
         try:
-            return self._prompt_finished(request, peer_uid) if feedback else self._command(request, peer_uid)
+            if not self.rf_command_lock.acquire(blocking=False):
+                response = self.prompt_ack() if feedback else self.response("denied")
+            else:
+                try:
+                    response = self._prompt_finished(request, peer_uid) if feedback else self._command(request, peer_uid)
+                finally:
+                    self.rf_command_lock.release()
+            return response
         finally:
-            self.rf_command_lock.release()
+            if not feedback:
+                # Only fixed outcomes enter the journal. Never log a received
+                # digit, credential, payload or exception while diagnosing RF.
+                result = response.get("result") if isinstance(response, dict) else None
+                outcome = result if isinstance(result, str) and result in DATA_RESULTS else "unavailable"
+                try:
+                    print("RF control outcome: " + outcome, flush=True)
+                except (OSError, ValueError):
+                    pass  # An unavailable journal must not prevent a response.
 
     def _command(self, request, peer_uid):
         if peer_uid not in self.allowed_uids:
