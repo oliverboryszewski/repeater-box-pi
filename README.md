@@ -1,6 +1,6 @@
 # Repeater Box — Pi dashboard
 
-Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.10.0.
+Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.10.1.
 
 Source: [GitHub repository](https://github.com/oliverboryszewski/repeater-box-pi).
 
@@ -162,6 +162,8 @@ Optional **[radio DTMF control](config/DTMF_CONTROL.md)** controls spoken status
 
 After separate receive-audio and transmit key/release/audio tests pass, follow **[Live repeater commissioning](config/LIVE_REPEATER.md)**. The separate `repeater-live.service` uses private station configuration, synthesized CW identification, the existing receiver feed and restricted DTMF menu. Installation leaves live RF stopped; activation is a deliberate local terminal step. Radio programming pauses this service and leaves it paused if verification or connection release fails. Remote pair changes can resume the previously active live service only after both radios verify against the authorized private catalog.
 
+**Automatic station identification** has its own confirmed Admin switch, on by default. Turning it off saves a manual-identification preference across restarts and leaves spoken DTMF prompts enabled. An ID already playing may finish. Automatic scheduling groups nearby speaker turns into a conversation, waits for a safe idle gap, and suppresses Morse during the radio menu. The local default interval is nine minutes; an explicit 30-minute testing profile is available. The operator remains responsible for identification on the transmitting channel, including when automatic identification is off or testing mode is selected.
+
 ## Recording and station settings
 
 In **Audio archives**, an admin can turn **Record traffic** on or off. **Armed** means recording is enabled but waiting for receiver audio above the activity threshold; **Recording** means a clip is currently being saved. Stopping recording finalizes the current clip. Finalized files appear for playback/download; the current `.wav.part` file is not offered as an archive.
@@ -218,7 +220,7 @@ Setup guidance appears only while the related setup is incomplete. Password inst
 
 ## Updating an installed box
 
-Version 0.10.0 requires rerunning the Pi installer once (update API 12). It installs the optional live service, private configuration guards, CW identification policy and programming interlocks together with the matching dashboard. Download the current bundle using section 3 and rerun the installer; existing passwords, hotspot, private channel pairs, radio bindings, backups, recordings and settings are preserved. Older browser updaters refuse this release before replacing the dashboard. An existing live service is stopped and disabled during a manual installation; review the result and deliberately start it again, then re-enable boot startup if appropriate. Do not rerun password or hotspot setup when those are already working. Later dashboard updates compatible with API 12 can use the browser updater again.
+Version 0.10.1 requires rerunning the Pi installer once (update API 13). It installs the identification scheduler and Admin switch together with their engine integration. Download the current bundle using section 3 and rerun the installer; existing passwords, hotspot, private channel pairs, radio bindings, backups, recordings and settings are preserved. Older browser updaters refuse this release before replacing the dashboard. An existing live service is stopped and disabled during a manual installation. Prepare live configuration again with its locally established audio gain to add the interval field, then deliberately authorize and start it; re-enable boot startup only after commissioning. Do not rerun password or hotspot setup when those are already working. Later dashboard updates compatible with API 13 can use the browser updater again.
 
 During an upgrade, the installer migrates an older installed channel table into the private Pi catalog before replacing that helper. An existing valid private catalog is retained. Migration preserves the existing frequencies, tones and pair order, while assigning generic pair labels and the numbered `BOX-RXn` / `BOX-TXn` radio names. Device qualification and protected backups remain intact. Saving or migrating a catalog does not rename physical radio memories: review and program the default pair afterward to apply the new names. A fresh installation supplies no implicit frequencies; run the local configuration command above.
 

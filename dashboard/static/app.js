@@ -16,6 +16,8 @@
   let sessionKnown = false;
   let settingsDirty = false;
   let mutationBusy = false;
+  let stationIdProposal = null;
+  let stationIdError = "";
   let dtmfProposal = null;
   let dtmfError = "";
   let dtmfCodeError = "";
@@ -314,13 +316,14 @@
     byId("admin-options").hidden=!signedIn;
     byId("recorder-admin-controls").hidden=!signedIn;
     if (!signedIn) {
-      wifiVisibilityProposal=null;softwareUpdateProposal=null;radioProgrammingProposal=null;radioPairProposal=null;dtmfProposal=null;
+      wifiVisibilityProposal=null;softwareUpdateProposal=null;radioProgrammingProposal=null;radioPairProposal=null;dtmfProposal=null;stationIdProposal=null;
       clearDtmfPasswords();byId("radio-pair-confirm-password").value="";
-      for (const id of ["wifi-confirm-dialog","software-confirm-dialog","radio-confirm-dialog","radio-pair-confirm-dialog","dtmf-confirm-dialog"]) {
+      for (const id of ["wifi-confirm-dialog","software-confirm-dialog","radio-confirm-dialog","radio-pair-confirm-dialog","dtmf-confirm-dialog","station-id-confirm-dialog"]) {
         if (byId(id).open) byId(id).close();
       }
     }
     renderDtmf();
+    renderStationIdentification();
     const updatePending = latestStatus?.software_updates?.pending === true || softwareUpdateBusy || radioTaskPending() || dtmfCodePending();
     pill("admin-state", !sessionKnown ? "Checking" : signedIn ? "Signed in" : session.configured ? "Signed out" : "Not configured", signedIn ? "good" : sessionKnown ? "amber" : "muted");
     setText("admin-description", !sessionKnown ? "Checking admin access…" : signedIn
@@ -462,6 +465,46 @@
     const value = latestStatus?.dtmf_control;
     return dtmfMaintenanceClear(ignoreBusy) && typeof value?.enabled === "boolean" &&
       (value.available === true || value.enabled === true);
+  }
+
+  function stationIdentificationKey(value) {
+    return value && typeof value === "object" ? JSON.stringify({available:value.available,enabled:value.enabled}) : "null";
+  }
+
+  function canManageStationIdentification(ignoreBusy = false) {
+    const value=latestStatus?.station_identification;
+    return dtmfMaintenanceClear(ignoreBusy) && session.configured === true &&
+      value?.available === true && typeof value.enabled === "boolean";
+  }
+
+  function renderStationIdentification() {
+    const value=latestStatus?.station_identification;
+    const known=typeof value?.enabled === "boolean", enabled=value?.enabled === true;
+    byId("station-id-enabled").setAttribute("aria-checked",String(enabled));
+    byId("station-id-enabled").disabled=!canManageStationIdentification();
+    setText("station-id-switch-value",known ? enabled ? "On" : "Off" : "Unknown");
+    pill("station-id-state",value?.available !== true || !known ? "Unavailable" : enabled ? "On" : "Off",value?.available === true && enabled ? "good" : "muted");
+    setText("station-id-help",!known ? "Automatic station identification status is unavailable."
+      : enabled ? "Automatic station identification is on. Spoken DTMF prompts are controlled separately."
+      : "Automatic station identification is off. You must provide required station identification manually. Spoken DTMF prompts are unaffected.");
+    setText("station-id-lock-note",!sessionKnown || !session.authenticated ? "Admin sign-in required to change automatic identification."
+      : value?.available !== true || !known ? "Automatic station identification is unavailable on this Pi."
+      : !canManageStationIdentification() ? "Resolve current maintenance or unfinished radio work before changing automatic identification."
+      : "Toggle to review and confirm the change.");
+    message("station-id-message",stationIdError,stationIdError ? "error" : "");
+    if (stationIdProposal && (!sessionKnown || !session.authenticated || session.csrf_token !== stationIdProposal.csrf ||
+        session.configured !== stationIdProposal.configured || stationIdentificationKey(value) !== stationIdProposal.state)) {
+      stationIdProposal=null;
+      if (byId("station-id-confirm-dialog").open) byId("station-id-confirm-dialog").close();
+    }
+    byId("station-id-confirm-apply").disabled=!stationIdProposal || !canManageStationIdentification() || !byId("station-id-confirm-dialog").open;
+  }
+
+  function closeStationIdentificationConfirmation() {
+    stationIdProposal=null;
+    if (byId("station-id-confirm-dialog").open) byId("station-id-confirm-dialog").close();
+    renderStationIdentification();
+    if (!byId("station-id-enabled").disabled) byId("station-id-enabled").focus();
   }
 
   function canChangeDtmfPassword(ignoreBusy = false) {
@@ -1360,6 +1403,45 @@
       await refreshAfterMutation();
     }
   }
+
+  byId("station-id-enabled").addEventListener("click",() => {
+    if (!canManageStationIdentification()) return;
+    const enabled=!latestStatus.station_identification.enabled;
+    stationIdProposal={enabled,state:stationIdentificationKey(latestStatus.station_identification),csrf:session.csrf_token,configured:session.configured};
+    stationIdError="";
+    setText("station-id-confirm-title",enabled ? "Enable automatic station identification?" : "Disable automatic station identification?");
+    setText("station-id-confirm-description",enabled
+      ? "Allow automatic station identification after new radio traffic. Spoken DTMF prompts keep their current setting."
+      : "Stop future automatic station identification. An ID already playing may finish. You must provide required station identification manually. Spoken DTMF prompts are unaffected.");
+    setText("station-id-confirm-apply",enabled ? "Enable automatic ID" : "Disable automatic ID");
+    const dialog=byId("station-id-confirm-dialog");
+    if (typeof dialog.showModal !== "function") {
+      stationIdProposal=null;stationIdError="This browser cannot show the confirmation dialog. Use a current browser to change automatic identification.";renderStationIdentification();return;
+    }
+    dialog.showModal();renderStationIdentification();byId("station-id-confirm-cancel").focus();
+  });
+  byId("station-id-confirm-cancel").addEventListener("click",closeStationIdentificationConfirmation);
+  byId("station-id-confirm-dialog").addEventListener("cancel",(event) => { event.preventDefault();closeStationIdentificationConfirmation(); });
+  byId("station-id-confirm-dialog").addEventListener("close",() => { stationIdProposal=null;renderStationIdentification(); });
+  byId("station-id-confirm-apply").addEventListener("click",async() => {
+    const proposal=stationIdProposal;
+    if (!proposal || !byId("station-id-confirm-dialog").open || !canManageStationIdentification()) return;
+    mutationBusy=true;renderAdmin();
+    const previousUpdate=lastSuccess;await refreshAfterMutation();
+    const unchanged=lastSuccess !== previousUpdate && stationIdProposal === proposal && byId("station-id-confirm-dialog").open &&
+      canManageStationIdentification(true) && session.csrf_token === proposal.csrf && session.configured === proposal.configured &&
+      stationIdentificationKey(latestStatus?.station_identification) === proposal.state;
+    if (!unchanged) {
+      mutationBusy=false;closeStationIdentificationConfirmation();stationIdError="The identification state, maintenance task or admin session changed. Review it again.";renderAdmin();return;
+    }
+    stationIdProposal=null;byId("station-id-confirm-dialog").close();
+    try {
+      const result=await postJson("/api/station-identification",{enabled:proposal.enabled});
+      if (!result.station_identification || result.station_identification.enabled !== proposal.enabled || typeof result.station_identification.available !== "boolean") throw new Error("The Pi returned an unreadable identification status. Refresh to check the saved setting.");
+      latestStatus={...latestStatus,station_identification:result.station_identification};stationIdError="";
+    } catch(error) { stationIdError=error.message; }
+    finally { mutationBusy=false;renderAdmin();await refreshAfterMutation(); }
+  });
 
   function reviewDtmfChange(field) {
     if (!canManageDtmf()) return;

@@ -1,7 +1,9 @@
 """Local RF authorization is explicit, bound to hardware, and closed on errors."""
 import copy
+import contextlib
 import importlib.util
 import json
+import io
 import os
 from pathlib import Path
 import stat
@@ -92,6 +94,7 @@ class LiveConfigurationTests(unittest.TestCase):
     def test_prepare_is_disabled_and_preserves_receive_tuning(self):
         authorization = self.prepare()
         self.assertFalse(authorization['enabled'])
+        self.assertEqual(authorization['id_interval_minutes'], 9)
         self.assertEqual(stat.S_IMODE(self.paths['auth_path'].stat().st_mode), 0o640)
         self.assertEqual(stat.S_IMODE(self.paths['config_path'].stat().st_mode), 0o640)
         with self.assertRaisesRegex(ValueError, 'not authorized'):
@@ -102,6 +105,7 @@ class LiveConfigurationTests(unittest.TestCase):
         self.assertEqual(parser['TxAIOC']['TIMEOUT'], '15')
         self.assertEqual(parser['TxAIOC']['SERIAL_SET_PINS'], '!DTR!RTS')
         self.assertEqual(parser['TxAIOC']['MASTER_GAIN'], '-40')
+        self.assertEqual(parser['RepeaterLogic']['BOX_ID_INTERVAL_MINUTES'], '9')
 
     def test_explicit_enable_and_disable_only_change_authorization(self):
         self.prepare()
@@ -127,6 +131,30 @@ class LiveConfigurationTests(unittest.TestCase):
         parser['TxAIOC']['MASTER_GAIN'] = '-28.5'
         with self.assertRaises(ValueError):
             guard.validate_parser(parser, authorization)
+
+    def test_testing_interval_is_authorized_exactly_and_retains_tx_gain(self):
+        authorization = self.prepare(tx_gain_db=-10, id_interval_minutes=30)
+        self.assertEqual(authorization['id_interval_minutes'], 30)
+        self.assertEqual(authorization['tx_gain_db'], -10)
+        self.enable(); self.check()
+        parser = guard.parser_from_bytes(self.paths['config_path'].read_bytes())
+        self.assertEqual(parser['RepeaterLogic']['BOX_ID_INTERVAL_MINUTES'], '30')
+        self.assertEqual(parser['TxAIOC']['MASTER_GAIN'], '-10')
+        parser['RepeaterLogic']['BOX_ID_INTERVAL_MINUTES'] = '9'
+        with self.assertRaises(ValueError):
+            guard.validate_parser(parser, authorization)
+        for value in (True, '30', 30.0, 0, 10, 31):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                guard.id_interval(value)
+
+    def test_testing_mode_prints_manual_identification_notice(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            configure.prepared_notice(30)
+        self.assertIn('transmission remains unauthorized', output.getvalue())
+        self.assertIn('Identify manually on the output', output.getvalue())
+        self.assertIn('ten minutes', output.getvalue())
+        self.assertIn('end of testing', output.getvalue())
 
     def test_any_verified_pair_in_same_catalog_can_resume(self):
         self.prepare(); self.enable()

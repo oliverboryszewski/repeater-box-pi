@@ -72,6 +72,12 @@ def gain_text(value):
     return format(tx_gain(value), '.12g')
 
 
+def id_interval(value):
+    if type(value) is not int or value not in (9, 30):
+        raise ValueError('Choose nine minutes for normal identification or thirty minutes for supervised testing.')
+    return value
+
+
 def unique_object(pairs):
     result = {}
     for key, value in pairs:
@@ -169,6 +175,7 @@ def validate_authorization(value, require_enabled=True):
     if not isinstance(value, dict) or (require_enabled and value.get('enabled') is not True):
         raise ValueError('Transmission is not authorized. Complete local live configuration first.')
     expected = {'schema', 'enabled', 'callsign', 'devices', 'radios', 'rx_alsa_id', 'tx_alsa_id', 'tx_gain_db',
+                'id_interval_minutes',
                 'catalog_digest', 'config_sha256'}
     if (set(value) != expected or type(value.get('schema')) is not int or value['schema'] != 1
             or type(value.get('enabled')) is not bool
@@ -181,6 +188,7 @@ def validate_authorization(value, require_enabled=True):
         raise ValueError('The local transmission authorization is invalid. Prepare it again.')
     callsign(value['callsign'])
     tx_gain(value['tx_gain_db'])
+    id_interval(value['id_interval_minutes'])
     radio_bindings({'schema': 1, 'model': '5RX', 'devices': value['devices']})
     for item in value['radios'].values():
         if (not isinstance(item, dict) or set(item) != {'identity', 'firmware'}
@@ -199,7 +207,8 @@ def validate_parser(parser, authorization):
     if set(parser.sections()) != {'GLOBAL', 'RepeaterLogic', 'RxAIOC', 'TxAIOC'} or parser.defaults():
         raise ValueError('Only the fixed local repeater logic and two AIOC sections are supported.')
     exact_section(parser, 'GLOBAL', GLOBAL)
-    exact_section(parser, 'RepeaterLogic', dict(LOGIC, CALLSIGN=authorization['callsign']))
+    exact_section(parser, 'RepeaterLogic', dict(LOGIC, CALLSIGN=authorization['callsign'],
+                  BOX_ID_INTERVAL_MINUTES=str(id_interval(authorization['id_interval_minutes']))))
     rx = dict(parser['RxAIOC'])
     expected_rx = dict(RX_FIXED, AUDIO_DEV='alsa:plughw:CARD=' + authorization['rx_alsa_id'] + ',DEV=0')
     if not set(expected_rx) <= set(rx) or set(rx) - set(expected_rx) - set(RX_TUNING):

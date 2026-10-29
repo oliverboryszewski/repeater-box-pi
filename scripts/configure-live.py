@@ -59,7 +59,7 @@ def json_bytes(value):
     return (json.dumps(value, indent=2) + '\n').encode('ascii')
 
 
-def build_configuration(monitor_content, station_callsign, tx_alsa_id='AIOC_TX'):
+def build_configuration(monitor_content, station_callsign, tx_alsa_id='AIOC_TX', id_interval_minutes=9):
     station_callsign = guard.callsign(station_callsign)
     parser = guard.parser_from_bytes(monitor_content)
     if (set(parser.sections()) != {'GLOBAL', 'RepeaterLogic', 'RxAIOC'}
@@ -77,7 +77,8 @@ def build_configuration(monitor_content, station_callsign, tx_alsa_id='AIOC_TX')
     output = guard.configparser.ConfigParser(interpolation=None)
     output.optionxform = str
     output['GLOBAL'] = guard.GLOBAL
-    output['RepeaterLogic'] = dict(guard.LOGIC, CALLSIGN=station_callsign)
+    output['RepeaterLogic'] = dict(guard.LOGIC, CALLSIGN=station_callsign,
+                                 BOX_ID_INTERVAL_MINUTES=str(guard.id_interval(id_interval_minutes)))
     output['RxAIOC'] = dict(guard.RX_FIXED, AUDIO_DEV=device)
     for key in guard.RX_TUNING:
         if key in receiver:
@@ -85,7 +86,7 @@ def build_configuration(monitor_content, station_callsign, tx_alsa_id='AIOC_TX')
     return output, rx_alsa_id, tx_alsa_id
 
 
-def prepare(station_callsign, tx_alsa_id='AIOC_TX', tx_gain_db=-40, config_path=guard.CONFIG_PATH,
+def prepare(station_callsign, tx_alsa_id='AIOC_TX', tx_gain_db=-40, id_interval_minutes=9, config_path=guard.CONFIG_PATH,
             auth_path=guard.AUTH_PATH, monitor_path=MONITOR_PATH,
             radio_config_path=guard.RADIO_CONFIG_PATH, state_path=guard.STATE_PATH,
             catalog_path=guard.CATALOG_PATH, owner_uid=0, auth_group_id=None,
@@ -94,7 +95,7 @@ def prepare(station_callsign, tx_alsa_id='AIOC_TX', tx_gain_db=-40, config_path=
         guard.trusted_json(radio_config_path, owner_uid, 16384),
         guard.trusted_json(state_path, owner_uid), guard.trusted_json(catalog_path, owner_uid, 16384))
     parser, rx_id, tx_id = build_configuration(guard.trusted_bytes(monitor_path, owner_uid, 16384, confidential=False),
-                                              station_callsign, tx_alsa_id)
+                                              station_callsign, tx_alsa_id, id_interval_minutes)
     parser['TxAIOC'] = dict(guard.TX_FIXED, AUDIO_DEV='alsa:plughw:CARD=' + tx_id + ',DEV=0',
                            PTT_PORT=devices['tx'], MASTER_GAIN=guard.gain_text(tx_gain_db))
     output = io.StringIO()
@@ -103,6 +104,7 @@ def prepare(station_callsign, tx_alsa_id='AIOC_TX', tx_gain_db=-40, config_path=
     authorization = {'schema': 1, 'enabled': False, 'callsign': station_callsign,
                      'devices': devices, 'radios': radios, 'rx_alsa_id': rx_id, 'tx_alsa_id': tx_id,
                      'tx_gain_db': guard.tx_gain(tx_gain_db),
+                     'id_interval_minutes': guard.id_interval(id_interval_minutes),
                      'catalog_digest': digest, 'config_sha256': hashlib.sha256(content).hexdigest()}
     guard.validate_authorization(authorization, require_enabled=False)
     guard.validate_parser(parser, authorization)
@@ -129,6 +131,13 @@ def set_enabled(enabled, auth_path=guard.AUTH_PATH, owner_uid=0, group_id=None, 
     return authorization
 
 
+def prepared_notice(id_interval_minutes):
+    guard.id_interval(id_interval_minutes)
+    print('Private live configuration prepared; transmission remains unauthorized and the service was not started.')
+    if id_interval_minutes == 30:
+        print('Thirty-minute automatic-ID testing mode selected. Identify manually on the output at least every ten minutes and at the end of testing.')
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     choice = parser.add_mutually_exclusive_group(required=True)
@@ -138,6 +147,8 @@ def main(argv=None):
     parser.add_argument('--tx-alsa-id', default='AIOC_TX')
     parser.add_argument('--tx-gain-db', type=float, default=-40,
                         help='Initial TX audio gain, -40 to -10 dB; adjust only during supervised audio checks')
+    parser.add_argument('--id-interval-minutes', type=int, choices=(9, 30), default=9,
+                        help='Automatic CW spacing: 9 minutes normally; 30 for supervised testing with manual identification')
     parser.add_argument('--confirm-ptt-tested', action='store_true')
     parser.add_argument('--confirm-audio-tested', action='store_true')
     args = parser.parse_args(argv)
@@ -154,9 +165,9 @@ def main(argv=None):
         group_id = grp.getgrnam('repeaterdash').gr_gid
         if args.prepare:
             station_callsign = input('Station callsign (saved only on this Pi): ').strip().upper()
-            prepare(station_callsign, args.tx_alsa_id, args.tx_gain_db, auth_group_id=group_id,
+            prepare(station_callsign, args.tx_alsa_id, args.tx_gain_db, args.id_interval_minutes, auth_group_id=group_id,
                     engine_group_id=grp.getgrnam('svxlink').gr_gid)
-            print('Private live configuration prepared; transmission remains unauthorized and the service was not started.')
+            prepared_notice(args.id_interval_minutes)
         elif args.enable:
             if not args.confirm_ptt_tested or not args.confirm_audio_tested:
                 raise ValueError('Complete the supervised PTT and audio checks, then supply both confirmation flags.')

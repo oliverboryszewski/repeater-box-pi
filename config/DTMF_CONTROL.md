@@ -48,6 +48,8 @@ Recording on means the recorder waits for audio above its configured threshold. 
 
 The supplied monitor keeps `TX=NONE` and `NO_REPEAT=1`. The local controls can operate without keying a transmitter, but there are no on-air menu prompts or confirmations in this mode. Check the dashboard while testing the receive-only setup. Callsign identification, PTT behavior and the transmit audio path require the separate [commissioning checks](COMMISSIONING.md) before spoken responses can be sent on air.
 
+The commissioned live service defers automatic Morse identification during a spoken menu. The Admin **Automatic station identification** switch controls automatic Morse separately; turning it off does not disable menu prompts, recording control or the spoken-status preference.
+
 The installer generates the bounded prompt clips locally with `espeak-ng`. Only fixed response tokens cross the private bridge; arbitrary messages, paths and commands are not accepted. SvxLink's restricted handler consumes the received keypad symbols before native module or macro commands can run.
 
 DTMF passwords are transmitted as audible tones. Anyone able to hear or record them may recover the sequence. A stored hash protects local persistence; it does not encrypt radio traffic. The raw live-audio tap and dashboard recordings can contain received control tones even though SvxLink mutes them in its downstream audio path. Application logs filter native DTMF digit and command lines rather than retaining the password.

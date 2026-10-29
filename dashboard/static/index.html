@@ -181,6 +181,14 @@
         <p class="help-text" id="software-updates-lock-note">Admin sign-in required to manage updates</p>
         <p class="form-message" id="software-updates-message" role="status" aria-live="polite">Checking software update status…</p>
       </section>
+      <section class="card" aria-labelledby="station-id-title">
+        <div class="section-heading"><div><p class="eyebrow">Station identification</p><h2 id="station-id-title">Automatic station identification</h2></div><span class="pill pill-muted" id="station-id-state">Checking</span></div>
+        <p class="section-description">Choose whether the repeater sends automatic station identification.</p>
+        <button type="button" class="wifi-visibility-switch" id="station-id-enabled" role="switch" aria-checked="true" aria-labelledby="station-id-switch-label" aria-describedby="station-id-help station-id-effect" aria-haspopup="dialog" aria-controls="station-id-confirm-dialog" disabled><span id="station-id-switch-label">Automatic station identification</span><span class="wifi-switch-value" id="station-id-switch-value" aria-hidden="true">On</span><span class="wifi-switch-track" aria-hidden="true"></span></button>
+        <p class="help-text" id="station-id-help">Checking automatic station identification…</p>
+        <p class="help-text" id="station-id-effect">Changes apply within one second. Turning this off stops future automatic IDs; an ID already playing may finish. This switch does not key or release the transmitter.</p>
+        <p class="help-text" id="station-id-lock-note">Admin sign-in required to change automatic identification.</p><p class="form-message" id="station-id-message" role="status" aria-live="polite"></p>
+      </section>
       <section class="card" aria-labelledby="dtmf-title">
         <div class="section-heading"><div><p class="eyebrow">Radio administration</p><h2 id="dtmf-title">Radio DTMF control</h2></div><span class="pill pill-muted" id="dtmf-state">Checking</span></div>
         <p class="section-description">Allow the private radio code to request status or turn traffic recording on and off.</p>
@@ -222,6 +230,7 @@
     </section>
     <footer class="page-footer"><span>Repeater Box <span id="version-label"></span> · Local station dashboard</span><span id="updated-label">Waiting for first update</span></footer>
   </main>
+  <dialog class="confirm-dialog" id="station-id-confirm-dialog" aria-labelledby="station-id-confirm-title" aria-describedby="station-id-confirm-description"><p class="eyebrow">Station identification</p><h2 id="station-id-confirm-title">Change automatic station identification?</h2><p id="station-id-confirm-description"></p><p class="help-text">Changes apply within one second. This switch does not key or release the transmitter.</p><div class="dialog-actions"><button type="button" class="button secondary" id="station-id-confirm-cancel" autofocus>Cancel</button><button type="button" class="button primary" id="station-id-confirm-apply" disabled>Confirm change</button></div></dialog>
   <dialog class="confirm-dialog" id="dtmf-confirm-dialog" aria-labelledby="dtmf-confirm-title" aria-describedby="dtmf-confirm-description"><p class="eyebrow">Radio DTMF control</p><h2 id="dtmf-confirm-title">Change DTMF control?</h2><p id="dtmf-confirm-description"></p><p class="help-text">The private control code stays on the Pi. This changes only status and recording commands; transmitter commissioning and the recording startup preference stay unchanged.</p><p class="form-message error" id="dtmf-confirm-error" role="alert"></p><div class="dialog-actions"><button type="button" class="button secondary" id="dtmf-confirm-cancel" autofocus>Cancel</button><button type="button" class="button primary" id="dtmf-confirm-apply" disabled>Confirm change</button></div></dialog>
   <dialog class="confirm-dialog" id="wifi-confirm-dialog" aria-labelledby="wifi-confirm-title" aria-describedby="wifi-confirm-description">
     <p class="eyebrow">Wi-Fi visibility</p>

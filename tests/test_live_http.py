@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "dashboard"))
 import controls
 import server as dashboard
+from station_identification import StationIdentification
 
 
 class LiveHTTPTest(unittest.TestCase):
@@ -74,6 +75,59 @@ class LiveHTTPTest(unittest.TestCase):
         self.cookie = headers["Set-Cookie"].split(";", 1)[0]
         self.csrf = session["csrf_token"]
         return headers
+
+    def station_id_projection(self):
+        folder = self.root / "control-runtime"
+        folder.mkdir(mode=0o755)
+        path = folder / "station-identification.json"
+        self.server.station_identification = StationIdentification(self.server.settings, projection_path=path)
+        return path
+
+    def test_station_identification_requires_admin_csrf_and_explicit_confirmation_route(self):
+        projection = self.station_id_projection()
+        route = "/api/station-identification"
+        self.assertEqual(self.request(route, "POST", {"enabled": False})[0], 403)
+        self.login()
+        self.assertEqual(self.request(route, "POST", {"enabled": False}, headers={"Cookie": self.cookie})[0], 403)
+        self.assertEqual(self.request(route, "POST", {"enabled": False}, authenticated=True,
+                                      headers={"Origin": "http://unrelated.invalid"})[0], 403)
+        self.assertEqual(self.request("/api/settings", "POST", {"automatic_station_id": False}, authenticated=True)[0], 400)
+        self.assertTrue(self.server.settings.get()["automatic_station_id"])
+        self.assertEqual(projection.read_text(), '{"schema":1,"enabled":true}\n')
+        for value in ({"enabled": "false"}, {"enabled": 0}, {"enabled": False, "path": "/tmp/no"}, {}):
+            self.assertEqual(self.request(route, "POST", value, authenticated=True)[0], 400)
+
+    def test_station_identification_confirmation_persists_without_affecting_recording_or_dtmf(self):
+        projection = self.station_id_projection()
+        self.login()
+        previous = self.server.settings.get()
+        code, _, body = self.request("/api/station-identification", "POST", {"enabled": False}, authenticated=True)
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body)["station_identification"], {"available": True, "enabled": False})
+        self.assertEqual(projection.read_text(), '{"schema":1,"enabled":false}\n')
+        saved = controls.SettingsStore(self.state / "settings.json").get()
+        self.assertFalse(saved.pop("automatic_station_id"))
+        previous.pop("automatic_station_id")
+        self.assertEqual(saved, previous)
+        self.assertFalse(self.server.hub.status()["recorder"]["enabled"])
+        restarted = StationIdentification(controls.SettingsStore(self.state / "settings.json"), projection_path=projection)
+        self.assertEqual(restarted.status(), {"available": True, "enabled": False})
+
+    def test_station_identification_waits_for_maintenance_and_projection_failure_rolls_back(self):
+        projection = self.station_id_projection()
+        self.login()
+        for helper, result in ((self.server.programming, {"pending": True}),
+                               (self.server.updates, {"pending": True}),
+                               (self.server.wifi, {"pending": True})):
+            with self.subTest(helper=type(helper).__name__), patch.object(helper, "status", return_value=result):
+                self.assertEqual(self.request("/api/station-identification", "POST", {"enabled": False}, authenticated=True)[0], 409)
+        self.assertTrue(self.server.settings.get()["automatic_station_id"])
+        projection.unlink()
+        projection.symlink_to(self.admin_file)
+        before = self.admin_file.read_bytes()
+        self.assertEqual(self.request("/api/station-identification", "POST", {"enabled": False}, authenticated=True)[0], 400)
+        self.assertTrue(self.server.settings.get()["automatic_station_id"])
+        self.assertEqual(self.admin_file.read_bytes(), before)
 
     def test_live_visualizer_assets_are_served_without_admin_sign_in(self):
         for name, media in (("audio-visualizer.js", ("text/javascript", "application/javascript")),

@@ -15,7 +15,7 @@ if [[ $(dpkg --print-architecture) != arm64 ]]; then
   exit 1
 fi
 bundle_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-for required in dashboard/server.py dashboard/radio_programming.py dashboard/radio_editor.py dashboard/dtmf_control.py dashboard/static/index.html dashboard/static/radio-editor.html scripts/program-radio.py scripts/radio_plan.py scripts/configure-channel-pairs.py scripts/configure-dtmf.py scripts/dtmf-client.py scripts/repeater-box-events.tcl scripts/repeater-live-events.tcl scripts/configure-live.py scripts/check-live-config.py scripts/run-svxlink.py scripts/build-dtmf-prompts.py scripts/install-chirp.sh config/svxlink-bench.conf systemd/repeater-dashboard.service systemd/repeater-engine.service systemd/repeater-live.service; do
+for required in dashboard/server.py dashboard/radio_programming.py dashboard/radio_editor.py dashboard/dtmf_control.py dashboard/station_identification.py dashboard/static/index.html dashboard/static/radio-editor.html scripts/program-radio.py scripts/radio_plan.py scripts/configure-channel-pairs.py scripts/configure-dtmf.py scripts/dtmf-client.py scripts/repeater-box-events.tcl scripts/repeater-live-events.tcl scripts/configure-live.py scripts/check-live-config.py scripts/run-svxlink.py scripts/build-dtmf-prompts.py scripts/install-chirp.sh config/svxlink-bench.conf systemd/repeater-dashboard.service systemd/repeater-engine.service systemd/repeater-live.service; do
   [[ -f "$bundle_dir/$required" ]] || { echo "Missing bundle file: $required" >&2; exit 1; }
 done
 # Serialize manual installs with browser updates and radio programming.
@@ -68,7 +68,7 @@ usermod -a -G repeater-recordings,audio,dialout,repeater-control svxlink
 # vcgencmd is read-only here; video grants access on Pi OS versions that require it.
 if getent group video >/dev/null; then usermod -a -G video repeaterdash; fi
 install -d -o root -g root -m 755 /opt/repeater-box/dashboard/static /opt/repeater-box/scripts /etc/repeater-box
-install -m 644 "$bundle_dir/dashboard/"{server.py,controls.py,audio_hub.py,admin_password.py,wifi_visibility.py,software_updates.py,radio_programming.py,radio_editor.py,dtmf_control.py} /opt/repeater-box/dashboard/
+install -m 644 "$bundle_dir/dashboard/"{server.py,controls.py,audio_hub.py,admin_password.py,wifi_visibility.py,software_updates.py,radio_programming.py,radio_editor.py,dtmf_control.py,station_identification.py} /opt/repeater-box/dashboard/
 install -m 644 "$bundle_dir/scripts/apply-wifi-visibility.py" /opt/repeater-box/scripts/apply-wifi-visibility.py
 install -m 644 "$bundle_dir/scripts/apply-software-update.py" /opt/repeater-box/scripts/apply-software-update.py
 install -m 644 "$bundle_dir/scripts/"{program-radio.py,radio_plan.py,configure-channel-pairs.py,configure-radios.py,configure-pair-switching.py} /opt/repeater-box/scripts/

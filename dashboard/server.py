@@ -27,12 +27,13 @@ from urllib.parse import parse_qs, quote, unquote, urlsplit
 from controls import SettingsStore, AdminAuth
 from audio_hub import AudioHub
 from dtmf_control import DtmfControl
+from station_identification import StationIdentification
 from wifi_visibility import WifiVisibility
 from software_updates import SoftwareUpdates
 from radio_programming import RadioProgramming
 from radio_editor import MODELS
 
-VERSION = "0.10.0"
+VERSION = "0.10.1"
 STATIC = Path(__file__).parent / "static"
 MEDIA_TYPES = {".wav": "audio/wav", ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".flac": "audio/flac"}
 
@@ -277,7 +278,7 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, PermissionError) as error:
                 self.json_response(401, {"error": str(error)})
             return
-        if path not in ("/api/admin/logout", "/api/recording", "/api/settings", "/api/wifi-visibility", "/api/software-updates/check", "/api/software-updates/install", "/api/radio-programming", "/api/radio-pair", "/api/radio-editor/read", "/api/radio-editor/write", "/api/dtmf-control", "/api/dtmf-password"):
+        if path not in ("/api/admin/logout", "/api/recording", "/api/settings", "/api/wifi-visibility", "/api/software-updates/check", "/api/software-updates/install", "/api/radio-programming", "/api/radio-pair", "/api/radio-editor/read", "/api/radio-editor/write", "/api/dtmf-control", "/api/dtmf-password", "/api/station-identification"):
             self.json_response(404, {"error": "Unknown endpoint"})
             return
         if not self.server.auth.authorize(token, self.headers.get("X-CSRF-Token")):
@@ -295,6 +296,15 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/admin/logout":
                     self.server.auth.logout(token)
                     self.json_response(200, self.server.auth.session(None), {"Set-Cookie": "repeater_admin=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"})
+                elif path == "/api/station-identification":
+                    if set(data) != {"enabled"}:
+                        raise ValueError("Send only the automatic identification enabled flag")
+                    if self.server.updates.status()["pending"] or self.server.wifi.status()["pending"]:
+                        self.json_response(409, {"error": "Wait for the current maintenance task before changing identification."})
+                        return
+                    with self.server.settings_lock:
+                        state = self.server.station_identification.set_enabled(data["enabled"])
+                    self.json_response(200, {"station_identification": state})
                 elif path == "/api/dtmf-control":
                     if set(data) == {"enabled"}:
                         state = self.server.dtmf.set_enabled(data["enabled"])
@@ -316,6 +326,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.hub.set_recording(data["enabled"])
                     self.json_response(200, self.server.hub.status())
                 elif path == "/api/settings":
+                    if "automatic_station_id" in data and data["automatic_station_id"] != self.server.settings.get()["automatic_station_id"]:
+                        raise ValueError("Review the station identification confirmation before changing automatic identification")
                     if any(key in data and data[key] != self.server.settings.get()[key]
                            for key in ("dtmf_enabled", "dtmf_status_announcements")):
                         raise ValueError("Review the DTMF confirmation before changing its enabled state or status announcements")
@@ -416,6 +428,7 @@ class Handler(BaseHTTPRequestHandler):
             data.update(self.server.hub.status())
             data["settings"] = self.server.settings.get()
             data["dtmf_control"] = self.server.dtmf.status()
+            data["station_identification"] = self.server.station_identification.status()
             data["wifi_visibility"] = self.server.wifi.status()
             data["software_updates"] = self.server.updates.status()
             data["radio_programming"] = self.server.programming.status()
@@ -599,7 +612,9 @@ def make_server(host, port, recordings, state_dir=None, admin_file=None):
         server.hub = AudioHub(recordings, server.settings.get())
         server.hub.start()
         server.dtmf = DtmfControl(server, state_dir=state_dir)
-        server.dtmf.start()
+        bridge_started = server.dtmf.start()
+        projection_path = server.dtmf.socket_path.with_name("station-identification.json") if bridge_started else None
+        server.station_identification = StationIdentification(server.settings, projection_path=projection_path)
     except Exception:
         server.server_close()
         raise

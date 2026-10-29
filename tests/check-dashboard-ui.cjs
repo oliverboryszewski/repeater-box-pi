@@ -10,8 +10,8 @@ const source = fs.readFileSync(path.resolve(__dirname, '../dashboard/static/app.
   progress() { return refreshRadioProgress(); },
   refresh() { return refreshAfterMutation(); },
   };\n})();`);
-function harness({preview=false, hidden=false, updates={}, radios={}}={}) {
-  let focused = null, onStatus = null, failRefresh = false, pairError = null, softwareRequests = 1;
+function harness({preview=false, hidden=false, updates={}, radios={}, stationIdentification={}}={}) {
+  let focused = null, onStatus = null, failRefresh = false, pairError = null, stationIdError = null, stationIdResult = null, softwareRequests = 1;
   const elements = new Map(), calls=[];
   class Element {
     constructor(id='') {this.id=id;this.listeners={};this.attrs={};this.dataset={};this.open=false;this.classList={add(){},remove(){},toggle(){}};this.value='';this.children=[];this.firstChild={nodeType:3,nodeValue:''};}
@@ -28,6 +28,7 @@ function harness({preview=false, hidden=false, updates={}, radios={}}={}) {
   const auth={configured:true,authenticated:!preview,csrf_token:preview?null:'token-1'};
   const plan={rx:{memory:1,name:'BOX-RX1',frequency_mhz:'145.300000',receive_tone_hz:88.5,transmit_tone_hz:null,transmit:false,power:'High',mode:'NFM'},tx:{memory:1,name:'BOX-TX1',frequency_mhz:'433.500000',receive_tone_hz:null,transmit_tone_hz:88.5,transmit:true,power:'High',mode:'NFM'}};
   let status={dtmf_control:{available:true,configured:true,bridge_ready:true,enabled:false,status_announcements:true,code_change:{available:true,pending:false,request_id:null,success:null,message:null}},radio_programming:{available:!preview,configured:!preview,catalog_configured:true,catalog_digest:'c'.repeat(64),preview,pending:false,request_id:'radio-1',plan,roles:{rx:{inspected:true,compatible:true,firmware:'HN5RV011',identity:'known-rx',programmed:true,verified:true},tx:{inspected:true,compatible:true,firmware:'HN5RV011',identity:'known-tx',programmed:true,verified:true}},...radios},version:'0.2',wifi_visibility:{available:!preview,preview,pending:false,profile_hidden:hidden,ssid:'Repeater-Box',request_id:'req-1'},admin:{configured:true,authenticated:!preview},network:{ssid:'Repeater-Box'},settings:{},recorder:{},software_updates:{available:!preview,preview,pending:false,current_version:'0.2.2',current_commit:'a'.repeat(40),latest_version:'0.2.3',latest_commit:'b'.repeat(40),update_available:true,action:'check',success:true,request_id:'updates-1',checked_at:'2026-10-19T19:00:00+00:00',...updates}};
+  status.station_identification={available:!preview,enabled:true,...stationIdentification};
   const ctx={console, URL, AbortController, Node:{TEXT_NODE:3}, Option:Element, document:{getElementById:el,querySelector:el,createElement:()=>new Element(),addEventListener(){},hidden:false},location:{hash:'#settings',origin:'http://10.42.0.1'},history:{replaceState(){}},window:{addEventListener(){}},setTimeout:()=>1,clearTimeout(){},setInterval(){},fetch:async(path,options={})=>{
     calls.push({path,options});
     if(path==='/api/status'){
@@ -55,6 +56,11 @@ function harness({preview=false, hidden=false, updates={}, radios={}}={}) {
       return{ok:true,json:async()=>({radio_programming:structuredClone(status.radio_programming)})};
     }
     if(path==='/api/admin/logout'){status.admin.authenticated=false;return{ok:true,json:async()=>({configured:true,authenticated:false,csrf_token:null})};}
+    if(path==='/api/station-identification'){
+      if(stationIdError)return{ok:false,status:409,json:async()=>({error:stationIdError})};
+      const body=JSON.parse(options.body);status.station_identification={...status.station_identification,enabled:body.enabled};
+      return{ok:true,json:async()=>stationIdResult ?? ({station_identification:structuredClone(status.station_identification)})};
+    }
     if(path==='/api/dtmf-control'){const body=JSON.parse(options.body);status.dtmf_control={...status.dtmf_control,...body};return{ok:true,json:async()=>({dtmf_control:structuredClone(status.dtmf_control)})};}
     if(path==='/api/dtmf-password'){status.dtmf_control.code_change={available:true,pending:true,request_id:'9'.repeat(32),success:null,message:'Changing the private DTMF password.'};return{ok:true,json:async()=>({code_change:structuredClone(status.dtmf_control.code_change)})};}
     if(path==='/api/settings'){
@@ -68,7 +74,7 @@ function harness({preview=false, hidden=false, updates={}, radios={}}={}) {
     throw new Error(`unexpected fetch ${path}`);
   }};
   vm.createContext(ctx);vm.runInContext(source,ctx);ctx.testApi.setup(structuredClone(status),structuredClone(auth));
-  return{ctx,el,calls,get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
+  return{ctx,el,calls,get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},set stationIdError(value){stationIdError=value;},set stationIdResult(value){stationIdResult=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
 }
 const checks=[];
 async function check(name,fn){try{await fn();checks.push(name);}catch(error){throw new Error(name,{cause:error});}}
@@ -402,7 +408,7 @@ function repairHarness(role='rx',kind='editor',options={}) {
     const html=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/index.html'),'utf8');
     assert.match(html,/<div id="admin-options" hidden>/);assert.match(html,/<div class="recorder-control" id="recorder-admin-controls" hidden>/);
     const position=html.indexOf('id="admin-options"');assert.ok(html.indexOf('id="admin-title"')<position);
-    for(const heading of['access-title','wifi-visibility-title','radio-pair-title','radio-programming-title','software-updates-title','dtmf-title','settings-title'])assert.ok(html.indexOf(`id="${heading}"`)>position,heading);
+    for(const heading of['access-title','wifi-visibility-title','radio-pair-title','radio-programming-title','software-updates-title','station-id-title','dtmf-title','settings-title'])assert.ok(html.indexOf(`id="${heading}"`)>position,heading);
     assert.ok(html.indexOf('id="recording-workspace"')<position);assert.ok(html.indexOf('id="listen-button"')<position);
   });
   await check('Unknown and signed-out sessions hide all admin options; authentication reveals them',async()=>{
@@ -412,17 +418,103 @@ function repairHarness(role='rx',kind='editor',options={}) {
     h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'new-token'});assert.equal(h.el('admin-options').hidden,false);assert.equal(h.el('recorder-admin-controls').hidden,false);
   });
   await check('Expired authentication from status polling hides options and closes every pending admin dialog',async()=>{
-    const h=harness();for(const id of['wifi-confirm-dialog','software-confirm-dialog','radio-confirm-dialog','radio-pair-confirm-dialog','dtmf-confirm-dialog'])h.el(id).showModal();
+    const h=harness();for(const id of['wifi-confirm-dialog','software-confirm-dialog','radio-confirm-dialog','radio-pair-confirm-dialog','dtmf-confirm-dialog','station-id-confirm-dialog'])h.el(id).showModal();
     h.el('dtmf-new-code').value='ABCD12';h.el('dtmf-admin-password').value='current-admin';h.el('radio-pair-confirm-password').value='current-admin';
     h.status.admin.authenticated=false;await h.ctx.testApi.refresh();
     assert.equal(h.el('admin-options').hidden,true);assert.equal(h.el('recorder-admin-controls').hidden,true);
-    for(const id of['wifi-confirm-dialog','software-confirm-dialog','radio-confirm-dialog','radio-pair-confirm-dialog','dtmf-confirm-dialog'])assert.equal(h.el(id).open,false);
+    for(const id of['wifi-confirm-dialog','software-confirm-dialog','radio-confirm-dialog','radio-pair-confirm-dialog','dtmf-confirm-dialog','station-id-confirm-dialog'])assert.equal(h.el(id).open,false);
     for(const id of['dtmf-new-code','dtmf-admin-password','radio-pair-confirm-password'])assert.equal(h.el(id).value,'');
   });
   await check('Sign-out hides options immediately after confirmation and clears the visible code',async()=>{
     const h=harness();h.el('dtmf-new-code').value='ABCD12';h.el('dtmf-admin-password').value='current-admin';
     await h.el('logout-button').dispatch('click');assert.equal(h.posts().length,1);assert.equal(h.posts()[0].path,'/api/admin/logout');
     assert.equal(h.el('admin-options').hidden,true);assert.equal(h.el('recorder-admin-controls').hidden,true);assert.equal(h.el('dtmf-new-code').value,'');assert.equal(h.el('dtmf-admin-password').value,'');
+  });
+  await check('Automatic identification has an accessible switch and separate Cancel-default dialog inside admin options',async()=>{
+    const html=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/index.html'),'utf8');
+    const control=html.match(/<button[^>]*id="station-id-enabled"[^>]*>/)?.[0];assert.ok(control);
+    for(const attr of['role="switch"','aria-checked="true"','aria-labelledby="station-id-switch-label"','aria-describedby="station-id-help station-id-effect"','aria-haspopup="dialog"','aria-controls="station-id-confirm-dialog"','disabled'])assert.ok(control.includes(attr),attr);
+    assert.match(html,/<dialog[^>]*id="station-id-confirm-dialog"[^>]*aria-labelledby="station-id-confirm-title"[^>]*aria-describedby="station-id-confirm-description"/);
+    assert.match(html,/<button[^>]*id="station-id-confirm-cancel"[^>]*autofocus/);
+    assert.ok(html.indexOf('id="station-id-title"')>html.indexOf('id="admin-options"'));
+    assert.ok(html.indexOf('id="station-id-title"')<html.indexOf('id="settings-title"'));
+  });
+  await check('Automatic identification defaults On and opens a review without changing the saved switch',async()=>{
+    const h=harness();assert.equal(h.el('station-id-enabled').disabled,false);assert.equal(h.el('station-id-enabled').attrs['aria-checked'],'true');
+    await h.el('station-id-enabled').dispatch('click');assert.equal(h.el('station-id-confirm-dialog').open,true);assert.equal(h.focused,'station-id-confirm-cancel');
+    assert.equal(h.el('station-id-confirm-title').textContent,'Disable automatic station identification?');assert.equal(h.el('station-id-enabled').attrs['aria-checked'],'true');assert.equal(h.posts().length,0);
+    assert.match(h.el('station-id-confirm-description').textContent,/future automatic.*already playing may finish.*manually.*DTMF prompts are unaffected/);
+  });
+  for(const action of['cancel','escape','close'])await check(`Automatic identification ${action} discards the proposal and prevents a forced save`,async()=>{
+    const h=harness();await h.el('station-id-enabled').dispatch('click');
+    if(action==='cancel')await h.el('station-id-confirm-cancel').dispatch('click');
+    else if(action==='escape')assert.equal((await h.el('station-id-confirm-dialog').dispatch('cancel')).defaultPrevented,true);
+    else h.el('station-id-confirm-dialog').close();
+    assert.equal(h.el('station-id-confirm-dialog').open,false);await h.el('station-id-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);
+    assert.equal(h.el('station-id-enabled').attrs['aria-checked'],'true');
+    if(action!=='close')assert.equal(h.focused,'station-id-enabled');
+  });
+  for(const enabled of[true,false])await check(`Confirmed automatic identification ${enabled?'off':'on'} uses fresh status and sends only its flag with admin CSRF`,async()=>{
+    const h=harness({stationIdentification:{enabled}});h.status.settings.record_on_startup=true;
+    await h.el('station-id-enabled').dispatch('click');assert.equal(h.posts().length,0);await h.el('station-id-confirm-apply').dispatch('click');
+    assert.equal(h.calls[0].path,'/api/status');assert.equal(h.posts().length,1);const post=h.posts()[0];assert.equal(post.path,'/api/station-identification');
+    assert.deepEqual(JSON.parse(post.options.body),{enabled:!enabled});assert.equal(post.options.headers['X-CSRF-Token'],'token-1');
+    assert.equal(h.el('station-id-enabled').attrs['aria-checked'],String(!enabled));assert.equal(h.el('station-id-switch-value').textContent,enabled?'Off':'On');assert.equal(h.el('station-id-confirm-dialog').open,false);
+    assert.equal(h.status.settings.record_on_startup,true);assert.equal(h.status.dtmf_control.enabled,false);assert.equal(h.status.dtmf_control.status_announcements,true);
+    if(enabled)assert.match(h.el('station-id-help').textContent,/manually.*DTMF prompts are unaffected/);
+  });
+  for(const [label,change] of[
+    ['saved value',h=>{h.status.station_identification.enabled=false;}],
+    ['availability',h=>{h.status.station_identification.available=false;}],
+    ['missing status',h=>{delete h.status.station_identification;}],
+    ['malformed value',h=>{h.status.station_identification.enabled='true';}],
+    ['radio task',h=>{h.status.radio_programming.pending=true;}],
+    ['unfinished upload',h=>{h.status.radio_programming.roles.rx.verification_required=true;}],
+    ['unfinished pair',h=>{h.status.radio_programming.pair={verification_required:true};}],
+    ['software task',h=>{h.status.software_updates.pending=true;}],
+    ['Wi-Fi task',h=>{h.status.wifi_visibility.pending=true;}],
+    ['DTMF password task',h=>{h.status.dtmf_control.code_change.pending=true;}],
+    ['admin configuration',h=>{h.status.admin.configured=false;}],
+    ['expired admin session',h=>{h.status.admin.authenticated=false;}],
+    ['new admin session',h=>{h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'token-2'});}]
+  ])await check(`Fresh ${label} change blocks a stale automatic identification save`,async()=>{
+    const h=harness();await h.el('station-id-enabled').dispatch('click');h.onStatus=()=>change(h);await h.el('station-id-confirm-apply').dispatch('click');
+    assert.equal(h.posts().length,0);assert.equal(h.el('station-id-confirm-dialog').open,false);assert.match(h.el('station-id-message').textContent,/changed/);
+  });
+  for(const [label,change] of[
+    ['signed out',h=>{h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});}],
+    ['unknown session',h=>{h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'token-1'},false);}],
+    ['missing CSRF',h=>{h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:null});}],
+    ['unavailable',h=>{h.status.station_identification.available=false;}],
+    ['unknown value',h=>{h.status.station_identification.enabled=null;}],
+    ['radio programming',h=>{h.status.radio_programming.pending=true;}],
+    ['software update',h=>{h.status.software_updates.pending=true;}],
+    ['Wi-Fi change',h=>{h.status.wifi_visibility.pending=true;}],
+    ['DTMF password change',h=>{h.status.dtmf_control.code_change.pending=true;}]
+  ])await check(`${label} automatic identification cannot be forced open or saved`,async()=>{
+    const h=harness();change(h);h.ctx.testApi.status(h.status);assert.equal(h.el('station-id-enabled').disabled,true);
+    await h.el('station-id-enabled').dispatch('click');await h.el('station-id-confirm-apply').dispatch('click');assert.equal(h.el('station-id-confirm-dialog').open,false);assert.equal(h.posts().length,0);
+  });
+  await check('Failed fresh status and cancellation during fresh status prevent automatic identification POST',async()=>{
+    for(const mode of['offline','cancel']){
+      const h=harness();await h.el('station-id-enabled').dispatch('click');
+      if(mode==='offline')h.failRefresh=true;else h.onStatus=()=>h.el('station-id-confirm-cancel').dispatch('click');
+      await h.el('station-id-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('station-id-confirm-dialog').open,false);
+    }
+  });
+  await check('Automatic identification save errors show the server message without changing the saved state',async()=>{
+    const h=harness();h.stationIdError='Radio maintenance started. Try again after verification.';
+    await h.el('station-id-enabled').dispatch('click');await h.el('station-id-confirm-apply').dispatch('click');
+    assert.equal(h.posts().length,1);assert.equal(h.el('station-id-enabled').attrs['aria-checked'],'true');assert.match(h.el('station-id-message').textContent,/Radio maintenance started/);assert.equal(h.el('station-id-enabled').disabled,false);
+  });
+  await check('Unreadable identification save response prompts a refresh and never resends automatically',async()=>{
+    const h=harness();h.stationIdResult={station_identification:{enabled:'false'}};
+    await h.el('station-id-enabled').dispatch('click');await h.el('station-id-confirm-apply').dispatch('click');
+    assert.equal(h.posts().length,1);assert.match(h.el('station-id-message').textContent,/unreadable.*Refresh/);assert.equal(h.el('station-id-enabled').attrs['aria-checked'],'false');
+  });
+  await check('Unavailable browser dialog support prevents an automatic identification change',async()=>{
+    const h=harness();h.el('station-id-confirm-dialog').showModal=undefined;await h.el('station-id-enabled').dispatch('click');await h.el('station-id-confirm-apply').dispatch('click');
+    assert.equal(h.posts().length,0);assert.match(h.el('station-id-message').textContent,/browser cannot show/);
   });
   await check('DTMF control is a confirmed admin switch and Cancel sends no change',async()=>{
     const h=harness();assert.equal(h.el('dtmf-enabled').attrs['aria-checked'],'false');
