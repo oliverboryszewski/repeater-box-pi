@@ -57,13 +57,23 @@ class SoftwareUpdateControllerTest(unittest.TestCase):
         self.config.write_text(json.dumps({"repository": worker.REPOSITORY, "branch": "main"}))
         self.commands = []
 
-    def controller(self, supported=True, active=True):
+    def controller(self, supported=True, active=True, current_version="0.3.0"):
         def run(arguments):
             self.commands.append(arguments)
             self.assertEqual(arguments, ["/usr/bin/systemctl", "is-active", "repeater-software-update.path"])
             return "active" if active else "inactive"
         return SoftwareUpdates(self.state, supported=supported, runner=run,
-                               install_dir=self.root, config_file=self.config, current_version="0.3.0")
+                               install_dir=self.root, config_file=self.config, current_version=current_version)
+
+    def complete_check(self, controller, latest_version, latest_commit=COMMIT, **overrides):
+        request = controller.request_check()
+        value = {"request_id": request["request_id"], "action": "check", "success": True,
+                 "current_version": request["current_version"], "current_commit": request["current_commit"],
+                 "latest_version": latest_version, "latest_commit": latest_commit,
+                 "checked_at": "2026-10-30T12:00:00+00:00", "message": "Dashboard update available."}
+        value.update(overrides)
+        write_json(self.state / controller.RESULT, value)
+        return controller.status()
 
     def checked(self, controller):
         result = controller.request_check()
@@ -195,13 +205,145 @@ class SoftwareUpdateControllerTest(unittest.TestCase):
         request = controller.request_install(COMMIT)
         write_json(self.root / "update-installed.json", {"version": "0.3.0", "commit": COMMIT})
         write_json(self.state / controller.RESULT,
-                   {"request_id": request["request_id"], "success": True, "latest_version": "0.3.0",
+                   {"request_id": request["request_id"], "action": "install", "success": True,
+                    "current_version": "0.3.0", "current_commit": COMMIT, "latest_version": "0.3.0",
                     "latest_commit": COMMIT, "message": "Installed"})
         status = controller.status()
         self.assertTrue(status["success"])
         self.assertFalse(status["pending"])
         self.assertFalse(status["update_available"])
         self.assertEqual(status["current_commit"], COMMIT)
+        self.assertFalse(status["check_stale"])
+
+    def test_manual_upgrade_also_invalidates_completed_install_history(self):
+        old = self.controller(current_version="0.10.2")
+        self.complete_check(old, "0.10.2")
+        requested = old.request_install(COMMIT)
+        write_json(self.root / "update-installed.json", {"version": "0.10.2", "commit": COMMIT})
+        write_json(self.state / old.RESULT, {"request_id": requested["request_id"], "action": "install", "success": True,
+            "current_version": "0.10.2", "current_commit": COMMIT, "latest_version": "0.10.2", "latest_commit": COMMIT,
+            "checked_at": "2026-10-30T12:00:00+00:00", "message": "Installed"})
+        coherent = self.controller(current_version="0.10.2").status()
+        self.assertTrue(coherent["success"]); self.assertFalse(coherent["check_stale"])
+        write_json(self.root / "update-installed.json", {"version": "0.11.0", "commit": None})
+        current = self.controller(current_version="0.11.0"); state = current.status()
+        self.assertTrue(state["check_stale"]); self.assertFalse(state["update_available"]); self.assertFalse(state["can_install"])
+        self.assertIsNone(state["latest_version"]); self.assertIsNone(state["latest_commit"]); self.assertIsNone(state["success"])
+        with self.assertRaisesRegex(ValueError, "fresh successful"):
+            current.request_install(COMMIT)
+
+    def test_manual_upgrade_invalidates_cached_check_fingerprint_and_refresh_replaces_it(self):
+        write_json(self.root / "update-installed.json", {"version": "0.10.1", "commit": OLDER})
+        old = self.controller(current_version="0.10.1")
+        self.assertTrue(self.complete_check(old, "0.10.2")["update_available"])
+        write_json(self.root / "update-installed.json", {"version": "0.11.0", "commit": None})
+        current = self.controller(current_version="0.11.0")
+        state = current.status()
+        self.assertTrue(state["check_stale"]); self.assertFalse(state["update_available"]); self.assertFalse(state["can_install"])
+        self.assertIsNone(state["latest_version"]); self.assertIsNone(state["latest_commit"]); self.assertIsNone(state["checked_at"])
+        self.assertIn("Check for updates again", state["message"])
+        with self.assertRaisesRegex(ValueError, "fresh successful"):
+            current.request_install(COMMIT)
+        pending = current.request_check()
+        self.assertTrue(pending["pending"]); self.assertFalse(pending["check_stale"])
+        # Stale history remains on disk while the new worker runs, but it must
+        # not invalidate this new controller/browser check authority.
+        self.assertFalse(current.status()["check_stale"])
+        write_json(self.state / current.RESULT, {"request_id": pending["request_id"], "action": "check", "success": True,
+            "current_version": "0.11.0", "current_commit": None, "latest_version": "0.11.1", "latest_commit": COMMIT})
+        refreshed = current.status()
+        self.assertFalse(refreshed["check_stale"]); self.assertTrue(refreshed["update_available"]); self.assertTrue(refreshed["can_install"])
+
+    def test_numeric_release_order_prevents_false_lexical_upgrade_and_accepts_real_upgrade(self):
+        for installed, latest, available in (("0.9.0", "0.10.0", True), ("0.10.0", "0.9.0", False),
+                ("0.10.9", "0.10.10", True), ("1.0.0", "0.99.99", False)):
+            with self.subTest(installed=installed, latest=latest):
+                write_json(self.root / "update-installed.json", {"version": installed, "commit": OLDER})
+                controller = self.controller(current_version=installed)
+                state = self.complete_check(controller, latest)
+                self.assertEqual(state["update_available"], available); self.assertEqual(state["can_install"], available)
+                if available:
+                    self.assertTrue(controller.request_install(COMMIT)["pending"])
+                else:
+                    self.assertIn("newer than", state["message"])
+                    with self.assertRaisesRegex(ValueError, "older than"):
+                        controller.request_install(COMMIT)
+                (self.state / controller.REQUEST).unlink(missing_ok=True)
+
+    def test_new_check_response_and_pending_poll_hide_old_target_without_revoking_new_authority(self):
+        controller = self.controller()
+        self.complete_check(controller, "0.3.1")
+        requested = controller.request_check()
+        for state in (requested, controller.status()):
+            self.assertTrue(state["pending"]); self.assertFalse(state["check_stale"]); self.assertFalse(state["can_install"])
+            self.assertIsNone(state["latest_version"]); self.assertIsNone(state["latest_commit"]); self.assertIsNone(state["checked_at"])
+        write_json(self.state / controller.RESULT, {"request_id": requested["request_id"], "action": "check", "success": True,
+            "current_version": "0.3.0", "current_commit": None, "latest_version": "0.3.2", "latest_commit": COMMIT})
+        completed = controller.status()
+        self.assertFalse(completed["pending"]); self.assertFalse(completed["check_stale"])
+        self.assertTrue(completed["update_available"]); self.assertTrue(completed["can_install"])
+        self.assertTrue(controller.request_install(COMMIT)["pending"])
+
+    def test_failed_worker_downgrade_result_cannot_offer_its_old_commit(self):
+        controller = self.controller(current_version="0.11.0")
+        state = self.complete_check(controller, "0.10.2", success=False,
+            message="GitHub contains an older dashboard version. Downgrades require a manual Pi installation.")
+        self.assertFalse(state["update_available"]); self.assertFalse(state["can_install"]); self.assertFalse(state["success"])
+        with self.assertRaisesRegex(ValueError, "fresh successful"):
+            controller.request_install(COMMIT)
+
+    def test_same_version_known_commit_noop_and_changed_commit_update_are_distinguished(self):
+        for commit, available in ((COMMIT, False), (OLDER, True)):
+            with self.subTest(commit=commit):
+                write_json(self.root / "update-installed.json", {"version": "0.3.0", "commit": commit})
+                controller = self.controller(); state = self.complete_check(controller, "0.3.0")
+                self.assertEqual(state["update_available"], available); self.assertEqual(state["can_install"], available)
+                if available:
+                    self.assertTrue(controller.request_install(COMMIT)["pending"])
+                else:
+                    with self.assertRaisesRegex(ValueError, "already installed"):
+                        controller.request_install(COMMIT)
+                (self.state / controller.REQUEST).unlink(missing_ok=True)
+
+    def test_fresh_unknown_commit_same_version_bootstrap_survives_while_cache_has_no_authority(self):
+        controller = self.controller()
+        state = self.complete_check(controller, "0.3.0")
+        self.assertIsNone(state["current_commit"]); self.assertTrue(state["update_available"]); self.assertTrue(state["can_install"])
+        reopened = self.controller(); history = reopened.status()
+        self.assertFalse(history["check_stale"]); self.assertTrue(history["update_available"]); self.assertFalse(history["can_install"])
+        with self.assertRaisesRegex(ValueError, "fresh successful"):
+            reopened.request_install(COMMIT)
+        self.assertTrue(controller.request_install(COMMIT)["pending"])
+
+    def test_missing_or_changed_cache_fingerprint_is_not_an_available_update(self):
+        for change in ("missing-version", "missing-commit", "version", "commit", "request"):
+            with self.subTest(change=change):
+                controller = self.controller(); self.complete_check(controller, "0.3.1")
+                result = json.loads((self.state / controller.RESULT).read_text())
+                if change == "missing-version": result.pop("current_version")
+                elif change == "missing-commit": result.pop("current_commit")
+                elif change == "version": result["current_version"] = "0.2.9"
+                elif change == "commit": result["current_commit"] = OLDER
+                else: result["request_id"] = "f" * 32
+                write_json(self.state / controller.RESULT, result)
+                if change == "request":
+                    request = self.state / controller.REQUEST
+                    stamp = time.time() - controller.PENDING_SECONDS - 1
+                    os.utime(request, (stamp, stamp))
+                state = controller.status()
+                self.assertTrue(state["check_stale"]); self.assertFalse(state["update_available"]); self.assertFalse(state["can_install"])
+                with self.assertRaisesRegex(ValueError, "fresh successful"):
+                    controller.request_install(COMMIT)
+                (self.state / controller.REQUEST).unlink(missing_ok=True)
+
+    def test_invalid_latest_version_cannot_authorize_install(self):
+        for version in ("bad", "0.11", "0.11.1-beta", None):
+            with self.subTest(version=version):
+                controller = self.controller(); state = self.complete_check(controller, version)
+                self.assertFalse(state["update_available"]); self.assertFalse(state["can_install"])
+                with self.assertRaisesRegex(ValueError, "fresh successful"):
+                    controller.request_install(COMMIT)
+                (self.state / controller.REQUEST).unlink(missing_ok=True)
 
 
 class SoftwareUpdateWorkerTest(unittest.TestCase):

@@ -22,6 +22,11 @@ REQUEST_RE = re.compile(r"[0-9a-f]{32}\Z")
 VERSION_RE = re.compile(r"[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}\Z")
 
 
+def version_parts(value):
+    """Compare the supported three-component release versions numerically."""
+    return tuple(map(int, value.split("."))) if isinstance(value, str) and VERSION_RE.fullmatch(value) else None
+
+
 def read_json(path, maximum=16384):
     """Read bounded regular files only, including when a stale symlink exists."""
     descriptor = None
@@ -77,11 +82,13 @@ class SoftwareUpdates:
             installed = read_json(self.install_dir / "update-installed.json")
             version = self.current_version or installed.get("version")
             commit = installed.get("commit")
+            metadata_matches = installed.get("version") in (None, version)
             state = {"available": False, "preview": not self.supported, "pending": False,
                      "action": None, "request_id": None, "current_version": version,
-                     "current_commit": commit if isinstance(commit, str) and COMMIT_RE.fullmatch(commit) else None,
+                     "current_commit": commit if metadata_matches and isinstance(commit, str) and COMMIT_RE.fullmatch(commit) else None,
                      "latest_version": None, "latest_commit": None, "update_available": False,
-                     "success": None, "message": None, "checked_at": None}
+                     "success": None, "message": None, "checked_at": None,
+                     "check_stale": False, "can_install": False}
             if not self.supported:
                 self._check = None
                 state["message"] = "Preview only — dashboard updates run on the Pi."
@@ -103,8 +110,6 @@ class SoftwareUpdates:
                     state[name] = value
             if isinstance(result.get("checked_at"), str):
                 state["checked_at"] = result["checked_at"][:80]
-            state["update_available"] = bool(state["latest_commit"]
-                                             and state["latest_commit"] != state["current_commit"])
             request = read_json(self.state_dir / self.REQUEST, 2048)
             if valid_request(request):
                 state.update(action=request["action"], request_id=request["request_id"])
@@ -123,11 +128,37 @@ class SoftwareUpdates:
                                             if request["action"] == "install" else "Checking GitHub for a dashboard update.")
                     else:
                         state.update(success=False, message="The update request was not confirmed. Check the Pi helper log, then retry.")
+            identity = (state["current_version"], state["current_commit"])
+            matching_result = result.get("request_id") == state["request_id"] and state["request_id"] is not None
+            result_history = bool(result) and (result.get("action") in ("check", "install") or state["action"] in ("check", "install"))
+            fingerprint_matches = ({"current_version", "current_commit"} <= set(result)
+                                   and (result["current_version"], result["current_commit"]) == identity)
+            cache_stale = bool(result_history and (not metadata_matches or not fingerprint_matches
+                               or not state["pending"] and (not matching_result or result.get("action") != state["action"])))
+            # A newly queued check replaces stale history; do not revoke the
+            # browser's new check token while its result is still pending.
+            state["check_stale"] = cache_stale and not (state["pending"] and state["action"] == "check")
+            if cache_stale:
+                # An older cache describes the previous installation. Clearing
+                # its target prevents clients from presenting it as current.
+                state.update(latest_version=None, latest_commit=None, checked_at=None, success=None)
+                if not state["pending"]:
+                    state["message"] = "The installed dashboard changed or its saved check is outdated. Check for updates again."
+            if state["pending"] and state["action"] == "check":
+                state.update(latest_version=None, latest_commit=None, checked_at=None)
+            current_parts, latest_parts = version_parts(state["current_version"]), version_parts(state["latest_version"])
+            checked = (not state["pending"] and not state["check_stale"] and matching_result
+                       and state["action"] == "check" and result.get("action") == "check" and state["success"] is True)
+            state["update_available"] = bool(checked and current_parts is not None and latest_parts is not None
+                and latest_parts >= current_parts and state["latest_commit"]
+                and state["latest_commit"] != state["current_commit"])
+            if checked and current_parts is not None and latest_parts is not None and latest_parts < current_parts:
+                state["message"] = "This dashboard is newer than the checked release. No update is available."
             if self._check:
                 context = self._check
                 identity = (state["current_version"], state["current_commit"])
                 target = (state["latest_version"], state["latest_commit"])
-                if (identity != context["installed"] or installed.get("version") != context["metadata_version"]
+                if (state["check_stale"] or identity != context["installed"] or installed.get("version") != context["metadata_version"]
                         or state["request_id"] != context["request_id"]
                         or state["action"] != "check" or state["success"] is False):
                     self._check = None
@@ -142,6 +173,9 @@ class SoftwareUpdates:
                         self._check = None
                 elif context["target"] is not None:
                     self._check = None
+            state["can_install"] = bool(state["update_available"] and self._check
+                and self._check["installed"] == identity and self._check["request_id"] == state["request_id"]
+                and self._check["target"] == (state["latest_version"], state["latest_commit"]))
             return state
 
     def _request(self, action, commit=None):
@@ -160,8 +194,15 @@ class SoftwareUpdates:
                     raise ValueError("Run a fresh successful update check before installing")
                 if commit != state["latest_commit"] or not state["latest_version"]:
                     raise ValueError("Check for updates again before installing this commit")
+                current_parts, latest_parts = version_parts(state["current_version"]), version_parts(state["latest_version"])
+                if current_parts is None or latest_parts is None:
+                    raise ValueError("Run a fresh successful update check with valid release versions before installing")
+                if latest_parts < current_parts:
+                    raise ValueError("The checked dashboard version is older than the installed version. Downgrades require a manual Pi installation")
                 if commit == state["current_commit"]:
                     raise ValueError("This dashboard commit is already installed")
+                if not state["can_install"]:
+                    raise ValueError("Run a fresh successful update check before installing")
             request = {"request_id": secrets.token_hex(16), "action": action}
             if commit is not None:
                 request["commit"] = commit
@@ -172,9 +213,12 @@ class SoftwareUpdates:
                                "installed": (state["current_version"], state["current_commit"]),
                                "metadata_version": read_json(self.install_dir / "update-installed.json").get("version"),
                                "target": None}
-            state.update(pending=True, action=action, request_id=request["request_id"], success=None,
+            state.update(pending=True, action=action, request_id=request["request_id"], success=None, can_install=False,
                          message=("Installing dashboard update. The dashboard will restart briefly."
                                   if action == "install" else "Checking GitHub for a dashboard update."))
+            if action == "check":
+                state["check_stale"] = False
+                state.update(latest_version=None, latest_commit=None, checked_at=None)
             return state
 
     def request_check(self):

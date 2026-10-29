@@ -512,6 +512,25 @@
     return name && revision ? `${name} · ${revision}` : name || revision || fallback;
   }
 
+  function softwareReleaseOrder(updates) {
+    const parse = value => typeof value === "string" && /^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}$/.test(value)
+      ? value.split(".").map(Number) : null;
+    const installed = parse(updates?.current_version || latestStatus?.version);
+    const latest = parse(updates?.latest_version);
+    if (!installed || !latest) return null;
+    for (let index = 0; index < installed.length; index++) {
+      if (latest[index] !== installed[index]) return latest[index] > installed[index] ? 1 : -1;
+    }
+    return 0;
+  }
+
+  function softwareUpdateOffered(updates) {
+    const order = softwareReleaseOrder(updates);
+    return order !== null && order >= 0 && updates?.check_stale !== true && updates?.can_install !== false &&
+      updates?.update_available === true && validCommit(updates?.latest_commit) &&
+      (!validCommit(updates?.current_commit) || updates.current_commit.toLowerCase() !== updates.latest_commit.toLowerCase());
+  }
+
   function canManageSoftware(updates = latestStatus?.software_updates) {
     return sessionKnown && session.authenticated && typeof session.csrf_token === "string" && !!session.csrf_token &&
       updates?.available === true && updates?.preview !== true && updates.pending !== true &&
@@ -529,13 +548,13 @@
   function freshSoftwareCheck(updates = latestStatus?.software_updates, complete = false) {
     const check = softwareUpdateCheck;
     if (!check) return false;
-    if (!sessionKnown || !session.authenticated || updates?.available !== true || updates.preview === true || session.csrf_token !== check.csrf ||
+    if (!sessionKnown || !session.authenticated || updates?.available !== true || updates.preview === true || updates.check_stale === true || session.csrf_token !== check.csrf ||
         softwareInstalledKey(updates) !== check.installed) {
       softwareUpdateCheck = null;
       return false;
     }
     // A check must be issued by this page and acknowledged with its new ID.
-    // Cached successful results can still be displayed without enabling Install.
+    // Saved version details can be displayed, but a cached result cannot offer an update.
     if (!check.requestId) return false;
     if (updates?.action !== "check" || updates.request_id !== check.requestId || updates.success === false) {
       softwareUpdateCheck = null;
@@ -545,7 +564,7 @@
       if (check.target !== null) softwareUpdateCheck = null;
       return false;
     }
-    if (updates.success !== true || !validCommit(updates.latest_commit) || typeof updates.latest_version !== "string" || !updates.latest_version.trim()) {
+    if (updates.success !== true || !validCommit(updates.latest_commit) || softwareReleaseOrder(updates) === null) {
       softwareUpdateCheck = null;
       return false;
     }
@@ -562,7 +581,7 @@
     const updates = latestStatus?.software_updates;
     const checkedHere = freshSoftwareCheck(updates);
     const enabled = canManageSoftware(updates);
-    const canInstall = enabled && checkedHere && updates?.update_available === true && validCommit(updates?.latest_commit);
+    const canInstall = enabled && checkedHere && softwareUpdateOffered(updates);
     byId("software-check").disabled = !enabled;
     byId("software-install").disabled = !canInstall;
     byId("software-confirm-apply").disabled = !canInstall;
@@ -575,12 +594,14 @@
   }
 
   function renderSoftwareUpdates(updates) {
-    freshSoftwareCheck(updates, true);
+    const checkedHere = freshSoftwareCheck(updates, true);
     const pending = updates?.pending === true;
     const install = updates?.action === "install";
     const failed = !pending && updates?.success === false;
-    const updateAvailable = updates?.update_available === true && validCommit(updates?.latest_commit);
-    const checked = validCommit(updates?.latest_commit) && updates?.update_available === false;
+    const order = softwareReleaseOrder(updates);
+    const updateAvailable = checkedHere && softwareUpdateOffered(updates);
+    const checked = checkedHere && (order < 0 || updates?.update_available === false ||
+      validCommit(updates?.current_commit) && updates.current_commit.toLowerCase() === updates.latest_commit.toLowerCase());
     if (softwareUpdateAttempt && typeof updates?.request_id === "string" && updates.request_id !== softwareUpdateAttempt.priorRequestId) {
       softwareUpdateError = "";
       if (!pending) softwareUpdateAttempt = null;
@@ -596,7 +617,11 @@
     else if (updates?.preview === true) message("software-updates-message", "Preview only — update checks and installation are disabled on this computer.");
     else if (failed) message("software-updates-message", detail || "The update task did not complete. Check the Pi’s internet connection and try again.", "error");
     else if (updates?.success === true && install) message("software-updates-message", `${detail || "Dashboard software updated."} Reload this page to use the updated dashboard, then sign in again.`, "success");
-    else message("software-updates-message", detail || (updates?.available !== true ? "Software updates are unavailable. Install the current Pi update helper first." : updateAvailable ? "A dashboard update is available. Review it before installing." : checked ? "The dashboard is up to date." : "Select Check for updates while the Pi has internet access."));
+    else if (updates?.available === true && !checkedHere) message("software-updates-message", updates?.check_stale === true || validCommit(updates?.latest_commit)
+      ? "The saved update check needs refreshing. Select Check for updates to check the installed version."
+      : "Select Check for updates while the Pi has internet access.");
+    else if (checkedHere && order < 0) message("software-updates-message", "The installed dashboard is newer than the checked release. No update is needed.");
+    else message("software-updates-message", updates?.available !== true ? detail || "Software updates are unavailable. Install the current Pi update helper first." : updateAvailable ? detail || "A dashboard update is available. Review it before installing." : checked ? "The dashboard is up to date." : "Select Check for updates while the Pi has internet access.");
     renderAdmin();
   }
 
@@ -1915,7 +1940,7 @@
   });
   byId("software-install").addEventListener("click", () => {
     const updates = latestStatus?.software_updates;
-    if (!canManageSoftware(updates) || !freshSoftwareCheck(updates) || updates.update_available !== true || !validCommit(updates.latest_commit)) return;
+    if (!canManageSoftware(updates) || !freshSoftwareCheck(updates) || !softwareUpdateOffered(updates)) return;
     softwareUpdateProposal = { commit: updates.latest_commit, priorInstalled: softwareInstalledKey(updates), priorRequestId: updates.request_id, csrf: session.csrf_token, check: softwareUpdateCheck };
     softwareUpdateError = "";
     setText("software-confirm-description", `Install ${softwareVersion(updates.latest_version, updates.latest_commit)} from the project’s GitHub repository?${settingsDirty ? " Unsaved station-setting edits will not be applied." : ""}`);
@@ -1946,7 +1971,7 @@
     await refreshAfterMutation();
     const updates = latestStatus?.software_updates;
     const unchanged = lastSuccess !== previousUpdate && updates?.available === true && updates.preview !== true && updates.pending !== true &&
-      updates.update_available === true && validCommit(updates.latest_commit) && updates.latest_commit === proposal.commit &&
+      softwareUpdateOffered(updates) && updates.latest_commit === proposal.commit &&
       softwareInstalledKey(updates) === proposal.priorInstalled && updates.request_id === proposal.priorRequestId &&
       freshSoftwareCheck(updates) && softwareUpdateCheck === proposal.check &&
       session.authenticated && session.csrf_token === proposal.csrf && !wifiVisibilityBusy && latestStatus?.wifi_visibility?.pending !== true && !radioTaskPending() && !dtmfCodePending() && !messageTaskPending();

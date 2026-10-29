@@ -1,6 +1,6 @@
 # Repeater Box — Pi dashboard
 
-Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.11.0.
+Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.11.1.
 
 Source: [GitHub repository](https://github.com/oliverboryszewski/repeater-box-pi).
 
@@ -221,6 +221,8 @@ The visibility worker log is available with `journalctl -u repeater-wifi-visibil
 Setup guidance appears only while the related setup is incomplete. Password instructions disappear once an admin password exists, including while signed out. Wi-Fi instructions and checklist step 2 disappear once the hotspot profile exists, including when it is inactive. Checklist step 1 disappears when the installed software is running on the Pi. AIOC assignment and radio commissioning remain on the checklist; USB detection alone does not complete either step. The first-audio guidance disappears after the receive monitor is running and the dashboard has received audio during this service run. Fresh installations show the relevant instructions again.
 
 ## Updating an installed box
+
+Version 0.11.1 uses the existing update API 17 and can be installed through the Admin updater after 0.11.0. It clears update results tied to a previous installation and compares version numbers numerically, so an older cached release is never offered as an upgrade. Live radio operation and private settings are preserved.
 
 Version 0.11.0 requires one manual installer upgrade (update API 17). It adds the monitored transmit-audio path, private audio-message library and dispatcher, native activity indicators, and prompt-aware DTMF idle timing. The installer migrates a valid private live profile while preserving station identity, audio gain, channel catalog and prior authorization. It raises the Pi transmit timeout to 40 seconds for uploaded messages up to 30 seconds; keep the radio’s own timeout longer than that. Live operation remains stopped after installation until deliberately restarted. Uploading or previewing a message never transmits. See [Live audio and radio messages](config/LIVE_AUDIO.md).
 

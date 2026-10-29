@@ -454,10 +454,10 @@ function dashboardMarkup() {
   await check('Live repeater retains completed receiver setup state',async()=>{const h=harness();Object.assign(h.status,{svxlink:{installed:true,mode:'repeater'},live_audio:{configured:true,last_packet_at:'2026-10-19T19:00:00+00:00'}});h.ctx.testApi.status(h.status);assert.equal(h.el('audio-setup-help').hidden,true);assert.equal(h.el('input-setup-help').hidden,true);});
   await check('Pair polling preserves option nodes and user selection when presets are unchanged',async()=>{const h=pairHarness();const select=h.el('radio-pair-select');select.value='rpt1';const options=select.children;h.ctx.testApi.status(structuredClone(h.status));assert.equal(select.children,options);assert.equal(select.value,'rpt1');h.status.radio_programming.pair_switching.presets=h.status.radio_programming.pair_switching.presets.filter(p=>p.id!=='rpt1');h.ctx.testApi.status(structuredClone(h.status));assert.notEqual(select.children,options);assert.equal(select.value,'default');});
   await check('Settings switch labels follow loaded and unsaved values',async()=>{const h=harness();h.ctx.testApi.settings({input_enabled:true,record_on_startup:false});assert.equal(h.el('input-enabled').checked,true);assert.equal(h.el('input-enabled-value').textContent,'On');assert.equal(h.el('record-startup-value').textContent,'Off');h.el('input-enabled').checked=false;h.el('record-startup').checked=true;await h.el('settings-form').dispatch('input');assert.equal(h.el('input-enabled-value').textContent,'Off');assert.equal(h.el('record-startup-value').textContent,'On');});
-  await check('Update card shows installed/latest versions and requires admin for either task',async()=>{const h=harness();assert.equal(h.el('software-current-version').textContent,'0.2.2 · aaaaaaa');assert.equal(h.el('software-latest-version').textContent,'0.2.3 · bbbbbbb');assert.equal(h.el('software-updates-state').textContent,'Update available');h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});assert.equal(h.el('software-check').disabled,true);assert.equal(h.el('software-install').disabled,true);await h.el('software-check').dispatch('click');await h.el('software-install').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('software-confirm-dialog').open,false);});
+  await check('Update card shows installed/latest versions and requires admin for either task',async()=>{const h=harness();assert.equal(h.el('software-current-version').textContent,'0.2.2 · aaaaaaa');assert.equal(h.el('software-latest-version').textContent,'0.2.3 · bbbbbbb');assert.equal(h.el('software-updates-state').textContent,'Not checked');h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});assert.equal(h.el('software-check').disabled,true);assert.equal(h.el('software-install').disabled,true);await h.el('software-check').dispatch('click');await h.el('software-install').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('software-confirm-dialog').open,false);});
   await check('Authenticated check sends empty object with CSRF and locks management while pending',async()=>{const h=harness();assert.equal(h.el('settings-fields').disabled,false);await h.el('software-check').dispatch('click');assert.equal(h.posts().length,1);assert.equal(h.posts()[0].path,'/api/software-updates/check');assert.deepEqual(JSON.parse(h.posts()[0].options.body),{});assert.equal(h.posts()[0].options.headers['X-CSRF-Token'],'token-1');assert.equal(h.el('software-updates-state').textContent,'Checking');for(const id of ['software-check','software-install','settings-fields','recording-toggle','wifi-visibility-fields'])assert.equal(h.el(id).disabled,true,id);await h.el('software-check').dispatch('click');assert.equal(h.posts().length,1);});
-  await check('Cached update result is displayed but cannot open Install before a page-local check',async()=>{const h=harness();assert.equal(h.el('software-updates-state').textContent,'Update available');assert.equal(h.el('software-install').disabled,true);assert.match(h.el('software-updates-lock-note').textContent,/Check for updates.*session/);await h.el('software-install').dispatch('click');await h.el('software-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('software-confirm-dialog').open,false);});
-  await check('Matching successful check initiated by this page enables Install',async()=>{const h=harness();await freshUpdateCheck(h);assert.equal(h.el('software-install').disabled,false);});
+  await check('Cached update result needs refreshing and cannot offer Install before a page-local check',async()=>{const h=harness();assert.equal(h.el('software-updates-state').textContent,'Not checked');assert.equal(h.el('software-install').disabled,true);assert.match(h.el('software-updates-lock-note').textContent,/Check for updates.*session/);await h.el('software-install').dispatch('click');await h.el('software-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('software-confirm-dialog').open,false);});
+  await check('Matching successful check initiated by this page offers and enables Install',async()=>{const h=harness();await freshUpdateCheck(h);assert.equal(h.el('software-updates-state').textContent,'Update available');assert.equal(h.el('software-install').disabled,false);});
   await check('A new page cannot reuse the previous page successful check',async()=>{const h=harness();await freshUpdateCheck(h);const reopened=harness({updates:structuredClone(h.status.software_updates)});assert.equal(reopened.el('software-install').disabled,true);await reopened.el('software-install').dispatch('click');assert.equal(reopened.el('software-confirm-dialog').open,false);});
   for(const [name,change]of[
     ['Installed version',h=>{h.status.software_updates.current_version='0.2.4';}],
@@ -469,12 +469,54 @@ function dashboardMarkup() {
   ])await check(`${name} invalidates the page-local update check`,async()=>{const h=harness();await freshUpdateCheck(h);const before=structuredClone(h.status);change(h);h.ctx.testApi.status(structuredClone(h.status));assert.equal(h.el('software-install').disabled,true);h.ctx.testApi.status(before);assert.equal(h.el('software-install').disabled,true);});
   await check('Sign-out and CSRF replacement revoke the page-local check permanently',async()=>{for(const auth of[{configured:true,authenticated:false,csrf_token:null},{configured:true,authenticated:true,csrf_token:'token-2'}]){const h=harness();await freshUpdateCheck(h);h.ctx.testApi.session(auth);h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'token-1'});assert.equal(h.el('software-install').disabled,true);}});
   await check('Starting a new check requires its new successful result',async()=>{const h=harness();await freshUpdateCheck(h);await h.el('software-check').dispatch('click');assert.equal(h.el('software-install').disabled,true);Object.assign(h.status.software_updates,{pending:false,success:false});h.ctx.testApi.status(structuredClone(h.status));assert.equal(h.el('software-install').disabled,true);Object.assign(h.status.software_updates,{success:true});h.ctx.testApi.status(structuredClone(h.status));assert.equal(h.el('software-install').disabled,true);});
+  await check('Older cached release never claims an update even with a stale available message',async()=>{
+    const h=harness({updates:{current_version:'0.11.0',latest_version:'0.10.2',update_available:true,message:'Dashboard update available.'}});
+    assert.equal(h.el('software-current-version').textContent,'0.11.0 · aaaaaaa');
+    assert.equal(h.el('software-latest-version').textContent,'0.10.2 · bbbbbbb');
+    assert.equal(h.el('software-updates-state').textContent,'Not checked');
+    assert.doesNotMatch(h.el('software-updates-message').textContent,/update available/i);
+    assert.match(h.el('software-updates-message').textContent,/refresh|Check for updates/);
+    assert.equal(h.el('software-install').disabled,true);
+    await h.el('software-install').dispatch('click');await h.el('software-confirm-apply').dispatch('click');
+    assert.equal(h.posts().length,0);assert.equal(h.el('software-confirm-dialog').open,false);
+    await freshUpdateCheck(h);
+    assert.equal(h.el('software-updates-state').textContent,'Up to date');
+    assert.match(h.el('software-updates-message').textContent,/installed dashboard is newer/);
+    assert.equal(h.el('software-install').disabled,true);
+    await h.el('software-install').dispatch('click');await h.el('software-confirm-apply').dispatch('click');
+    assert.equal(h.posts().length,0);assert.equal(h.el('software-confirm-dialog').open,false);
+  });
+  for(const [installed,latest]of[['0.9.9','0.10.0'],['0.11.9','0.11.10'],['9.99.99','10.0.0']])await check(`Numeric release comparison offers ${installed} to ${latest}`,async()=>{
+    const h=harness({updates:{current_version:installed,latest_version:latest}});await freshUpdateCheck(h);
+    assert.equal(h.el('software-updates-state').textContent,'Update available');assert.equal(h.el('software-install').disabled,false);
+  });
+  for(const [installed,latest]of[['0.10.0','0.9.9'],['0.11.10','0.11.9'],['10.0.0','9.99.99'],['0.11.0','0.12'],['0.11.0','main'],['unknown','0.12.0']])await check(`Older or invalid release ${installed} to ${latest} cannot install`,async()=>{
+    const h=harness({updates:{current_version:installed,latest_version:latest,update_available:true}});await freshUpdateCheck(h);
+    assert.notEqual(h.el('software-updates-state').textContent,'Update available');assert.equal(h.el('software-install').disabled,true);
+    await h.el('software-install').dispatch('click');await h.el('software-confirm-apply').dispatch('click');
+    assert.equal(h.posts().length,0);assert.equal(h.el('software-confirm-dialog').open,false);
+  });
+  await check('Backend stale marker revokes a page-local successful check',async()=>{
+    const h=harness();await freshUpdateCheck(h);h.status.software_updates.check_stale=true;
+    h.ctx.testApi.status(structuredClone(h.status));assert.equal(h.el('software-updates-state').textContent,'Not checked');
+    assert.equal(h.el('software-install').disabled,true);assert.match(h.el('software-updates-message').textContent,/refresh/);
+    h.status.software_updates.check_stale=false;h.ctx.testApi.status(structuredClone(h.status));assert.equal(h.el('software-install').disabled,true);
+  });
+  await check('Backend install denial blocks even a fresh numeric update offer',async()=>{
+    const h=harness({updates:{can_install:false,message:'Dashboard update available.'}});await freshUpdateCheck(h);
+    assert.notEqual(h.el('software-updates-state').textContent,'Update available');assert.equal(h.el('software-install').disabled,true);
+    assert.doesNotMatch(h.el('software-updates-message').textContent,/update available/i);
+    await h.el('software-install').dispatch('click');assert.equal(h.el('software-confirm-dialog').open,false);assert.equal(h.posts().length,0);
+  });
   await check('Same-version manual installation with unknown commit can seed provenance after fresh check',async()=>{const h=harness({updates:{current_version:'0.8.1',current_commit:null,latest_version:'0.8.1'}});assert.equal(h.el('software-install').disabled,true);await freshUpdateCheck(h);assert.equal(h.el('software-install').disabled,false);});
   await check('Install opens Cancel-first dialog without POST; Cancel restores focus',async()=>{const h=harness();await freshUpdateCheck(h);await h.el('software-install').dispatch('click');assert.equal(h.el('software-confirm-dialog').open,true);assert.equal(h.focused,'software-confirm-cancel');assert.match(h.el('software-confirm-description').textContent,/0\.2\.3.*bbbbbbb/);assert.equal(h.posts().length,0);await h.el('software-confirm-cancel').dispatch('click');assert.equal(h.el('software-confirm-dialog').open,false);assert.equal(h.focused,'software-install');await h.el('software-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);});
   await check('Install Escape cancels without POST',async()=>{const h=harness();await freshUpdateCheck(h);await h.el('software-install').dispatch('click');const e=await h.el('software-confirm-dialog').dispatch('cancel');assert.equal(e.defaultPrevented,true);assert.equal(h.el('software-confirm-dialog').open,false);assert.equal(h.focused,'software-install');assert.equal(h.posts().length,0);});
   await check('Confirmed install sends only selected exact commit after a fresh status',async()=>{const h=harness();await freshUpdateCheck(h);await h.el('software-install').dispatch('click');await h.el('software-confirm-apply').dispatch('click');assert.equal(h.posts().length,1);assert.equal(h.posts()[0].path,'/api/software-updates/install');assert.deepEqual(JSON.parse(h.posts()[0].options.body),{commit:'b'.repeat(40)});assert.equal(h.calls[0].path,'/api/status');assert.equal(h.el('software-updates-state').textContent,'Installing');assert.equal(h.el('software-confirm-dialog').open,false);assert.equal(h.el('software-install').disabled,true);});
   for(const [name,change]of[
     ['Latest commit changed',h=>{h.status.software_updates.latest_commit='c'.repeat(40);}],
+    ['Installed version is now newer',h=>{h.status.software_updates.current_version='0.11.0';}],
+    ['Backend check became stale',h=>{h.status.software_updates.check_stale=true;}],
+    ['Backend install permission was withdrawn',h=>{h.status.software_updates.can_install=false;}],
     ['Installed commit changed',h=>{h.status.software_updates.current_commit='c'.repeat(40);}],
     ['Update request changed',h=>{h.status.software_updates.request_id='other-request';}],
     ['Update no longer available',h=>{h.status.software_updates.update_available=false;}],
