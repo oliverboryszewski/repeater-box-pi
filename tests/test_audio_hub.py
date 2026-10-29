@@ -685,6 +685,86 @@ class AudioHubTest(unittest.TestCase):
         self.hub.subscribe_raw()
         self.assertEqual(self.hub.status()['live_audio']['listeners'], self.hub.MAX_LISTENERS)
 
+    def test_delete_one_reviewed_closed_recording_without_changing_recording_or_feed(self):
+        selected = self.root / 'selected recording.wav'
+        selected.write_bytes(b'closed audio')
+        other = self.root / 'other.wav'; other.write_bytes(b'keep')
+        self.hub.set_recording(True)
+        before = self.hub.status()
+        revision = self.hub.recording_revision(selected.name, selected.stat())
+        self.hub.delete_recording(selected.name, revision)
+        self.assertFalse(selected.exists()); self.assertEqual(other.read_bytes(), b'keep')
+        after = self.hub.status()
+        self.assertEqual(after['recorder']['enabled'], before['recorder']['enabled'])
+        self.assertEqual(after['live_audio']['configured'], before['live_audio']['configured'])
+
+    def test_delete_recording_refuses_stale_replaced_missing_and_invalid_targets(self):
+        selected = self.root / 'selected.wav'; selected.write_bytes(b'old')
+        revision = self.hub.recording_revision(selected.name, selected.stat())
+        selected.unlink(); selected.write_bytes(b'replacement')
+        with self.assertRaises(ValueError):self.hub.delete_recording(selected.name, revision)
+        self.assertEqual(selected.read_bytes(), b'replacement')
+        for name in ('../selected.wav', '/tmp/selected.wav', 'a\\b.wav', '.hidden.wav',
+                     'selected.wav.part', 'settings.json', 'bad\0.wav', 'x'*256+'.wav'):
+            with self.subTest(name=name), self.assertRaises(ValueError):self.hub.delete_recording(name, revision)
+        with self.assertRaises(ValueError):self.hub.delete_recording(selected.name, 'not-a-revision')
+        with self.assertRaises(FileNotFoundError):self.hub.delete_recording('missing.wav', revision)
+        self.assertTrue(selected.exists())
+
+    def test_delete_recording_never_removes_current_recording_or_parts(self):
+        self.hub.set_recording(True); self.hub.feed_packet(packet(0.5))
+        part, final = self.hub._part_path, self.hub._final_path
+        self.assertIsNotNone(part)
+        revision = self.hub.recording_revision(part.name, part.stat())
+        with self.assertRaises(ValueError):self.hub.delete_recording(part.name, revision)
+        final.write_bytes(b'active final path is reserved')
+        revision = self.hub.recording_revision(final.name, final.stat())
+        with self.assertRaises(ValueError):self.hub.delete_recording(final.name, revision)
+        self.assertTrue(part.exists()); self.assertTrue(self.hub.status()['recorder']['active'])
+        final.unlink()
+
+    def test_delete_recording_rejects_symlinks_hardlinks_and_directory_symlinks(self):
+        outside = self.root.parent / (self.root.name+'-outside.wav')
+        outside.write_bytes(b'outside must remain')
+        self.addCleanup(outside.unlink, missing_ok=True)
+        link = self.root / 'linked.wav'; link.symlink_to(outside)
+        with self.assertRaises(OSError):self.hub.delete_recording(link.name, 'a'*64)
+        link.unlink(); os.link(outside, link)
+        revision = self.hub.recording_revision(link.name, link.stat())
+        with self.assertRaises(ValueError):self.hub.delete_recording(link.name, revision)
+        self.assertEqual(outside.read_bytes(), b'outside must remain')
+        parent_link = self.root / 'directory-link'; parent_link.symlink_to(self.root, target_is_directory=True)
+        other = AudioHub(parent_link, self.settings)
+        try:
+            with self.assertRaises(OSError):other.delete_recording(link.name, revision)
+        finally:other.close()
+
+    def test_delete_recording_detects_a_change_after_open_and_preserves_failed_unlinks(self):
+        selected=self.root/'selected.wav';selected.write_bytes(b'old')
+        revision=self.hub.recording_revision(selected.name, selected.stat())
+        real_stat=module.os.stat
+        def changed_stat(*args, **kwargs):
+            if args[0] == selected.name and kwargs.get('dir_fd') is not None:
+                selected.write_bytes(b'changed during confirmation')
+            return real_stat(*args, **kwargs)
+        with mock.patch.object(module.os, 'stat', side_effect=changed_stat):
+            with self.assertRaises(ValueError):self.hub.delete_recording(selected.name, revision)
+        self.assertEqual(selected.read_bytes(), b'changed during confirmation')
+        revision=self.hub.recording_revision(selected.name, selected.stat())
+        with mock.patch.object(module.os, 'unlink', side_effect=OSError('disk fault')):
+            with self.assertRaises(OSError):self.hub.delete_recording(selected.name, revision)
+        self.assertTrue(selected.exists())
+
+    def test_recording_delete_syncs_the_directory_after_unlink(self):
+        selected=self.root/'selected.wav';selected.write_bytes(b'closed')
+        revision=self.hub.recording_revision(selected.name,selected.stat())
+        events=[];real_unlink=module.os.unlink
+        def unlink(*args,**kwargs):
+            events.append('unlink');return real_unlink(*args,**kwargs)
+        with mock.patch.object(module.os,'unlink',side_effect=unlink), mock.patch.object(module.os,'fsync',side_effect=lambda fd:events.append('sync')):
+            self.hub.delete_recording(selected.name,revision)
+        self.assertEqual(events,['unlink','sync']);self.assertFalse(selected.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

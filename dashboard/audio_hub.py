@@ -61,6 +61,7 @@ class AudioHub:
     FREE_DISK_BUFFER = 16 * 1024 * 1024
     SPACE_RETRY_SECONDS = 1.0
     ARCHIVE_NAME = re.compile(r"^rx_\d{8}_\d{6}_[0-9a-f]{12}\.wav$")
+    RECORDING_EXTENSIONS = frozenset((".wav", ".ogg", ".flac", ".mp3"))
 
     def __init__(self, recordings_path, settings, *, monotonic=None,
                  wall_time=None, disk_usage=None, live_mode_probe=None):
@@ -649,6 +650,48 @@ class AudioHub:
         except FileNotFoundError:
             pass
         return sorted(candidates)
+
+    @staticmethod
+    def recording_revision(name, info):
+        """Bind an administrator's reviewed recording to this exact file."""
+        fields = [name, info.st_dev, info.st_ino, info.st_size,
+                  info.st_mtime_ns, info.st_ctime_ns]
+        return hashlib.sha256(json.dumps(fields, separators=(",", ":")).encode()).hexdigest()
+
+    def delete_recording(self, name, revision):
+        """Remove one reviewed closed media file without changing recording."""
+        if (not isinstance(name, str) or not 1 <= len(name.encode("utf-8")) <= 255
+                or name.startswith(".") or any(value in name for value in ("/", "\\", "\0"))
+                or Path(name).suffix.lower() not in self.RECORDING_EXTENSIONS
+                or not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision)):
+            raise ValueError("Choose a saved recording and review it again")
+        with self._lock:
+            if self._closed:
+                raise ValueError("The audio archive is not available")
+            if any(path is not None and path.name == name for path in (self._part_path, self._final_path)):
+                raise ValueError("The current recording cannot be deleted")
+            directory = os.open(self.recordings_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            descriptor = None
+            try:
+                descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                                     dir_fd=directory)
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise ValueError("Only an ordinary saved recording can be deleted")
+                if self.recording_revision(name, info) != revision:
+                    raise ValueError("The recording changed. Review it again before deleting")
+                # The same lock serializes our writer, finalization and retention.
+                # A directory descriptor prevents a renamed parent/symlink from
+                # redirecting this final entry check and unlink to another folder.
+                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+                if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 or self.recording_revision(name, current) != revision:
+                    raise ValueError("The recording changed. Review it again before deleting")
+                os.unlink(name, dir_fd=directory)
+                os.fsync(directory)
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                os.close(directory)
 
     def _prune_locked(self):
         """Age expiry is optional; the archive size cap is always enforced."""
@@ -1267,6 +1310,7 @@ class SstvDecoder(DataDecoder):
     SOURCE_SHA256 = "11729f8e83c4e6776f25e7c795ad5cf8e66f7302f04bf6f1d0851b6c50b3a716"
     COMPAT_PATCH_SHA256 = "c0f7fad544dd72f9cb060e6232626192380e9fa9613897264f079a565370c8e1"
     WRAPPER_SHA256 = "b693e733e30267de9c8d3578e598d9c9c75f5c32908abfea5a4016f3b4527821"
+    DELETE_CLEANUP_MESSAGE = "Picture removed from the gallery; private file cleanup will be retried."
 
     def __init__(self, state_dir, audio_hub, *, enabled=False,
                  decoder_path=DECODER_PATH, sox_path=DataDecoder.SOX_PATH,
@@ -1350,6 +1394,7 @@ class SstvDecoder(DataDecoder):
             return False
 
     def _load_images(self):
+        self._recover_image_deletions()
         entries, seen = [], set()
         with os.scandir(self.directory) as folder:
             for count, entry in enumerate(folder, 1):
@@ -1415,6 +1460,7 @@ class SstvDecoder(DataDecoder):
         if value is None or value["lines_received"] == 0 or value.get("saved"):
             return
         self._check_directory()
+        self._recover_image_deletions()
         png = self._png(self._pixels)
         if len(png) > self.MAX_PNG_BYTES:
             raise ValueError("SSTV PNG exceeds its limit")
@@ -1543,8 +1589,103 @@ class SstvDecoder(DataDecoder):
         if type(limit) is not int or not 1 <= limit <= SstvDecoder.MAX_IMAGES:
             raise ValueError("Invalid SSTV gallery limit")
         with self._lock:
-            return [{key: item for key, item in value.items() if key != "sha256"}
+            return [{**{key: item for key, item in value.items() if key != "sha256"},
+                     "revision": value["sha256"]}
                     for value in list(self._images)[-limit:][::-1]]
+
+    def _sync_image_directory(self):
+        descriptor = os.open(self.directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+    def _recover_image_deletions(self, *, commit_synced=False):
+        """Finish committed private deletions after an interruption or restart.
+
+        Moving the metadata out of its canonical name is the commit point.
+        An interrupted cleanup can leave an owned PNG and a private tombstone,
+        but can never make that picture return to the visible gallery.
+        """
+        cleaned = False
+        for count, tombstone in enumerate(self.directory.glob(".deleted-image-*.json"), 1):
+            if count > self.MAX_IMAGES + 1:
+                raise ValueError("Too many pending picture deletions")
+            match = re.fullmatch(r"\.deleted-image-([0-9a-f]{32})-[0-9a-f]{32}\.json", tombstone.name)
+            if not match:
+                continue
+            value = json.loads(self._read_owned(tombstone, owner=os.getuid(), maximum=4096))
+            if not self._valid_image(value) or value["id"] != match[1]:
+                raise ValueError("Invalid pending picture deletion")
+            if os.path.lexists(self.directory / (value["id"] + ".json")):
+                raise ValueError("A pending picture deletion conflicts with a saved image")
+            if not commit_synced:
+                # A prior process may have stopped immediately after rename.
+                # Make that commit durable before removing the picture data.
+                self._sync_image_directory()
+            path = self.directory / (value["id"] + ".png")
+            try:
+                before = AudioHub.recording_revision(path.name, path.lstat())
+                raw = self._read_owned(path, owner=os.getuid(), maximum=self.MAX_PNG_BYTES)
+            except FileNotFoundError:
+                pass
+            else:
+                if len(raw) != value["size_bytes"] or hashlib.sha256(raw).hexdigest() != value["sha256"]:
+                    raise ValueError("A pending deletion does not match its picture")
+                if AudioHub.recording_revision(path.name, path.lstat()) != before:
+                    raise ValueError("A pending deletion's picture changed during cleanup")
+                path.unlink()
+            tombstone.unlink()
+            self._sync_image_directory()
+            cleaned = True
+        if self._error == self.DELETE_CLEANUP_MESSAGE:
+            # A final directory sync can fail after the tombstone itself was
+            # removed. Retrying that sync still completes the pending cleanup.
+            if not cleaned:
+                self._sync_image_directory()
+            self._error = None
+
+    def delete_image(self, identifier, revision):
+        """Delete one reviewed saved PNG and its metadata without stopping RX."""
+        if (not isinstance(identifier, str) or not self.ID.fullmatch(identifier)
+                or not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision)):
+            raise ValueError("Choose a saved picture and review it again")
+        with self._lock:
+            self._check_directory()
+            self._recover_image_deletions()
+            if self._current is not None and self._current["id"] == identifier and self._phase == "receiving":
+                raise ValueError("The picture currently being received cannot be deleted")
+            value = next((image for image in self._images if image["id"] == identifier), None)
+            if value is None:
+                raise FileNotFoundError("The picture is no longer in the gallery")
+            if value["sha256"] != revision:
+                raise ValueError("The picture changed. Review it again before deleting")
+            metadata = self.directory / (identifier + ".json")
+            metadata_revision = AudioHub.recording_revision(metadata.name, metadata.lstat())
+            raw = self._read_owned(metadata, owner=os.getuid(), maximum=4096)
+            if json.loads(raw) != value:
+                raise ValueError("The picture metadata changed. Review it again")
+            png, _ = self.image(identifier)
+            if hashlib.sha256(png).hexdigest() != revision:
+                raise ValueError("The picture changed. Review it again before deleting")
+            if AudioHub.recording_revision(metadata.name, metadata.lstat()) != metadata_revision:
+                raise ValueError("The picture metadata changed during review")
+            tombstone = self.directory / (".deleted-image-" + identifier + "-" + uuid.uuid4().hex + ".json")
+            metadata.rename(tombstone)
+            self._images.remove(value)
+            self._total_bytes -= value["size_bytes"]
+            if self._current is not None and self._current["id"] == identifier:
+                self._current = self._pixels = None
+                self._previews.clear()
+                self._phase = "idle"
+            try:
+                self._sync_image_directory()
+                self._recover_image_deletions(commit_synced=True)
+            except (OSError, ValueError):
+                # The visible deletion is already committed. Preserve its
+                # tombstone so the exact files can be cleaned up on retry or
+                # restart, rather than recreating a half-deleted gallery item.
+                self._error = self.DELETE_CLEANUP_MESSAGE
 
     def image(self, identifier=None, revision=None, current_id=None):
         with self._lock:

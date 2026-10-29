@@ -20,10 +20,12 @@ const source = fs.readFileSync(path.resolve(__dirname, '../dashboard/static/app.
   softwareProgressState() { renderSoftwareCheckProgress(); },
   dataState() { renderData(); },
   dataRefresh(force=false) { return refreshDataStatus(force); },
+  recordings(value) { latestStatus = {...latestStatus,recordings:value}; renderRecordings(value); renderAdmin(); },
+  selectRecording(id) { selectRecording(id); },
   tab(name) { selectTab(name); },
   };\n})();`);
 function harness({preview=false, hidden=false, updates={}, radios={}, stationIdentification={},messages={},data={},sstv={}}={}) {
-  let focused = null, onStatus = null, onActivity = null, onSoftwareStatus = null, onSoftwareRequest = null, onDataStatus = null, onDataRequest = null, onSstvRequest = null, failActivity = false, failRefresh = false, pairError = null, messageError = null, stationIdError = null, stationIdResult = null, softwareRequests = 1;
+  let focused = null, onStatus = null, onActivity = null, onSoftwareStatus = null, onSoftwareRequest = null, onDataStatus = null, onDataRequest = null, onSstvRequest = null, onMediaStatus = null, onMediaDelete = null, failActivity = false, failRefresh = false, pairError = null, messageError = null, stationIdError = null, stationIdResult = null, softwareRequests = 1;
   const elements = new Map(), calls=[], timers=new Map();let timerId=0;
   class Element {
     constructor(id='') {this.id=id;this.listeners={};this.attrs={};this.dataset={};this.open=false;this.classList={add(){},remove(){},toggle(){}};this.value='';this.children=[];this.firstChild={nodeType:3,nodeValue:''};}
@@ -31,7 +33,7 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
     async dispatch(type,extra={}){const event={type,target:this,...extra,preventDefault(){this.defaultPrevented=true;}};for(const fn of this.listeners[type]??[]) await fn(event);return event;}
     setAttribute(k,v){this.attrs[k]=v;} getAttribute(k){return this.attrs[k]??null;} removeAttribute(k){delete this.attrs[k];if(k==='src')delete this.src;}
     replaceChildren(...nodes){this.children=nodes;} append(...nodes){this.children.push(...nodes);} add(node){this.children.push(node);}
-    focus(){focused=this.id;} pause(){} load(){}
+    focus(){focused=this.id;} pause(){this.pauseCount=(this.pauseCount||0)+1;} load(){this.loadCount=(this.loadCount||0)+1;}
     setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}
     showModal(){assert.equal(this.open,false);this.open=true;}
     close(){this.open=false;for(const fn of this.listeners.close??[])fn({});}
@@ -52,6 +54,22 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
       return{ok:true,json:async()=>structuredClone(status)};
     }
     if(path==='/api/activity'){if(onActivity)await onActivity();if(failActivity)throw new Error('offline');return{ok:true,json:async()=>structuredClone(status.radio_activity||{available:false,receiving:null,transmitting:null})};}
+    if(path==='/api/recordings/status'||path==='/api/sstv/status'){
+      if(onMediaStatus){const response=await onMediaStatus(path);if(response)return response;}
+      return{ok:true,json:async()=>path==='/api/recordings/status'?({recordings:structuredClone(status.recordings),recorder:structuredClone(status.recorder)}):({sstv:structuredClone(status.sstv)})};
+    }
+    if(path==='/api/recordings/delete'||path==='/api/sstv/delete'){
+      if(onMediaDelete){const response=await onMediaDelete(path,options);if(response)return response;}
+      const body=JSON.parse(options.body);
+      if(path==='/api/recordings/delete'){
+        status.recordings.files=status.recordings.files.filter(item=>item.id!==body.id);
+        status.recordings.count=status.recordings.files.length;status.recordings.total_bytes=status.recordings.files.reduce((total,item)=>total+item.bytes,0);
+        return{ok:true,json:async()=>({recordings:structuredClone(status.recordings),recorder:structuredClone(status.recorder)})};
+      }
+      status.sstv.images=status.sstv.images.filter(item=>item.id!==body.id);status.sstv.image_count=status.sstv.images.length;
+      if(status.sstv.current?.id===body.id){status.sstv.current=null;status.sstv.phase='idle';}
+      return{ok:true,json:async()=>({sstv:structuredClone(status.sstv)})};
+    }
     if(path==='/api/data/status'){
       if(onDataStatus){const response=await onDataStatus();if(response)return response;}
       return{ok:true,json:async()=>({data:structuredClone(status.data),sstv:structuredClone(status.sstv)})};
@@ -123,7 +141,7 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
     throw new Error(`unexpected fetch ${path}`);
   }};
   vm.createContext(ctx);vm.runInContext(source,ctx);ctx.testApi.setup(structuredClone(status),structuredClone(auth));
-  return{ctx,el,calls,timers,set onActivity(fn){onActivity=fn;},set onDataStatus(fn){onDataStatus=fn;},set onDataRequest(fn){onDataRequest=fn;},set onSstvRequest(fn){onSstvRequest=fn;},set failActivity(value){failActivity=value;},get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set onSoftwareStatus(fn){onSoftwareStatus=fn;},set onSoftwareRequest(fn){onSoftwareRequest=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},set messageError(value){messageError=value;},set stationIdError(value){stationIdError=value;},set stationIdResult(value){stationIdResult=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
+  return{ctx,el,calls,timers,set onActivity(fn){onActivity=fn;},set onDataStatus(fn){onDataStatus=fn;},set onDataRequest(fn){onDataRequest=fn;},set onSstvRequest(fn){onSstvRequest=fn;},set onMediaStatus(fn){onMediaStatus=fn;},set onMediaDelete(fn){onMediaDelete=fn;},set failActivity(value){failActivity=value;},get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set onSoftwareStatus(fn){onSoftwareStatus=fn;},set onSoftwareRequest(fn){onSoftwareRequest=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},set messageError(value){messageError=value;},set stationIdError(value){stationIdError=value;},set stationIdResult(value){stationIdResult=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
 }
 const checks=[];
 async function check(name,fn){try{await fn();checks.push(name);}catch(error){throw new Error(name,{cause:error});}}
@@ -182,6 +200,18 @@ function setSstv(h,changes) {
 function messageEntry(id='1'.repeat(32),name='Field message.wav') {
  return{id,sha256:'d'.repeat(64),name,duration_seconds:12.4,bytes:1190444,created_at:'2026-10-29T19:00:00+00:00',preview_url:`/api/messages/${id}/audio`};
 }
+function recordingEntry(id='rx_test.wav',changes={}) {
+ return{id,name:id,bytes:4096,modified_at:'2026-10-30T12:00:00Z',url:'/recordings/'+encodeURIComponent(id),delete_revision:'a'.repeat(64),can_delete:true,...changes};
+}
+async function mediaHarness(kind,options={}) {
+ const first=recordingEntry();const picture=sstvImage('a'.repeat(32),{revision:'b'.repeat(64),can_delete:true});
+ const h=harness({...options,sstv:{images:[picture],...options.sstv}});
+ h.status.recordings={files:[first],count:1,total_bytes:first.bytes};
+ h.ctx.testApi.recordings(structuredClone(h.status.recordings));
+ if(kind==='recording'){h.ctx.testApi.tab('archives');h.ctx.testApi.selectRecording(first.id);}
+ else await showData(h);
+ h.calls.length=0;return h;
+}
 function messageHarness(options={}) {
  return pairHarness({...options,messages:{messages:[messageEntry()],...options.messages}});
 }
@@ -207,6 +237,103 @@ function dashboardMarkup() {
   return{html,ids,nodes,inside};
 }
 (async()=>{
+  await check('Saved-media delete controls are admin-only and use a permanent-delete confirmation dialog',async()=>{
+    const {ids}=dashboardMarkup();
+    for(const id of['recording-delete','sstv-delete']){assert.equal(ids.get(id).tag,'button');assert.equal(ids.get(id).attrs['aria-controls'],'media-delete-dialog');assert.equal(ids.get(id).attrs['aria-haspopup'],'dialog');assert.ok(Object.hasOwn(ids.get(id).attrs,'hidden'));}
+    assert.equal(ids.get('media-delete-dialog').tag,'dialog');assert.ok(Object.hasOwn(ids.get('media-delete-cancel').attrs,'autofocus'));
+    const h=await mediaHarness('recording',{preview:true});assert.equal(h.el('recording-delete').hidden,true);assert.equal(h.el('sstv-delete').hidden,true);
+    await h.el('recording-delete').dispatch('click');await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('media-delete-dialog').open,false);
+  });
+  for(const kind of['recording','image'])await check(`${kind} deletion is reviewed without any POST and Cancel keeps media playback intact`,async()=>{
+    const h=await mediaHarness(kind);const button=kind==='recording'?'recording-delete':'sstv-delete';const pauses=h.el('recording-audio').pauseCount||0;
+    await h.el(button).dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('media-delete-dialog').open,true);assert.equal(h.focused,'media-delete-cancel');
+    assert.match(h.el('media-delete-effect').textContent,/permanently deletes/);assert.match(h.el('media-delete-description').textContent,kind==='recording'?/rx_test\.wav/:/[a-f0-9]{32}\.png/);
+    await h.el('media-delete-cancel').dispatch('click');assert.equal(h.el('media-delete-dialog').open,false);assert.equal(h.el('media-delete-description').textContent,'');assert.equal(h.posts().length,0);assert.equal(h.el('recording-audio').pauseCount||0,pauses);
+  });
+  await check('Audio deletion refreshes lightweight inventory and posts only reviewed ID and revision with CSRF',async()=>{
+    const h=await mediaHarness('recording');await h.el('recording-delete').dispatch('click');await h.el('media-delete-apply').dispatch('click');
+    assert.deepEqual(h.calls.map(call=>call.path),['/api/recordings/status','/api/recordings/delete']);const request=h.posts()[0];assert.deepEqual(JSON.parse(request.options.body),{id:'rx_test.wav',revision:'a'.repeat(64)});
+    assert.equal(request.options.headers['X-CSRF-Token'],'token-1');assert.equal(request.options.credentials,'same-origin');assert.equal(h.el('recording-player').hidden,true);assert.equal(h.el('recording-audio').attrs.src,undefined);assert.equal(h.el('recordings-empty').hidden,false);assert.equal(h.el('recording-delete-message').textContent,'Recording deleted.');
+  });
+  await check('SSTV deletion refreshes its private inventory and removes the selected picture without changing receiver preferences',async()=>{
+    const h=await mediaHarness('image',{sstv:{enabled:true}});await h.el('sstv-delete').dispatch('click');await h.el('media-delete-apply').dispatch('click');
+    assert.deepEqual(h.calls.map(call=>call.path),['/api/sstv/status','/api/sstv/delete']);assert.deepEqual(JSON.parse(h.posts()[0].options.body),{id:'a'.repeat(32),revision:'b'.repeat(64)});
+    assert.equal(h.el('sstv-selected').hidden,true);assert.equal(h.el('sstv-selected-image').attrs.src,undefined);assert.equal(h.el('sstv-download').attrs.href,undefined);assert.equal(h.el('sstv-gallery').children.length,0);assert.equal(h.el('sstv-enabled').checked,true);assert.equal(h.el('sstv-delete-message').textContent,'Picture deleted.');
+  });
+  await check('Deleting one picture selects the next saved picture while retaining the ongoing receive preview',async()=>{
+    const second=sstvImage('c'.repeat(32),{revision:'c'.repeat(64),can_delete:true});
+    const h=await mediaHarness('image',{sstv:{enabled:true,phase:'receiving',current:sstvCurrent(),images:[sstvImage('a'.repeat(32),{revision:'b'.repeat(64)}),second]}});
+    const preview=h.el('sstv-current-image').attrs.src;await h.el('sstv-delete').dispatch('click');await h.el('media-delete-apply').dispatch('click');
+    assert.equal(h.el('sstv-selected-image').attrs.src,`/api/sstv/images/${second.id}.png`);assert.equal(h.el('sstv-current-image').attrs.src,preview);assert.equal(h.el('sstv-gallery').children.length,1);
+  });
+  for(const kind of['recording','image'])await check(`${kind} replaced after review is not deleted using an old revision`,async()=>{
+    const h=await mediaHarness(kind);await h.el(kind==='recording'?'recording-delete':'sstv-delete').dispatch('click');
+    h.onMediaStatus=()=>{if(kind==='recording')h.status.recordings.files[0].delete_revision='f'.repeat(64);else h.status.sstv.images[0].revision='f'.repeat(64);};
+    await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('media-delete-dialog').open,false);assert.match(h.el(kind==='recording'?'recording-delete-message':'sstv-delete-message').textContent,/changed or is no longer available/);
+  });
+  for(const [name,change]of[
+    ['missing revision',h=>{h.status.recordings.files[0].delete_revision=undefined;}],
+    ['active clip',h=>{h.status.recorder.current_file='rx_test.wav.part';}],
+    ['backend refuses deletion',h=>{h.status.recordings.files[0].can_delete=false;}],
+    ['unsafe filename',h=>{h.status.recordings.files[0].id='../other.wav';}]
+  ])await check(`Audio ${name} cannot open or force a deletion`,async()=>{
+    const h=await mediaHarness('recording');change(h);h.ctx.testApi.status(structuredClone(h.status));h.ctx.testApi.recordings(structuredClone(h.status.recordings));h.ctx.testApi.selectRecording(h.status.recordings.files[0].id);
+    assert.equal(h.el('recording-delete').disabled,true);await h.el('recording-delete').dispatch('click');await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,0);
+  });
+  await check('A picture still receiving cannot be deleted even if stale inventory lists it',async()=>{
+    const current=sstvCurrent({id:'a'.repeat(32)});const h=await mediaHarness('image',{sstv:{enabled:true,phase:'receiving',current}});
+    assert.equal(h.el('sstv-delete').disabled,true);await h.el('sstv-delete').dispatch('click');await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,0);
+  });
+  for(const [name,interrupt]of[
+    ['Cancel',async h=>h.el('media-delete-cancel').dispatch('click')],
+    ['Escape',async h=>h.el('media-delete-dialog').dispatch('cancel')],
+    ['sign-out',async h=>h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null})],
+    ['another tab',async h=>h.ctx.testApi.tab('overview')],
+    ['a hidden page',async h=>{h.ctx.document.hidden=true;h.ctx.testApi.dataState();}],
+    ['another selected file',async h=>{h.ctx.testApi.selectRecording('second.wav');}]
+  ])await check(`A pending delete review interrupted by ${name} cannot later send a POST`,async()=>{
+    const h=await mediaHarness('recording');h.status.recordings.files.push(recordingEntry('second.wav',{delete_revision:'d'.repeat(64)}));h.ctx.testApi.recordings(structuredClone(h.status.recordings));
+    await h.el('recording-delete').dispatch('click');let release;h.onMediaStatus=()=>new Promise(resolve=>{release=resolve;});const pending=h.el('media-delete-apply').dispatch('click');await interrupt(h);
+    release({ok:true,json:async()=>({recordings:structuredClone(h.status.recordings),recorder:h.status.recorder})});await pending;assert.equal(h.posts().length,0);
+    if(name==='sign-out'){assert.equal(h.el('recording-delete').hidden,true);assert.equal(h.el('media-delete-description').textContent,'');assert.equal(h.el('media-delete-dialog').open,false);}
+  });
+  await check('A late forbidden media response does not sign out a newer admin session',async()=>{
+    const h=await mediaHarness('recording');await h.el('recording-delete').dispatch('click');let release;h.onMediaStatus=()=>new Promise(resolve=>{release=resolve;});const pending=h.el('media-delete-apply').dispatch('click');
+    h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'new-session'});release({ok:false,status:403,json:async()=>({error:'Old session expired'})});await pending;
+    assert.equal(h.el('admin-state').textContent,'Signed in');assert.equal(h.el('recording-delete').hidden,false);assert.equal(h.posts().length,0);assert.equal(h.el('media-delete-dialog').open,false);
+  });
+  await check('An uncertain network outcome blocks repeated deletion until a fresh inventory confirms the result',async()=>{
+    const h=await mediaHarness('recording');h.onMediaDelete=()=>{h.status.recordings={files:[],count:0,total_bytes:0};throw new TypeError('disconnected after request');};
+    await h.el('recording-delete').dispatch('click');await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,1);assert.equal(h.el('recording-delete').disabled,true);assert.match(h.el('recording-delete-message').textContent,/Refresh to check whether deletion finished/);
+    await h.el('recording-delete').dispatch('click');await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,1);
+    await h.ctx.testApi.refresh();assert.equal(h.el('recording-player').hidden,true);assert.equal(h.el('recordings-empty').hidden,false);assert.equal(h.posts().length,1);
+  });
+  await check('Deletion failure leaves an existing recording and its playback alone',async()=>{
+    const h=await mediaHarness('recording');const source=h.el('recording-audio').src,pauses=h.el('recording-audio').pauseCount;
+    h.onMediaDelete=()=>({ok:false,status:409,json:async()=>({error:'Recording changed before deletion'})});await h.el('recording-delete').dispatch('click');await h.el('media-delete-apply').dispatch('click');
+    assert.equal(h.el('recording-audio').src,source);assert.equal(h.el('recording-audio').pauseCount,pauses);assert.equal(h.el('recording-player').hidden,false);assert.match(h.el('recording-delete-message').textContent,/Recording changed/);
+  });
+  await check('Recording names in the deletion review remain plain text',async()=>{
+    const name='<img onerror=alert(1)>.wav';const h=await mediaHarness('recording');h.status.recordings.files=[recordingEntry(name)];h.ctx.testApi.recordings(structuredClone(h.status.recordings));h.ctx.testApi.selectRecording(name);
+    await h.el('recording-delete').dispatch('click');assert.match(h.el('media-delete-description').textContent,/<img onerror=alert\(1\)>\.wav/);assert.equal(h.el('media-delete-description').innerHTML,undefined);assert.equal(h.posts().length,0);
+  });
+  await check('A full status response started before audio deletion cannot resurrect the removed inventory',async()=>{
+    const h=await mediaHarness('recording');let release;h.onStatus=()=>new Promise(resolve=>{release=resolve;});const snapshot=h.ctx.testApi.refresh();const old=structuredClone(h.status.recordings);
+    await h.el('recording-delete').dispatch('click');await h.el('media-delete-apply').dispatch('click');h.status.recordings=old;release();await snapshot;
+    assert.equal(h.el('recording-player').hidden,true);assert.equal(h.el('recordings-empty').hidden,false);assert.equal(h.posts().length,1);
+  });
+  await check('Deleting the reviewed audio clip does not stop another recording selected while its request is pending',async()=>{
+    const h=await mediaHarness('recording');h.status.recordings.files.push(recordingEntry('second.wav',{delete_revision:'d'.repeat(64)}));h.ctx.testApi.recordings(structuredClone(h.status.recordings));
+    await h.el('recording-delete').dispatch('click');let release;h.onMediaDelete=()=>new Promise(resolve=>{release=resolve;});const pending=h.el('media-delete-apply').dispatch('click');
+    for(let i=0;i<20&&!release;i++)await Promise.resolve();assert.equal(typeof release,'function');h.ctx.testApi.selectRecording('second.wav');const source=h.el('recording-audio').src,pauses=h.el('recording-audio').pauseCount;
+    h.status.recordings.files=h.status.recordings.files.filter(item=>item.id==='second.wav');release({ok:true,json:async()=>({recordings:structuredClone(h.status.recordings),recorder:h.status.recorder})});await pending;
+    assert.equal(h.el('recording-audio').src,source);assert.equal(h.el('recording-audio').pauseCount,pauses);assert.equal(h.el('recording-player').hidden,false);assert.equal(h.posts().length,1);
+  });
+  await check('A stale full status snapshot cannot restore a deleted SSTV picture or old image URLs',async()=>{
+    const h=await mediaHarness('image');let release;h.onStatus=()=>new Promise(resolve=>{release=resolve;});const snapshot=h.ctx.testApi.refresh();const old=structuredClone(h.status.sstv);
+    await h.el('sstv-delete').dispatch('click');await h.el('media-delete-apply').dispatch('click');h.status.sstv=old;release();await snapshot;
+    assert.equal(h.el('sstv-gallery').children.length,0);assert.equal(h.el('sstv-selected-image').attrs.src,undefined);assert.equal(h.el('sstv-download').attrs.href,undefined);assert.equal(h.posts().length,1);
+  });
   await check('Data controls have their own tab alongside SSTV and keep packet exports explicit',async()=>{
     const {html,ids,inside}=dashboardMarkup();assert.equal(inside('data-card','panel-data'),true);assert.equal(inside('data-card','panel-live'),false);assert.equal(inside('sstv-card','panel-data'),true);assert.equal(ids.get('tab-data').attrs['aria-controls'],'panel-data');
     assert.equal(ids.get('data-enabled').attrs.role,'switch');assert.equal(ids.get('data-enabled').attrs['aria-labelledby'],'data-enabled-label');

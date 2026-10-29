@@ -75,6 +75,11 @@
   let sstvGalleryKey = null;
   let sstvPreviewKey = "";
   let sstvSelectedId = "";
+  let mediaDeleteProposal = null;
+  let mediaDeleteBusy = false;
+  let mediaDeleteUncertain = false;
+  let mediaRevision = 0;
+  const mediaDeleteMessages = { recording: "", image: "" };
   let audioContext = null;
   let audioGain = null;
   let liveController = null;
@@ -196,6 +201,7 @@
     const url = recording ? recordingUrl(recording.url) : null;
     selectedRecording = recording && url ? id : "";
     byId("recording-player").hidden = !selectedRecording;
+    renderMediaDeleteControls();
     if (url === selectedRecordingUrl) return;
     audio.pause();
     audio.removeAttribute("src");
@@ -226,7 +232,175 @@
     }
     if (files.has(selectedRecording)) select.value = selectedRecording;
     else selectRecording("");
+    renderMediaDeleteControls();
   }
+
+  function mediaAdmin() {
+    return sessionKnown && session.authenticated && typeof session.csrf_token === "string" && !!session.csrf_token;
+  }
+
+  function mediaEntry(kind) {
+    return kind === "recording" ? files.get(selectedRecording)
+      : sstvImages(latestStatus?.sstv).find(image => image.id === sstvSelectedId);
+  }
+
+  function mediaEntryRevision(kind, entry) {
+    const value = kind === "recording" ? entry?.delete_revision : entry?.revision;
+    return typeof value === "string" && /^[0-9a-f]{64}$/.test(value) ? value : null;
+  }
+
+  function mediaEntryDeletable(kind, entry) {
+    if (!entry || !mediaEntryRevision(kind,entry) || entry.can_delete === false) return false;
+    if (kind === "recording") {
+      return typeof entry.id === "string" && entry.id.length <= 255 && !/^[.]|[\\/\x00-\x1f]/.test(entry.id) &&
+        /\.(wav|ogg|flac|mp3)$/i.test(entry.id) && finite(entry.bytes) && entry.bytes >= 0 &&
+        latestStatus?.recorder?.current_file !== entry.id && latestStatus?.recorder?.current_file !== `${entry.id}.part`;
+    }
+    return sstvId(entry.id) && !(latestStatus?.sstv?.phase === "receiving" && latestStatus.sstv.current?.id === entry.id);
+  }
+
+  function mediaPanelVisible(kind) {
+    return !document.hidden && byId(kind === "recording" ? "panel-archives" : "panel-data").hidden === false;
+  }
+
+  function mediaSnapshot(kind, entry) {
+    if (!mediaEntryDeletable(kind,entry)) return null;
+    return JSON.stringify([entry.id,mediaEntryRevision(kind,entry),kind === "recording" ? entry.name : entry.mode,
+      kind === "recording" ? entry.modified_at : entry.created_at,kind === "recording" ? entry.bytes : entry.size_bytes,
+      kind === "image" ? entry.complete : null,kind === "image" ? entry.lines_received : null]);
+  }
+
+  function canDeleteMedia(kind) {
+    return mediaAdmin() && mediaPanelVisible(kind) && !mutationBusy && !mediaDeleteBusy && !mediaDeleteUncertain &&
+      mediaEntryDeletable(kind,mediaEntry(kind));
+  }
+
+  function mediaProposalCurrent(proposal) {
+    return mediaAdmin() && session.csrf_token === proposal.csrf && mediaPanelVisible(proposal.kind) &&
+      mediaSnapshot(proposal.kind,mediaEntry(proposal.kind)) === proposal.snapshot;
+  }
+
+  function renderMediaDeleteControls() {
+    const signedIn = mediaAdmin();
+    for (const [kind,buttonId,messageId] of [["recording","recording-delete","recording-delete-message"],["image","sstv-delete","sstv-delete-message"]]) {
+      byId(buttonId).hidden = !signedIn;
+      byId(buttonId).disabled = !canDeleteMedia(kind);
+      byId(messageId).hidden = !signedIn;
+      message(messageId,signedIn ? mediaDeleteMessages[kind] : "",/deleted\.$/.test(mediaDeleteMessages[kind]) ? "success" : "error");
+    }
+    if (mediaDeleteProposal && (!signedIn || session.csrf_token !== mediaDeleteProposal.csrf || !mediaPanelVisible(mediaDeleteProposal.kind))) closeMediaDeleteConfirmation(false);
+    byId("media-delete-apply").disabled = !mediaDeleteProposal || mediaDeleteBusy || mutationBusy || !mediaProposalCurrent(mediaDeleteProposal);
+  }
+
+  function closeMediaDeleteConfirmation(restoreFocus = true) {
+    const kind = mediaDeleteProposal?.kind;
+    mediaDeleteProposal = null;
+    const dialog = byId("media-delete-dialog");
+    if (dialog.open) dialog.close();
+    setText("media-delete-title","Delete this saved file?");
+    setText("media-delete-description",""); message("media-delete-error","");
+    byId("media-delete-apply").disabled = true;
+    if (restoreFocus && kind) {
+      const button = byId(kind === "recording" ? "recording-delete" : "sstv-delete");
+      if (!button.hidden && !button.disabled) button.focus();
+    }
+  }
+
+  function showMediaDeleteConfirmation(kind) {
+    if (!canDeleteMedia(kind)) return;
+    const entry = mediaEntry(kind);
+    const proposal = {kind,id:entry.id,revision:mediaEntryRevision(kind,entry),snapshot:mediaSnapshot(kind,entry),csrf:session.csrf_token};
+    mediaDeleteProposal = proposal; mediaDeleteMessages[kind] = "";
+    setText("media-delete-title",kind === "recording" ? "Delete this recording?" : "Delete this picture?");
+    const name = kind === "recording" ? entry.id : `${typeof entry.mode === "string" ? entry.mode : "SSTV"} · ${entry.id}.png`;
+    const details = `${localTime(kind === "recording" ? entry.modified_at : entry.created_at,true)} · ${formatBytes(kind === "recording" ? entry.bytes : entry.size_bytes)}`;
+    setText("media-delete-description",`${name}\n${details}${kind === "image" && !entry.complete ? ` · Partial (${entry.lines_received}/${entry.height} lines)` : ""}`);
+    setText("media-delete-effect",kind === "recording"
+      ? "This permanently deletes this saved recording from the Pi. Download a copy first if you want to keep it. Current recording and live radio operation continue."
+      : "This permanently deletes this picture and its gallery information from the Pi. Download a copy first if you want to keep it. SSTV reception and live radio operation continue.");
+    message("media-delete-error","");
+    const dialog = byId("media-delete-dialog");
+    if (typeof dialog.showModal !== "function") {
+      closeMediaDeleteConfirmation(false);mediaDeleteMessages[kind]="Use a current browser to review and confirm deletion.";renderMediaDeleteControls();return;
+    }
+    dialog.showModal();renderMediaDeleteControls();byId("media-delete-cancel").focus();
+  }
+
+  async function mediaJson(path, csrf, body) {
+    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(),8000);
+    const options = {cache:"no-store",credentials:"same-origin",signal:controller.signal,headers:{Accept:"application/json"}};
+    if (body) Object.assign(options,{method:"POST",body:JSON.stringify(body),headers:{...options.headers,"Content-Type":"application/json","X-CSRF-Token":csrf}});
+    try {
+      const response = await fetch(path,options);
+      let result;
+      try { result = await response.json(); } catch (_) { throw new Error("The Pi returned an unreadable media response."); }
+      if (!response.ok) {
+        if ((response.status === 401 || response.status === 403) && session.csrf_token === csrf) {
+          session.authenticated = false;session.csrf_token = null;renderAdmin();
+        }
+        throw new Error(typeof result?.error === "string" ? result.error : `Media request failed (${response.status}).`);
+      }
+      return result;
+    } catch (error) {
+      if (error.name === "AbortError") throw new Error("The Pi took too long to respond.");
+      if (error instanceof TypeError) throw new Error("Cannot reach the Pi. Check your connection.");
+      throw error;
+    } finally { clearTimeout(timeout); }
+  }
+
+  function updateMediaInventory(kind, result) {
+    if (kind === "recording") {
+      if (!result?.recordings || !Array.isArray(result.recordings.files)) throw new Error("The Pi returned an unreadable recording inventory.");
+      mediaRevision += 1;
+      latestStatus = {...latestStatus,recordings:result.recordings,...(result.recorder ? {recorder:result.recorder} : {})};
+      renderRecordings(result.recordings);
+    } else {
+      if (!result?.sstv || !Array.isArray(result.sstv.images)) throw new Error("The Pi returned an unreadable picture inventory.");
+      mediaRevision += 1; dataRevision += 1;
+      latestStatus = {...latestStatus,sstv:result.sstv};renderData();
+    }
+  }
+
+  async function applyMediaDeletion() {
+    const proposal = mediaDeleteProposal;
+    if (!proposal || !byId("media-delete-dialog").open || !canDeleteMedia(proposal.kind) || !mediaProposalCurrent(proposal)) return;
+    mediaDeleteBusy = true;mutationBusy = true;stopDataPolling();renderAdmin();
+    let issued = false;
+    try {
+      const fresh = await mediaJson(proposal.kind === "recording" ? "/api/recordings/status" : "/api/sstv/status",proposal.csrf);
+      if (!mediaAdmin() || session.csrf_token !== proposal.csrf) return;
+      updateMediaInventory(proposal.kind,fresh);
+      if (mediaDeleteProposal !== proposal || !byId("media-delete-dialog").open || !mediaProposalCurrent(proposal)) {
+        closeMediaDeleteConfirmation(false);
+        mediaDeleteMessages[proposal.kind]="The selected file changed or is no longer available. Review its current details before deleting.";
+        return;
+      }
+      closeMediaDeleteConfirmation(false);
+      mediaRevision += 1;if (proposal.kind === "image") dataRevision += 1;
+      issued = true;
+      mediaDeleteMessages[proposal.kind]=proposal.kind === "recording" ? "Deleting recording…" : "Deleting picture…";renderMediaDeleteControls();
+      const result = await mediaJson(proposal.kind === "recording" ? "/api/recordings/delete" : "/api/sstv/delete",proposal.csrf,{id:proposal.id,revision:proposal.revision});
+      if (!mediaAdmin() || session.csrf_token !== proposal.csrf) return;
+      updateMediaInventory(proposal.kind,result);
+      mediaDeleteUncertain=false;
+      mediaDeleteMessages[proposal.kind]=proposal.kind === "recording" ? "Recording deleted." : "Picture deleted.";
+    } catch (error) {
+      closeMediaDeleteConfirmation(false);
+      if (mediaAdmin() && session.csrf_token === proposal.csrf) {
+        mediaDeleteUncertain=issued;
+        mediaDeleteMessages[proposal.kind]=`${error.message} ${issued ? "Refresh to check whether deletion finished before trying again." : "No deletion was requested. Refresh and review the file again."}`;
+      }
+    } finally {
+      mediaDeleteBusy=false;mutationBusy=false;renderAdmin();
+    }
+  }
+
+  byId("recording-delete").addEventListener("click",() => showMediaDeleteConfirmation("recording"));
+  byId("sstv-delete").addEventListener("click",() => showMediaDeleteConfirmation("image"));
+  byId("media-delete-cancel").addEventListener("click",() => closeMediaDeleteConfirmation());
+  byId("media-delete-dialog").addEventListener("cancel",event => {event.preventDefault();closeMediaDeleteConfirmation();});
+  byId("media-delete-dialog").addEventListener("close",() => {if (!byId("media-delete-dialog").open) closeMediaDeleteConfirmation(false);});
+  byId("media-delete-apply").addEventListener("click",applyMediaDeletion);
 
   function operationState(data) {
     const service = data?.svxlink || {};
@@ -422,6 +596,7 @@
     const timeout = setTimeout(() => controller.abort(), 8000);
     const updateRevision = softwareUpdateRevision;
     const dataSnapshotRevision = dataRevision;
+    const mediaSnapshotRevision = mediaRevision;
     try {
       const response = await fetch("/api/status", { cache: "no-store", signal: controller.signal, headers: { Accept: "application/json" } });
       if (!response.ok) throw new Error(`Status ${response.status}`);
@@ -430,6 +605,8 @@
       // A lightweight check result or POST may finish during the slower system snapshot.
       if (updateRevision !== softwareUpdateRevision) data.software_updates = latestStatus?.software_updates;
       if (dataSnapshotRevision !== dataRevision) { data.data = latestStatus?.data; data.sstv = latestStatus?.sstv; }
+      if (mediaSnapshotRevision !== mediaRevision) data.recordings = latestStatus?.recordings;
+      if (mediaSnapshotRevision === mediaRevision && !mediaDeleteBusy) mediaDeleteUncertain = false;
       renderStatus(data);
       lastSuccess = new Date();
       byId("connection-banner").className = "connection-banner";
@@ -475,6 +652,8 @@
     byId("recorder-admin-controls").hidden=!signedIn;
     if (!signedIn) {
       wifiVisibilityProposal=null;softwareUpdateProposal=null;radioProgrammingProposal=null;radioPairProposal=null;dtmfProposal=null;stationIdProposal=null;radioMessageProposal=null;
+      closeMediaDeleteConfirmation(false);
+      mediaDeleteMessages.recording = ""; mediaDeleteMessages.image = ""; mediaDeleteUncertain = false;
       clearDtmfPasswords();byId("radio-pair-confirm-password").value="";
       byId("radio-message-file").value="";
       for (const id of ["wifi-confirm-dialog","software-confirm-dialog","radio-confirm-dialog","radio-pair-confirm-dialog","dtmf-confirm-dialog","station-id-confirm-dialog","radio-message-confirm-dialog"]) {
@@ -510,6 +689,7 @@
     renderAdminLayout();
     renderRadioMessages();
     renderData();
+    renderMediaDeleteControls();
   }
 
   function radioToolsNeedAttention(state = latestStatus?.radio_programming) {
@@ -1701,7 +1881,7 @@
   }
 
   function scheduleDataPoll() {
-    if (!dataPanelVisible() || !dataAdmin() || dataBusy || sstvBusy) {
+    if (!dataPanelVisible() || !dataAdmin() || dataBusy || sstvBusy || mediaDeleteBusy) {
       stopDataPolling(); return;
     }
     if (!decodingEnabled()) {
@@ -1794,7 +1974,7 @@
   }
 
   async function refreshDataStatus(force = false) {
-    if (!dataPanelVisible() || !dataAdmin() || dataBusy || sstvBusy || dataController || (!force && !decodingEnabled())) return;
+    if (!dataPanelVisible() || !dataAdmin() || dataBusy || sstvBusy || mediaDeleteBusy || dataController || (!force && !decodingEnabled())) return;
     if (dataTimer !== null) clearTimeout(dataTimer);
     dataTimer = null;
     const generation = dataGeneration, csrf = session.csrf_token;
@@ -1960,6 +2140,7 @@
     const maximum = finite(value?.limits?.max_images) ? value.limits.max_images : 50;
     const mib = finite(value?.limits?.max_bytes) ? value.limits.max_bytes / 1048576 : 100;
     setText("sstv-limits-note",`The gallery keeps up to ${maximum.toLocaleString()} pictures or ${Number.isInteger(mib) ? mib : mib.toFixed(1)} MiB; the oldest pictures are removed when a limit is reached. Picture quality depends on the radio signal and audio level.`);
+    renderMediaDeleteControls();
   }
   byId("sstv-current-image").addEventListener("error",() => {
     if (!dataAdmin() || !dataPanelVisible()) return;
@@ -2694,7 +2875,7 @@
     emitLiveAudio();
   });
   byId("recording-audio").addEventListener("play", () => { if (liveState !== "stopped") stopListening(true); });
-  window.addEventListener("pagehide", () => { dataPageActive = false; stopDataPolling(); renderSstv(); softwareCheckPageActive = false; stopSoftwareCheckPolling(); stopListening(); stopRadioActivity(); });
+  window.addEventListener("pagehide", () => { closeMediaDeleteConfirmation(false); dataPageActive = false; stopDataPolling(); renderSstv(); softwareCheckPageActive = false; stopSoftwareCheckPolling(); stopListening(); stopRadioActivity(); });
   window.addEventListener("pageshow", startRadioActivity);
   window.addEventListener("pageshow", () => { softwareCheckPageActive = true; renderSoftwareCheckProgress(); });
   window.addEventListener("pageshow", () => { dataPageActive = true; renderData(); });

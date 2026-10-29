@@ -223,5 +223,109 @@ class SstvDecoderTest(unittest.TestCase):
             self.decoder.status();check.assert_not_called();self.now+=6
             self.assertTrue(self.decoder.status()['available']);check.assert_called_once()
 
+    def test_delete_saved_picture_removes_pair_cache_preview_and_cannot_resurrect(self):
+        saved=self.picture(4);total=self.decoder.status()['stored_bytes']
+        self.assertEqual(saved['revision'],hashlib.sha256(self.decoder.image(saved['id'])[0]).hexdigest())
+        self.decoder.delete_image(saved['id'],saved['revision'])
+        self.assertEqual(self.decoder.list_images(),[]);self.assertEqual(self.decoder.status()['stored_bytes'],0)
+        self.assertIsNone(self.decoder.status()['current']);self.assertEqual(self.decoder._previews,{})
+        self.assertFalse((self.decoder.directory/(saved['id']+'.png')).exists())
+        self.assertFalse((self.decoder.directory/(saved['id']+'.json')).exists())
+        self.decoder._end_pipeline();self.decoder.close()
+        reloaded=self.make_decoder()
+        try:self.assertEqual(reloaded.list_images(),[])
+        finally:reloaded.close()
+
+    def test_delete_older_picture_preserves_current_reception_and_decoder_preference(self):
+        saved=self.picture(3);current=self.begin();self.row(0)
+        self.decoder.delete_image(saved['id'],saved['revision'])
+        self.assertEqual(self.decoder.status()['current']['id'],current['id'])
+        self.assertEqual(self.decoder.status()['phase'],'receiving');self.assertTrue(self.decoder.status()['enabled'])
+        with self.assertRaises(ValueError):self.decoder.delete_image(current['id'],'a'*64)
+        self.assertEqual(self.decoder.list_images(),[])
+
+    def test_image_deletion_refuses_stale_unknown_and_changed_metadata(self):
+        saved=self.picture(3)
+        for identifier,revision in (('../outside','a'*64),(saved['id'],'bad'),(saved['id'],'a'*64)):
+            with self.assertRaises(ValueError):self.decoder.delete_image(identifier,revision)
+        with self.assertRaises(FileNotFoundError):self.decoder.delete_image('f'*32,'a'*64)
+        path=self.decoder.directory/(saved['id']+'.json');metadata=json.loads(path.read_text())
+        metadata['created_at']='2026-10-29T14:00:00+00:00';path.write_text(json.dumps(metadata))
+        with self.assertRaises(ValueError):self.decoder.delete_image(saved['id'],saved['revision'])
+        self.assertEqual(len(self.decoder.list_images()),1)
+        self.assertTrue((self.decoder.directory/(saved['id']+'.png')).exists())
+
+    def test_image_delete_rejects_symlink_hardlink_and_tampered_png_without_removing_targets(self):
+        saved=self.picture(3);path=self.decoder.directory/(saved['id']+'.png')
+        original=path.read_bytes();outside=self.root/'outside.png';outside.write_bytes(original)
+        path.unlink();path.symlink_to(outside)
+        with self.assertRaises(OSError):self.decoder.delete_image(saved['id'],saved['revision'])
+        self.assertEqual(outside.read_bytes(),original)
+        path.unlink();os.link(outside,path)
+        with self.assertRaises(ValueError):self.decoder.delete_image(saved['id'],saved['revision'])
+        path.unlink();path.write_bytes(original[:-1]+b'X');path.chmod(0o600)
+        with self.assertRaises(OSError):self.decoder.delete_image(saved['id'],saved['revision'])
+        self.assertTrue((self.decoder.directory/(saved['id']+'.json')).exists())
+
+    def test_failed_image_commit_preserves_gallery_and_both_files(self):
+        saved=self.picture(3)
+        with patch.object(Path,'rename',side_effect=OSError('rename failed')):
+            with self.assertRaises(OSError):self.decoder.delete_image(saved['id'],saved['revision'])
+        self.assertEqual(self.decoder.list_images(),[saved])
+        self.assertTrue((self.decoder.directory/(saved['id']+'.json')).exists())
+        self.assertTrue((self.decoder.directory/(saved['id']+'.png')).exists())
+
+    def test_interrupted_cleanup_stays_deleted_and_restart_completes_exact_private_pair(self):
+        saved=self.picture(3);path=self.decoder.directory/(saved['id']+'.png');real_unlink=Path.unlink
+        def interrupted_unlink(target,*args,**kwargs):
+            if target==path:raise OSError('temporary disk fault')
+            return real_unlink(target,*args,**kwargs)
+        with patch.object(Path,'unlink',autospec=True,side_effect=interrupted_unlink):
+            self.decoder.delete_image(saved['id'],saved['revision'])
+        self.assertEqual(self.decoder.list_images(),[]);self.assertIsNone(self.decoder.status()['current'])
+        self.assertTrue(path.exists());self.assertEqual(len(list(self.decoder.directory.glob('.deleted-image-*.json'))),1)
+        self.assertIsNotNone(self.decoder.status()['last_error'])
+        self.decoder._end_pipeline()
+        reloaded=self.make_decoder()
+        try:
+            self.assertEqual(reloaded.list_images(),[]);self.assertFalse(path.exists())
+            self.assertEqual(list(self.decoder.directory.glob('.deleted-image-*.json')),[])
+        finally:reloaded.close()
+
+    def test_image_delete_commits_and_syncs_before_data_cleanup_then_syncs_removals(self):
+        saved=self.picture(3);events=[];real_rename=Path.rename;real_unlink=Path.unlink
+        def rename(target,*args,**kwargs):
+            events.append('rename');return real_rename(target,*args,**kwargs)
+        def unlink(target,*args,**kwargs):
+            events.append('unlink:'+target.suffix);return real_unlink(target,*args,**kwargs)
+        with patch.object(Path,'rename',autospec=True,side_effect=rename), patch.object(Path,'unlink',autospec=True,side_effect=unlink), patch.object(self.decoder,'_sync_image_directory',side_effect=lambda:events.append('sync')):
+            self.decoder.delete_image(saved['id'],saved['revision'])
+        self.assertEqual(events,['rename','sync','unlink:.png','unlink:.json','sync'])
+        self.assertEqual(self.decoder.list_images(),[])
+
+    def test_image_commit_sync_failure_clears_visible_state_and_retries_without_resurrection(self):
+        saved=self.picture(3);path=self.decoder.directory/(saved['id']+'.png')
+        with patch.object(self.decoder,'_sync_image_directory',side_effect=OSError('sync failed')), patch.object(Path,'unlink',autospec=True) as unlink:
+            self.decoder.delete_image(saved['id'],saved['revision'])
+            unlink.assert_not_called()
+        self.assertEqual(self.decoder.list_images(),[]);self.assertIsNone(self.decoder.status()['current'])
+        self.assertTrue(path.exists());self.assertIsNotNone(self.decoder.status()['last_error'])
+        self.decoder._recover_image_deletions()
+        self.assertFalse(path.exists());self.assertIsNone(self.decoder.status()['last_error'])
+        reloaded=self.make_decoder()
+        try:self.assertEqual(reloaded.list_images(),[])
+        finally:reloaded.close()
+
+    def test_final_cleanup_sync_failure_can_be_retried_after_tombstone_was_removed(self):
+        saved=self.picture(3)
+        with patch.object(self.decoder,'_sync_image_directory',side_effect=[None,OSError('final sync failed')]):
+            self.decoder.delete_image(saved['id'],saved['revision'])
+        self.assertEqual(self.decoder.list_images(),[])
+        self.assertEqual(list(self.decoder.directory.glob('.deleted-image-*.json')),[])
+        self.assertEqual(self.decoder.status()['last_error'],self.decoder.DELETE_CLEANUP_MESSAGE)
+        with patch.object(self.decoder,'_sync_image_directory') as sync:
+            self.decoder._recover_image_deletions();sync.assert_called_once()
+        self.assertIsNone(self.decoder.status()['last_error'])
+
 
 if __name__=='__main__':unittest.main()

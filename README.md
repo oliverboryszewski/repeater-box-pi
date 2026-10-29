@@ -1,6 +1,6 @@
 # Repeater Box — Pi dashboard
 
-Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.13.1.
+Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.14.0.
 
 Source: [GitHub repository](https://github.com/oliverboryszewski/repeater-box-pi).
 
@@ -14,8 +14,8 @@ This package is ready for installation on a fresh Pi OS card. Automated checks v
 |---|---|
 | **Overview** | Pi temperature, uptime, storage, voltage flags, network/service status, and USB audio/serial inventory |
 | **Live audio** | Start/stop listening over Wi-Fi, with local listening volume |
-| **Data** | Admin-only SSTV Robot 36 live preview and PNG gallery, APRS packet decoding and log downloads |
-| **Audio archives** | Browse, play, and download saved clips; admin-controlled recording on/off |
+| **Data** | Admin-only SSTV Robot 36 live preview and PNG gallery with downloads and confirmed deletion, APRS packet decoding and log downloads |
+| **Audio archives** | Browse, play, and download saved clips; admin-controlled recording and confirmed deletion |
 | **Settings / Admin** | Password sign-in, station/audio toggle switches, archive limits, Wi-Fi broadcast visibility, optional DTMF status/recording control, on-demand radio programming, and software updates |
 
 Phones, laptops, and iPads use the same responsive page. Overview, live listening, and archive playback are available to anyone connected to the trusted local network. Changing settings or recording requires the dashboard admin password. The Wi-Fi and admin passwords are separate.
@@ -191,6 +191,8 @@ The receiver-feed and automatic-recording controls are toggle switches. Select *
 
 The Archives switch changes the recording state **now**; it does not change the startup preference. Lower recording thresholds catch quieter speech but can also record noise. Higher thresholds require louder audio and may miss quiet speech. The slider shows the selected dBFS value and a sensitivity description; select **Save settings** to apply it.
 
+Admins can delete an individual saved clip from **Audio archives**, or a saved picture from **Data**. Each Delete button opens a confirmation identifying the selected item. The server requires an authenticated session and CSRF protection, rechecks the reviewed file's identity, and refuses active recordings or pictures still being received. Picture deletion also removes its private gallery metadata. Deletion is permanent and does not stop the live repeater or change recording preferences. Public listeners cannot delete files. If another operation removes or changes an item before confirmation, refresh and review the current list.
+
 The separate **Radio DTMF control** card has an **Enable DTMF control** switch with confirmation and a **Change DTMF password** form requiring the current admin password. The RF menu requires login, an option, then off/on as separate submitted transmissions. It permits recording control and the **Spoken status after DTMF actions** preference; it does not change channel pairs, program radios, enable transmission or run arbitrary commands. Recording commands affect the current recorder state and leave **Record automatically after a restart** unchanged. A DTMF password is sent as audible radio tones and can be heard or recorded; choose a different password from the Wi-Fi and web admin passwords.
 
 Enable **Keep recordings indefinitely** to turn off deletion by age. The day-count field is disabled while this is enabled, and its previous value is retained. The archive storage limit still applies. If the Pi falls below the 256 MiB free-space floor, the recorder removes the oldest closed dashboard RX clips first to recover space, aiming for an additional 16 MiB of headroom. It leaves the active clip, unrelated files, and symbolic links alone. If eligible clips cannot recover enough space, recording pauses while live listening continues. Disabling indefinite retention resumes the selected age limit and may remove older clips immediately. Limits are checked periodically and when clips close; the archive cap is not a disk partition.
@@ -224,6 +226,8 @@ The visibility worker log is available with `journalctl -u repeater-wifi-visibil
 Setup guidance appears only while the related setup is incomplete. Password instructions disappear once an admin password exists, including while signed out. Wi-Fi instructions and checklist step 2 disappear once the hotspot profile exists, including when it is inactive. Checklist step 1 disappears when the installed software is running on the Pi. AIOC assignment and radio commissioning remain on the checklist; USB detection alone does not complete either step. The first-audio guidance disappears after the receive monitor is running and the dashboard has received audio during this service run. Fresh installations show the relevant instructions again.
 
 ## Updating an installed box
+
+Version 0.14.0 adds admin-only confirmed deletion of individual audio recordings and SSTV gallery pictures. It is an app-only update compatible with update API 17; no SSH command, new native decoder or radio-service restart is required.
 
 Version 0.13.1 removes completed setup wording from commissioned live dashboards and distinguishes stopped or failed radio services from an active bench engine. Fresh installations retain their setup guidance. It also fixes the optional SSTV installer by stripping unneeded symbols from the final Debian-built decoder before its size check. It remains compatible with update API 17.
 

@@ -30,6 +30,8 @@ The dashboard checks each native binary and its provenance independently. A miss
 4. The preview fills as scanlines are decoded. Its progress bar measures received lines out of 240, rather than elapsed time.
 5. Select a picture in the gallery to view it larger and **Download PNG**.
 
+To remove a saved picture, use its **Delete** button and confirm the reviewed item. Only signed-in admins can delete; the PNG and its matching metadata are removed together. A picture still being received cannot be deleted. Removing the most recent completed or partial picture clears its live-preview copy too, so it does not reappear after a restart. Deletion is permanent and leaves the repeater and other pictures running normally.
+
 Robot 36 images are 320 × 240 pixels. Completed pictures and usable partial pictures are saved automatically; partial items show their received line count. Lost audio, a stopped decoder or a dashboard restart can interrupt reception. A new image starts a fresh canvas, and old preview requests cannot retrieve a different image under the previous image ID. Noise and voice alone should not create a gallery entry, but a false synchronization is possible; enable SSTV only when needed.
 
 The gallery retains at most **50 pictures or 100 MiB** of generated PNGs and removes the oldest first. It also removes its own oldest pictures when the filesystem approaches the **256 MiB** free-space floor. If that cannot recover space, image saving and decoding pause with an error. Unrelated files and audio archives are left alone. Images and metadata are private files in the dashboard state directory; they survive a dashboard restart. An incomplete picture still downloads as a fully formed PNG, with its unreceived area blank.

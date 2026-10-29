@@ -37,7 +37,7 @@ from radio_editor import MODELS
 from native_state import NativeState
 from radio_messages import RadioMessages, MessageError, MAX_UPLOAD_BYTES, upload_name
 
-VERSION = "0.13.1"
+VERSION = "0.14.0"
 STATIC = Path(__file__).parent / "static"
 STATIC_ROUTES = {
     "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
@@ -175,6 +175,9 @@ def sstv_status(server):
         if isinstance(image, dict) and re.fullmatch(r"[0-9a-f]{32}", str(image.get("id", ""))):
             image["preview_url"] = f"/api/sstv/images/{image['id']}.png"
             image["download_url"] = image["preview_url"] + "?download=1"
+            image["can_delete"] = bool(re.fullmatch(r"[0-9a-f]{64}", str(image.get("revision", "")))
+                and not (value.get("phase") == "receiving" and isinstance(current, dict)
+                         and current.get("id") == image["id"]))
     plan = getattr(server, "data_radio_plan", None)
     confirmed = isinstance(plan, dict) and plan.get("verified") is True
     value["rx_name"] = plan.get("rx_name") if confirmed else None
@@ -246,15 +249,37 @@ def media_files(root):
     files = []
     try:
         for path in root.iterdir():
-            if path.is_symlink() or not path.is_file() or path.suffix.lower() not in MEDIA_TYPES:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or path.suffix.lower() not in MEDIA_TYPES:
                 continue
-            stat = path.stat()
-            files.append({"id": path.name, "name": path.name, "bytes": stat.st_size,
-                          "modified_at": dt.datetime.fromtimestamp(stat.st_mtime, dt.timezone.utc).isoformat(),
-                          "url": "/recordings/" + quote(path.name, safe="")})
+            item = {"id": path.name, "name": path.name, "bytes": info.st_size,
+                    "modified_at": dt.datetime.fromtimestamp(info.st_mtime, dt.timezone.utc).isoformat(),
+                    "url": "/recordings/" + quote(path.name, safe="")}
+            item["can_delete"] = valid_recording_id(path.name) and info.st_nlink == 1
+            if item["can_delete"]:
+                item["delete_revision"] = AudioHub.recording_revision(path.name, info)
+            files.append(item)
     except OSError:
         pass
     return sorted(files, key=lambda item: item["modified_at"], reverse=True)
+
+
+def valid_recording_id(name):
+    if (not isinstance(name, str) or not name or name.startswith(".") or len(name) > 255
+            or any(ord(value) < 32 or ord(value) == 127 for value in name)
+            or "/" in name or "\\" in name or Path(name).suffix.lower() not in MEDIA_TYPES):
+        return False
+    try:
+        return len(name.encode("utf-8")) <= 255
+    except UnicodeError:
+        return False
+
+
+def recording_status(server):
+    """Fresh media inventory for admin review; no radio/system inventory."""
+    files = media_files(server.monitor.recordings)
+    return {"recordings": {"count": len(files), "total_bytes": sum(item["bytes"] for item in files), "files": files},
+            "recorder": server.hub.status()["recorder"]}
 
 
 def parse_range(value, size):
@@ -460,11 +485,35 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, PermissionError) as error:
                 self.json_response(401, {"error": str(error)})
             return
-        if path not in ("/api/admin/logout", "/api/recording", "/api/settings", "/api/wifi-visibility", "/api/software-updates/check", "/api/software-updates/install", "/api/radio-programming", "/api/radio-pair", "/api/radio-editor/read", "/api/radio-editor/write", "/api/dtmf-control", "/api/dtmf-password", "/api/station-identification", "/api/messages/delete", "/api/messages/broadcast", "/api/data/decoding", "/api/sstv/decoding"):
+        if path not in ("/api/admin/logout", "/api/recording", "/api/settings", "/api/wifi-visibility", "/api/software-updates/check", "/api/software-updates/install", "/api/radio-programming", "/api/radio-pair", "/api/radio-editor/read", "/api/radio-editor/write", "/api/dtmf-control", "/api/dtmf-password", "/api/station-identification", "/api/messages/delete", "/api/messages/broadcast", "/api/data/decoding", "/api/sstv/decoding", "/api/recordings/delete", "/api/sstv/delete"):
             self.json_response(404, {"error": "Unknown endpoint"})
             return
         if not self.server.auth.authorize(token, self.headers.get("X-CSRF-Token")):
             self.json_response(403, {"error": "Sign in as admin before changing settings or recording"})
+            return
+        if path in ("/api/recordings/delete", "/api/sstv/delete"):
+            # Delete saved media only. Native audio, PTT and radio maintenance
+            # are independent; the storage objects serialize against writers.
+            with self.server.mutation_lock:
+                if (set(data) != {"id", "revision"} or not isinstance(data.get("revision"), str)
+                        or not re.fullmatch(r"[0-9a-f]{64}", data["revision"])
+                        or (not valid_recording_id(data.get("id")) if path == "/api/recordings/delete"
+                            else not isinstance(data.get("id"), str) or not re.fullmatch(r"[0-9a-f]{32}", data["id"]))):
+                    self.json_response(400, {"error": "Send only the reviewed saved item and its revision"})
+                    return
+                try:
+                    if path == "/api/recordings/delete":
+                        self.server.hub.delete_recording(data["id"], data["revision"])
+                        self.json_response(200, recording_status(self.server))
+                    else:
+                        self.server.sstv_decoder.delete_image(data["id"], data["revision"])
+                        self.json_response(200, {"sstv": sstv_status(self.server)})
+                except FileNotFoundError:
+                    self.json_response(404, {"error": "That saved item is no longer available. Refresh the list."})
+                except ValueError:
+                    self.json_response(409, {"error": "That item changed or is still being recorded or received. Refresh and review it again."})
+                except OSError:
+                    self.json_response(503, {"error": "The saved item could not be removed safely. Refresh the list before trying again."})
             return
         if path in ("/api/data/decoding", "/api/sstv/decoding"):
             # A receiver-only preference does not alter radio/audio services,
@@ -707,6 +756,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/activity":
             self.json_response(200, radio_activity(self.server), head=head)
             return
+        if path == "/api/recordings/status":
+            if not self.server.auth.session(self.session_token())["authenticated"]:
+                self.json_response(403, {"error": "Sign in as admin to manage saved recordings"}, head=head)
+                return
+            if urlsplit(self.path).query:
+                self.json_response(400, {"error": "Recording status does not accept query fields"}, head=head)
+                return
+            self.json_response(200, recording_status(self.server), head=head)
+            return
         if path.startswith("/api/sstv/"):
             self.serve_sstv(path, head)
             return
@@ -767,6 +825,10 @@ class Handler(BaseHTTPRequestHandler):
             self.server.data_radio_plan = data["setup"]["radio_plan"]
             data["admin"] = self.server.auth.session(self.session_token())
             data["admin"].pop("csrf_token", None)
+            if not data["admin"]["authenticated"]:
+                for item in data.get("recordings", {}).get("files", []):
+                    item.pop("delete_revision", None)
+                    item.pop("can_delete", None)
             data["radio_messages"] = radio_message_status(self.server, radio) if data["admin"]["authenticated"] else {"admin_required": True}
             data["data"] = data_status(self.server) if data["admin"]["authenticated"] else {"admin_required": True}
             data["sstv"] = sstv_status(self.server) if data["admin"]["authenticated"] else {"admin_required": True}
