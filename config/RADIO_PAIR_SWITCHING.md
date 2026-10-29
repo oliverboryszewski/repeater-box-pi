@@ -20,13 +20,15 @@ This command does not program radios or enable transmission. Resolve unfinished 
 
 ## Install the matching helper
 
-Version **0.9.0 / update API 10** requires downloading the current bundle and rerunning `sudo bash scripts/install-pi.sh` from its directory on the Pi. See the [README installation steps](../README.md#3-download-and-install-this-package). Older browser updaters refuse the incompatible helper release before replacing the dashboard.
+Version **0.9.1 / update API 11** requires downloading the current bundle and rerunning `sudo bash scripts/install-pi.sh` from its directory on the Pi. See the [README installation steps](../README.md#3-download-and-install-this-package). This installs the per-radio settling helper; older browser updaters refuse the release before replacing the dashboard.
 
-The installer preserves passwords, hotspot configuration, device bindings, qualification, backups, archives and saved settings. It migrates an older installed channel table into the private catalog before replacing the helper, using generic pair labels and the numbered radio names. An existing valid private catalog is kept. A fresh installation has no implicit pairs and requires the terminal command above. Saving or migrating a catalog does not alter radio memories; review and program the first configured pair when ready to apply its new names. Later dashboard updates compatible with API 10 can use the browser updater.
+The installer preserves passwords, hotspot configuration, device bindings, qualification, backups, archives and saved settings. It migrates an older installed channel table into the private catalog before replacing the helper, using generic pair labels and the numbered radio names. An existing valid private catalog is kept. A fresh installation has no implicit pairs and requires the terminal command above. Saving or migrating a catalog does not alter radio memories; review and program the first configured pair when ready to apply its new names. Later dashboard updates compatible with API 11 can use the browser updater.
 
 ## Check live reload behavior locally
 
 Ordinary writes close the download connection, automatically wait **five quiet seconds**, and use a new upload identification and auxiliary-data check. The worker sends contiguous 256-byte name groups and 32-byte channel/global groups, preserving every companion byte from the candidate prepared from that radio. These are transfer boundaries, not a claim about internal erase geometry. It then closes the upload connection, waits another **five quiet seconds**, and opens a fresh connection for readback verification.
+
+For paired changes, each initial read connection closes as soon as that radio's original backup and checks finish. Reading TX therefore counts toward RX's quiet interval, and RX work counts toward TX's. Before reconnecting to either radio, the worker waits only for any remaining part of its five-second interval. Switching to a radio that has already been quiet long enough adds no extra pause. The same-radio upload and post-upload verification waits still apply.
 
 Leave both radios powered throughout routine reads, writes and verification. Restart only as recovery if a radio is unresponsive or cannot reconnect after its task finishes. The activity log shows connection changes and settling periods. A failed operation retains its verification candidate and keeps services paused; it does not automatically upload again.
 

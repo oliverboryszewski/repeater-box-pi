@@ -685,18 +685,21 @@
     const activationRequired=pair?.activation_required === true;
     const verificationRequired=pair?.verification_required === true;
     const failed=state?.action === "change-pair" && state.success === false && !pairPending;
+    const staleCatalogRecord=pair?.catalog_changed === true && !pairPending && !verificationRequired && !failed;
+    const catalogReviewMessage="The private channel catalog changed. Choose a pair and complete a new paired programming task to verify it against the current catalog.";
     if (radioPairAttempt && typeof state?.request_id === "string" && state.request_id !== radioPairAttempt.priorRequestId) {
       radioPairError=""; if (!pairPending) radioPairAttempt=null;
     }
-    setText("radio-pair-current",stored ? `${activationRequired ? "Saved pair verified" : "Configured pair"} · ${pairPlanText(pair)}` : "No complete verified pair record");
+    setText("radio-pair-current",stored ? `${activationRequired ? "Saved pair verified" : "Configured pair"} · ${pairPlanText(pair)}` : staleCatalogRecord ? "New pair verification needed" : "No complete verified pair record");
     setText("radio-pair-current-detail",stored ? activationRequired
       ? "Both saved images match. Activation is still unconfirmed; follow the task result before using the repeater. This is not live telemetry."
       : "Both radios' saved settings were verified together. This is the configured pair record, not a live reading of their selected frequencies."
+      : staleCatalogRecord ? catalogReviewMessage
       : pair ? `Requested pair: ${pairPlanText(pair)}. ${verificationRequired || failed ? "The pair is incomplete; radio audio stays paused. Review the activity log before retrying." : "Wait for both radios to finish before treating this as a configured pair."}`
         : "Inspecting or programming one radio does not establish a verified pair.");
-    pill("radio-pair-state",pairPending ? "Changing pair" : verificationRequired || failed ? "Pair incomplete" : activationRequired ? "Activation needed" : stored ? "Configured" : state?.pair_switching?.enabled === true ? "Ready" : "Bench setup needed",
-      pairPending || activationRequired ? "amber" : verificationRequired || failed ? "error" : stored ? "good" : "muted");
-    byId("radio-pair-stages").hidden=!pair;
+    pill("radio-pair-state",pairPending ? "Changing pair" : verificationRequired || failed ? "Pair incomplete" : staleCatalogRecord ? "Catalog changed" : activationRequired ? "Activation needed" : stored ? "Configured" : state?.pair_switching?.enabled === true ? "Ready" : "Bench setup needed",
+      pairPending || staleCatalogRecord || activationRequired ? "amber" : verificationRequired || failed ? "error" : stored ? "good" : "muted");
+    byId("radio-pair-stages").hidden=!pair || staleCatalogRecord;
     for (const role of ["rx","tx"]) {
       const saved=pair?.roles?.[role];
       setText(`radio-pair-stage-${role}`,`${role.toUpperCase()} · ${pairRoleVerified(pair,role) ? "Saved settings verified" : saved?.written === true ? "Write started; verification pending" : pairPending ? "Waiting / in progress" : "Not verified"}`);
@@ -706,7 +709,8 @@
       : failed || verificationRequired ? "The paired operation is incomplete. Radio audio remains paused. A reviewed retry reads and backs up both radios again; it does not automatically roll back a completed write."
         : stored && activationRequired ? "Stored settings verified; activation still needs confirmation."
           : stored ? "The configured pair record has been verified. Handhelds must use the matching split frequencies."
-            : detail || "Paired changes remain disabled until both radios pass the one-time bench qualification."),radioPairError || failed || verificationRequired ? "error" : stored && !activationRequired ? "success" : "");
+            : staleCatalogRecord ? catalogReviewMessage
+              : detail || "Paired changes remain disabled until both radios pass the one-time bench qualification."),radioPairError || failed || verificationRequired ? "error" : stored && !activationRequired ? "success" : "");
     renderRadioPairControls();
   }
 
@@ -847,6 +851,15 @@
       byId(id).hidden = !data || hotspotConfigured;
     }
     byId("checklist-pi").hidden = !data || (data.is_pi === true && data.svxlink?.installed === true);
+    const radios = data?.radio_programming;
+    const capture = data?.audio?.capture;
+    const playback = data?.audio?.playback;
+    const aiocsAssigned = data?.is_pi === true && radios?.configured === true && radios.preview === false
+      && Array.isArray(radios.configured_roles) && ["rx", "tx"].every((role) => radios.configured_roles.includes(role)
+        && radios.roles?.[role]?.inspected === true && radios.roles[role].compatible === true)
+      && Array.isArray(capture) && capture.some((card) => card?.id === "AIOC_RX")
+      && Array.isArray(playback) && playback.some((card) => card?.id === "AIOC_TX");
+    byId("checklist-aioc").hidden = aiocsAssigned;
     const receiveMonitorReady = data?.svxlink?.mode === "receive_only";
     const audioSeen = typeof data?.live_audio?.last_packet_at === "string" && data.live_audio.last_packet_at.trim() !== "";
     byId("audio-setup-help").hidden = !data || (receiveMonitorReady && audioSeen);

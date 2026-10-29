@@ -273,7 +273,7 @@ def read_archive(data):
     except (ValueError, UnicodeError) as exc:
         raise UpdateError("The dashboard update manifest is invalid.") from exc
     if (not isinstance(manifest, dict) or set(manifest) != {"version", "update_api"}
-            or type(manifest.get("update_api")) is not int or manifest["update_api"] != 10
+            or type(manifest.get("update_api")) is not int or manifest["update_api"] != 11
             or not isinstance(manifest.get("version"), str) or not VERSION_RE.fullmatch(manifest["version"])):
         raise UpdateError("This update needs a newer Pi installer. Update manually using the repository instructions.")
     if source_version(selected["dashboard/server.py"]) != manifest["version"]:

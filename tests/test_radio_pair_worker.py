@@ -211,6 +211,78 @@ class PairTransactionTests(unittest.TestCase):
     def request(self, number=1, pair_id="rpt1"):
         return {"request_id": f"{number:032x}", "action": "change-pair", "catalog_digest": DIGEST, "pair_id": pair_id}
 
+    def run_timed_pair(self, read_seconds):
+        """Advance a fake monotonic clock only for radio I/O and quiet waits."""
+        now, trace = [100.0], []
+        download, release = self.hardware.download, self.hardware.release
+
+        def timed_download(device, progress):
+            role = next(role for role, value in CONFIG["devices"].items() if value == device)
+            generation = self.hardware.downloads[role] + 1
+            trace.append(("download", role, generation, now[0]))
+            radio = download(device, progress)
+            now[0] += read_seconds.get((role, generation), 0)
+            return radio
+
+        def timed_release(radio):
+            if getattr(radio, "pipe", None) is not None:
+                trace.append(("release", radio.test_role, radio.test_generation, now[0]))
+            release(radio)
+
+        def sleep(seconds):
+            self.assertGreater(seconds, 0)
+            self.assertLessEqual(seconds, 5)
+            trace.append(("quiet", seconds, now[0]))
+            now[0] += seconds
+
+        with mock.patch.object(worker.time, "monotonic", side_effect=lambda: now[0]), \
+                mock.patch.object(worker.time, "sleep", side_effect=sleep), \
+                mock.patch.object(self.hardware, "download", side_effect=timed_download), \
+                mock.patch.object(self.hardware, "release", side_effect=timed_release):
+            result = self.instance.run(self.request(), CONFIG)
+        self.assertTrue(result["success"], result)
+        return trace
+
+    def test_partner_read_counts_toward_rx_quiet_time(self):
+        trace = self.run_timed_pair({("rx", 1): 18, ("tx", 1): 18})
+        rx_release = next(row for row in trace if row[:3] == ("release", "rx", 1))
+        tx_read = next(row for row in trace if row[:3] == ("download", "tx", 1))
+        rx_reconnect = next(row for row in trace if row[:3] == ("download", "rx", 2))
+        self.assertLess(trace.index(rx_release), trace.index(tx_read))
+        self.assertEqual(rx_reconnect[-1] - rx_release[-1], 18)
+        # These are the fake adapter's two post-upload verification waits.
+        # Neither physical radio needs another wait merely for changing roles.
+        self.assertEqual([row[1] for row in trace if row[0] == "quiet"], [5, 5])
+        self.assertFalse(any("before reconnecting to" in event["message"]
+                             for event in json.loads((self.state / "radio-programming-result.json").read_text())["events"]))
+
+    def test_short_partner_read_waits_only_remaining_rx_quiet_time(self):
+        trace = self.run_timed_pair({("tx", 1): 2})
+        rx_release = next(row for row in trace if row[:3] == ("release", "rx", 1))
+        rx_reconnect = next(row for row in trace if row[:3] == ("download", "rx", 2))
+        self.assertEqual(rx_reconnect[-1] - rx_release[-1], 5)
+        self.assertEqual([row[1] for row in trace if row[0] == "quiet"], [3, 5, 5])
+
+    def test_immediate_reuse_waits_five_but_tx_settles_during_rx_work(self):
+        trace = self.run_timed_pair({})
+        rx_release = next(row for row in trace if row[:3] == ("release", "rx", 1))
+        rx_reconnect = next(row for row in trace if row[:3] == ("download", "rx", 2))
+        tx_release = next(row for row in trace if row[:3] == ("release", "tx", 1))
+        tx_reconnect = next(row for row in trace if row[:3] == ("download", "tx", 2))
+        self.assertEqual(rx_reconnect[-1] - rx_release[-1], 5)
+        self.assertEqual(tx_reconnect[-1] - tx_release[-1], 10)
+        self.assertEqual([row[1] for row in trace if row[0] == "quiet"], [5, 5, 5])
+
+    def test_initial_release_failure_stops_before_reading_the_partner(self):
+        self.hardware.fail_release.add(("rx", 1))
+        result = self.instance.run(self.request(), CONFIG)
+        self.assertFalse(result["success"])
+        self.assertTrue(result["verification_required"])
+        self.assertEqual(self.hardware.downloads, {"rx": 1, "tx": 0})
+        self.assertFalse(self.active)
+        self.assertFalse(self.enabled)
+        self.assertFalse(any(event[0] == "upload" for event in self.events))
+
     def test_unconfigured_unknown_pair_and_stale_digest_never_touch_hardware(self):
         requests = [dict(self.request(), pair_id="pair9"), dict(self.request(), catalog_digest="f"*64)]
         for request in requests:

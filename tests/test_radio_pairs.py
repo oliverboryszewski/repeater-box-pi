@@ -174,6 +174,44 @@ class PairControllerTests(unittest.TestCase):
         presets[0]["input_hz"] = 0
         self.assertEqual(self.controller.status()["pair_switching"]["presets"][0]["input_hz"], CATALOG["pairs"][0]["rx_hz"])
 
+    def test_pair_guidance_tracks_qualification_helper_availability_and_pending_work(self):
+        state = self.controller.status()
+        self.assertTrue(state["pair_switching"]["enabled"])
+        self.assertIn("Paired switching is enabled", state["pair_switching"]["message"])
+        self.assertNotIn("bench checks", state["pair_switching"]["message"])
+        controls.write_json(self.controller.pair_config_file, {"schema": 1, "enabled": False})
+        self.assertIn("bench checks", self.controller.status()["pair_switching"]["message"])
+        for kind, expected in (("preview", "runs on the Pi"), ("connections", "AIOC connections"),
+                               ("helper", "programming helper"), ("catalog", "Configure channel pairs")):
+            with self.subTest(kind=kind):
+                controller = make_controller(self.folder / kind)
+                if kind == "preview":
+                    controller.supported = False
+                elif kind == "connections":
+                    controller.config_file.unlink()
+                elif kind == "helper":
+                    controller.run = lambda args: "inactive"
+                else:
+                    controller.catalog_file.unlink()
+                state = controller.status()
+                self.assertFalse(state["pair_switching"]["enabled"])
+                self.assertIn(expected, state["pair_switching"]["message"])
+        controls.write_json(self.controller.pair_config_file, {"schema": 1, "enabled": True})
+        self.controller.request_pair("rpt1", catalog_digest=DIGEST)
+        self.assertIn("radio task is in progress", self.controller.status()["pair_switching"]["message"])
+
+    def test_migrated_pair_requires_a_new_verified_record_without_resetting_qualification(self):
+        controls.write_json(self.folder / self.controller.PUBLIC_STATE,
+                            {**ready_state(), "_pair": pair_record(catalog_digest=None)})
+        state = self.controller.status()
+        self.assertTrue(state["pair"]["catalog_changed"])
+        self.assertFalse(state["pair"]["stored_verified"])
+        self.assertIsNone(state["pair"]["plan"])
+        self.assertFalse(state["pair"]["verification_required"])
+        self.assertTrue(state["pair_switching"]["enabled"])
+        self.assertNotIn("bench checks", state["pair_switching"]["message"])
+        self.assertTrue(self.controller.request_pair("rpt1", catalog_digest=DIGEST)["pending"])
+
     def test_missing_invalid_or_untrusted_catalog_has_no_frequency_fallback(self):
         for mode in ("missing", "invalid", "world-readable", "symlink"):
             with self.subTest(mode=mode):

@@ -32,7 +32,7 @@ from software_updates import SoftwareUpdates
 from radio_programming import RadioProgramming
 from radio_editor import MODELS
 
-VERSION = "0.9.0"
+VERSION = "0.9.1"
 STATIC = Path(__file__).parent / "static"
 MEDIA_TYPES = {".wav": "audio/wav", ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".flac": "audio/flac"}
 
@@ -58,6 +58,30 @@ def audio_cards(text):
         return []
     return [{"card": int(m[0]), "id": m[1], "name": m[2].strip()}
             for m in re.findall(r"^card (\d+):\s+(\S+)\s+\[([^\]]+)\]", text, re.M)]
+
+
+def count_aioc_usb_devices(root=Path("/sys/bus/usb/devices")):
+    """Inventory physical AIOCs; product text is only a missing-ID fallback."""
+    try:
+        devices = list(Path(root).iterdir())
+    except OSError:
+        return None
+    count = 0
+    for device in devices:
+        # USB interfaces belong to an already counted physical device.
+        if ":" in device.name:
+            continue
+        vendor = read_text(device / "idVendor")
+        product_id = read_text(device / "idProduct")
+        if vendor is not None and product_id is not None:
+            detected = (vendor.lower(), product_id.lower()) == ("1209", "7388")
+        else:
+            name = read_text(device / "product") or ""
+            detected = ((vendor is None or vendor.lower() == "1209")
+                        and (product_id is None or product_id.lower() == "7388")
+                        and name.casefold() in ("aioc", "all-in-one-cable"))
+        count += int(detected)
+    return count
 
 
 def media_files(root):
@@ -155,10 +179,7 @@ class Monitor:
         serial = []
         for port in sorted(Path("/dev/serial/by-id").glob("*")):
             serial.append({"path": str(port), "target": os.path.realpath(port)})
-        aioc_count = None
-        if linux:
-            products = [read_text(p) or "" for p in Path("/sys/bus/usb/devices").glob("*/product")]
-            aioc_count = sum("aioc" in name.lower() for name in products)
+        aioc_count = count_aioc_usb_devices() if linux else None
         clock = command(["timedatectl", "show", "--property=NTPSynchronized", "--value"]) if linux else None
         recordings = media_files(self.recordings)
         notes = ["Transmission is disabled in the supplied bench and receiver-monitor services.",

@@ -223,18 +223,23 @@ class RadioProgramming:
                      "roles": {role: public_role({}) for role in (configured_roles or STATION_ROLES)}}
             if not self.supported:
                 state["message"] = "Preview only — radio programming runs on the Pi."
+                state["pair_switching"]["message"] = state["message"] if catalog else CATALOG_MESSAGE
                 return state
             if not state["configured"]:
                 state["message"] = "Configure the RX and TX AIOC connections locally on the Pi first."
+                state["pair_switching"]["message"] = state["message"] if catalog else CATALOG_MESSAGE
                 return state
             if self.run(["/usr/bin/systemctl", "is-active", "repeater-radio-programming.path"]) != "active":
                 state["message"] = "Install the current Pi radio programming helper first."
+                state["pair_switching"]["message"] = state["message"] if catalog else CATALOG_MESSAGE
                 return state
             state["available"] = True
             pair_config = read_json(self.pair_config_file, 4096)
             state["pair_switching"]["enabled"] = (set(pair_config) == {"schema", "enabled"}
                 and type(pair_config.get("schema")) is int and pair_config["schema"] == 1
                 and pair_config.get("enabled") is True and catalog is not None)
+            if state["pair_switching"]["enabled"]:
+                state["pair_switching"]["message"] = "Paired switching is enabled. Choose a configured pair, then review and confirm both radios."
             worker_active = self.run(["/usr/bin/systemctl", "is-active", "repeater-radio-programming.service"]) == "active"
             saved = read_json(self.state_dir / self.PUBLIC_STATE)
             state["pair"] = public_pair(saved.get("_pair"), catalog)
@@ -268,6 +273,8 @@ class RadioProgramming:
                         state.update(success=False, message="Radio work was interrupted. Check the helper log before retrying; verify any unfinished upload.")
             state["pending"] = state["pending"] or worker_active
             state["busy"] = state["pending"]
+            if state["pending"]:
+                state["pair_switching"]["message"] = "A radio task is in progress. Wait for its result before changing the pair."
             return state
 
     def request(self, role, action, pending_id=None, catalog_digest=None):

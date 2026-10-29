@@ -131,6 +131,32 @@ function repairHarness(role='rx',kind='editor',options={}) {
   await check('Fresh unconfigured installation shows applicable setup help',async()=>{const h=harness();const status={version:'0.2',is_pi:false,svxlink:{installed:false,mode:'bench'},wifi_visibility:{available:false,profile_hidden:null},network:{hotspot_active:false},live_audio:{configured:false,last_packet_at:null}};h.ctx.testApi.setup(status,{configured:false,authenticated:false,csrf_token:null});for(const id of ['admin-setup-help','network-setup-help','access-setup-help','hotspot-setup-help','checklist-wifi','checklist-pi','audio-setup-help','input-setup-help'])assert.equal(h.el(id).hidden,false,id);});
   await check('Configured inactive AP hides wireless setup help even with helper unavailable',async()=>{const h=harness();Object.assign(h.status.wifi_visibility,{available:false,profile_hidden:false});h.status.network.hotspot_active=false;h.ctx.testApi.status(h.status);for(const id of ['network-setup-help','access-setup-help','hotspot-setup-help','checklist-wifi'])assert.equal(h.el(id).hidden,true,id);});
   await check('Running installed Pi hides SD preparation step',async()=>{const h=harness();Object.assign(h.status,{is_pi:true,svxlink:{installed:true,mode:'bench'}});h.ctx.testApi.status(h.status);assert.equal(h.el('checklist-pi').hidden,true);});
+  await check('Assigned AIOC step hides only with configured inspected roles and stable RX capture and TX playback aliases',async()=>{
+    const h=harness();Object.assign(h.status,{is_pi:true,audio:{capture:[{id:'AIOC_RX'}],playback:[{id:'AIOC_TX'}]}});
+    Object.assign(h.status.radio_programming,{configured_roles:['rx','tx'],preview:false});
+    h.ctx.testApi.status(h.status);assert.equal(h.el('checklist-aioc').hidden,true);
+    h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});assert.equal(h.el('checklist-aioc').hidden,true);
+    const html=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/index.html'),'utf8');
+    assert.match(html,/<li id="checklist-radio"><span class="step-number">4<\/span>/);
+  });
+  await check('Unknown or incomplete AIOC setup keeps its checklist step visible',async()=>{
+    for(const change of[
+      h=>{h.status.is_pi=undefined;},
+      h=>{h.status.radio_programming.configured=false;},
+      h=>{h.status.radio_programming.preview=true;},
+      h=>{h.status.radio_programming.configured_roles=['rx'];},
+      h=>{h.status.radio_programming.roles.rx.inspected=false;},
+      h=>{h.status.radio_programming.roles.tx.compatible=false;},
+      h=>{h.status.audio.capture=[{id:'AllInOneCable'}];},
+      h=>{h.status.audio.playback=[{id:'AIOC_RX'}];},
+      h=>{delete h.status.audio;}
+    ]){
+      const h=harness();Object.assign(h.status,{is_pi:true,audio:{capture:[{id:'AIOC_RX'}],playback:[{id:'AIOC_TX'}]}});
+      Object.assign(h.status.radio_programming,{configured_roles:['rx','tx'],preview:false});change(h);
+      h.ctx.testApi.status(h.status);assert.equal(h.el('checklist-aioc').hidden,false);
+    }
+    const h=harness();h.ctx.testApi.status({});assert.equal(h.el('checklist-aioc').hidden,false);
+  });
   await check('Feed-enabled flag alone does not hide actual audio setup guidance',async()=>{const h=harness();Object.assign(h.status,{svxlink:{installed:true,mode:'bench'},live_audio:{configured:true,last_packet_at:null}});h.ctx.testApi.status(h.status);assert.equal(h.el('audio-setup-help').hidden,false);assert.equal(h.el('input-setup-help').hidden,false);assert.equal(h.el('input-enabled').attrs['aria-describedby'],'input-enabled-help input-setup-help');});
   await check('Ready monitor without packet leaves First audio setup visible',async()=>{const h=harness();Object.assign(h.status,{svxlink:{installed:true,mode:'receive_only'},live_audio:{configured:true,last_packet_at:null}});h.ctx.testApi.status(h.status);assert.equal(h.el('audio-setup-help').hidden,false);assert.equal(h.el('input-setup-help').hidden,true);assert.equal(h.el('input-enabled').attrs['aria-describedby'],'input-enabled-help');});
   await check('Ready monitor with seen audio hides completed audio setup guidance',async()=>{const h=harness();Object.assign(h.status,{svxlink:{installed:true,mode:'receive_only'},live_audio:{configured:true,last_packet_at:'2026-10-19T19:00:00+00:00'}});h.ctx.testApi.status(h.status);assert.equal(h.el('audio-setup-help').hidden,true);assert.equal(h.el('input-setup-help').hidden,true);});
@@ -525,6 +551,38 @@ function repairHarness(role='rx',kind='editor',options={}) {
     const h=pairHarness();Object.assign(h.status.radio_programming.pair,{catalog_changed:true,verification_required:true});
     h.status.radio_programming.roles.rx.verification_required=true;h.ctx.testApi.status(h.status);
     assert.equal(h.el('radio-pair-change').disabled,true);assert.match(h.el('radio-pair-lock-note').textContent,/Restore.*private catalog/);assert.equal(h.posts().length,0);
+  });
+  await check('A migrated completed pair asks for new verification without claiming work is running',async()=>{
+    const h=pairHarness();Object.assign(h.status.radio_programming.pair,{catalog_changed:true,stored_verified:false,plan:null});
+    h.ctx.testApi.status(h.status);
+    assert.equal(h.el('radio-pair-state').textContent,'Catalog changed');
+    assert.equal(h.el('radio-pair-current').textContent,'New pair verification needed');
+    assert.match(h.el('radio-pair-current-detail').textContent,/private channel catalog changed.*new paired programming task/);
+    assert.match(h.el('radio-pair-message').textContent,/private channel catalog changed/);
+    assert.ok(!/Requested pair|Wait for both|audio stays paused/.test(h.el('radio-pair-current-detail').textContent));
+    assert.equal(h.el('radio-pair-stages').hidden,true);
+    assert.equal(h.el('radio-pair-change').disabled,false);
+    assert.equal(h.posts().length,0);
+  });
+  await check('An active paired job takes precedence over the previous catalog record',async()=>{
+    const h=pairHarness();Object.assign(h.status.radio_programming,{pending:true,action:'change-pair',success:null});
+    Object.assign(h.status.radio_programming.pair,{catalog_changed:true,stored_verified:false,plan:null});
+    h.ctx.testApi.status(h.status);
+    assert.equal(h.el('radio-pair-state').textContent,'Changing pair');
+    assert.match(h.el('radio-pair-message').textContent,/Programming and verifying RX, then TX/);
+    assert.equal(h.el('radio-pair-stages').hidden,false);
+    assert.equal(h.el('radio-pair-change').disabled,true);
+  });
+  await check('Incomplete or failed pairs retain recovery guidance instead of the neutral catalog notice',async()=>{
+    for(const unfinished of[true,false]){
+      const h=pairHarness();Object.assign(h.status.radio_programming,{action:'change-pair',success:unfinished?null:false});
+      Object.assign(h.status.radio_programming.pair,{catalog_changed:true,stored_verified:false,verification_required:unfinished,phase:'failed',plan:null});
+      h.ctx.testApi.status(h.status);
+      assert.equal(h.el('radio-pair-state').textContent,'Pair incomplete');
+      assert.match(h.el('radio-pair-message').textContent,/operation is incomplete.*audio remains paused/);
+      assert.match(h.el('radio-pair-current-detail').textContent,/pair is incomplete.*Review the activity log/);
+      assert.equal(h.el('radio-pair-stages').hidden,false);
+    }
   });
   await check('Pair switching shows saved frequencies and opens a review without sending a write',async()=>{
     const h=pairHarness();

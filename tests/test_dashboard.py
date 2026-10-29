@@ -8,12 +8,57 @@ import sys
 import tempfile
 import threading
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "dashboard"))
 spec = importlib.util.spec_from_file_location("dashboard", ROOT / "dashboard/server.py")
 dashboard = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(dashboard)
+
+
+class USBInventoryTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+
+    def device(self, name, vendor=None, product_id=None, product=None):
+        folder = self.root / name
+        folder.mkdir()
+        for field, value in (("idVendor", vendor), ("idProduct", product_id), ("product", product)):
+            if value is not None:
+                (folder / field).write_text(value + "\n")
+        return folder
+
+    def test_standard_aiocs_count_by_ids_with_normal_or_missing_product_names(self):
+        self.device("1-1", "1209", "7388", "All-In-One-Cable")
+        self.device("1-2", "1209", "7388")
+        self.device("usb1", "1d6b", "0002", "USB root hub")
+        self.device("1-1:1.0", "1209", "7388", "All-In-One-Cable")
+        self.assertEqual(dashboard.count_aioc_usb_devices(self.root), 2)
+
+    def test_product_fallback_is_exact_and_cannot_override_different_usb_ids(self):
+        self.device("1-1", product="All-In-One-Cable")
+        self.device("1-2", product="AIOC")
+        self.device("1-3", "ffff", "7388", "All-In-One-Cable")
+        self.device("1-4", "1209", "ffff", "AIOC")
+        self.device("1-5", product="Unrelated AIOC-compatible adapter")
+        self.device("1-6", "ffff", product="All-In-One-Cable")
+        self.assertEqual(dashboard.count_aioc_usb_devices(self.root), 2)
+
+    def test_unavailable_usb_inventory_is_unknown_and_empty_inventory_is_zero(self):
+        self.assertIsNone(dashboard.count_aioc_usb_devices(self.root / "missing"))
+        self.assertEqual(dashboard.count_aioc_usb_devices(self.root), 0)
+
+    def test_linux_status_exposes_the_physical_inventory_count(self):
+        with mock.patch.object(dashboard.platform, "system", return_value="Linux"), \
+                mock.patch.object(dashboard, "read_text", return_value=None), \
+                mock.patch.object(dashboard, "command", return_value=None), \
+                mock.patch.object(dashboard, "count_aioc_usb_devices", return_value=2) as inventory:
+            status = dashboard.Monitor(self.root).status()
+        inventory.assert_called_once_with()
+        self.assertEqual(status["audio"]["usb_aioc_count"], 2)
 
 
 class DashboardHTTPTest(unittest.TestCase):

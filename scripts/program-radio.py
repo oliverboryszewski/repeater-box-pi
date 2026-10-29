@@ -1350,6 +1350,7 @@ class Worker:
         progress.radio_metrics = True
 
         radios, originals, folders, blocks, child_ids = {}, {}, {}, {}, {}
+        released_at = {}
         active, enabled = [], []
         prepared, verified, release_failed = False, False, False
         old_pair = self.private.get("_pair")
@@ -1388,8 +1389,9 @@ class Worker:
             enabled = [name for name in SERVICES if self.service("is-enabled", name)]
             for name in active:
                 self.service("stop", name)
-            # Capture both original images before any write. Each initial
-            # session is released before the qualified quiet/reload sequence.
+            # Capture both original images before any write. Release each
+            # clone session as soon as its backup/checks finish, so that radio
+            # can settle while the other radio is being read.
             for role in REPEATER_ROLES:
                 progress(f"reading-{role}", f"Reading {role.upper()} before changing either radio.", True)
                 radio = self.hardware.download(config["devices"][role], progress)
@@ -1419,6 +1421,15 @@ class Worker:
                         expected = self.hardware.load(self.backup_dir / previous_id / "candidate.img")
                         if protected_pair_changes(expected, radio):
                             raise ProgrammingError("Protected radio data differs from the pending pair candidate. Review the private backups locally before retrying.")
+                try:
+                    self.hardware.release(radio)
+                except Exception:
+                    # A later cleanup retry must not hide an uncertain close
+                    # and accidentally resume radio services.
+                    release_failed = True
+                    raise
+                radio.pipe = None
+                released_at[config["devices"][role]] = time.monotonic()
             progress("preparing", "Both original backups are saved. Preparing only working memory 1.", True)
             for role in REPEATER_ROLES:
                 radio = radios[role]
@@ -1467,12 +1478,15 @@ class Worker:
                     self.service("disable", name)
             result["backup_ids"] = dict(child_ids)
             pair_state = self.private["_pair"]
-            for radio in radios.values():
-                self.hardware.release(radio)
-                radio.pipe = None
-            progress("settling", "Both backups are saved. Waiting five quiet seconds before reconnecting to program.", True)
-            time.sleep(5)
             for role in REPEATER_ROLES:
+                # Quiet time belongs to the physical connection being reused,
+                # not the preceding role. Reading/programming its partner has
+                # usually already satisfied the five-second minimum.
+                elapsed = time.monotonic() - released_at[config["devices"][role]]
+                remaining = min(5.0, max(0.0, 5.0 - elapsed))
+                if remaining:
+                    progress("settling", f"Waiting {remaining:g} quiet seconds before reconnecting to {role.upper()}.", True)
+                    time.sleep(remaining)
                 progress(f"reading-{role}", f"Reconnecting to {role.upper()} and checking that its saved original still matches.", True)
                 fresh = self.hardware.download(config["devices"][role], progress)
                 radios[role] = fresh
