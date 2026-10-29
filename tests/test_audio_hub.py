@@ -615,5 +615,76 @@ class AudioHubTest(unittest.TestCase):
         self.hub.close()  # Idempotent cleanup.
 
 
+    def test_private_raw_consumers_get_rx_while_listeners_select_tx_mix(self):
+        self.hub._live_mode_probe = lambda: True
+        key, raw = self.hub.subscribe_raw()
+        _, listener = self.hub.subscribe()
+        self.hub.feed_tx_packet(tx_packet(8192))
+        self.hub.feed_packet(packet(0.75))
+        events = []
+        while not raw.empty():
+            events.append(raw.get_nowait())
+        self.assertEqual([value for kind, value, _ in events if kind == 'audio'], [packet(0.75)])
+        self.assertEqual(listener.get_nowait(), packet(0.25))
+        self.assertTrue(listener.empty())
+        self.hub.unsubscribe_raw(key)
+
+    def test_raw_consumer_overflow_resets_only_its_bounded_queue(self):
+        _, raw = self.hub.subscribe_raw()
+        _, listener = self.hub.subscribe()
+        for number in range(self.hub.RAW_QUEUE_CHUNKS + 8):
+            self.hub.feed_packet(packet(number / 100))
+        self.assertLessEqual(raw.qsize(), self.hub.RAW_QUEUE_CHUNKS)
+        events = []
+        while not raw.empty():
+            events.append(raw.get_nowait())
+        self.assertEqual(events[0][0], 'reset')
+        self.assertEqual(events[-1][1], packet((self.hub.RAW_QUEUE_CHUNKS + 7) / 100))
+        self.assertEqual(listener.qsize(), self.hub.QUEUE_CHUNKS)
+        self.assertEqual(self.clips(), [])
+
+    def test_raw_gaps_and_flush_markers_preserve_preceding_audio_then_reset(self):
+        _, raw = self.hub.subscribe_raw()
+        raw.get_nowait()
+        self.hub.feed_packet(packet(0.1))
+        self.advance(1)
+        self.hub.feed_packet(packet(0.2))
+        self.hub.feed_packet(b'')
+        events = []
+        while not raw.empty():
+            events.append(raw.get_nowait())
+        self.assertEqual([event[0] for event in events], ['audio', 'flush', 'audio', 'flush'])
+        self.assertEqual(events[0][1], packet(0.1))
+        self.assertEqual(events[2][1], packet(0.2))
+
+    def test_raw_tap_validates_samples_and_source_off_and_close_discard_backlogs(self):
+        _, raw = self.hub.subscribe_raw()
+        raw.get_nowait()
+        for value in (b'bad', packet(float('nan')), packet(float('inf'))):
+            self.assertFalse(self.hub.feed_packet(value))
+        self.assertEqual(raw.get_nowait()[0], 'reset')
+        self.assertTrue(raw.empty())
+        self.hub.feed_packet(packet(0.1))
+        self.hub.update_settings(dict(self.settings, input_enabled=False))
+        self.assertEqual(raw.get_nowait()[:2], ('state', False))
+        self.assertTrue(raw.empty())
+        self.assertFalse(self.hub.raw_input_enabled())
+        self.hub.close()
+        self.assertEqual(raw.get_nowait()[0], 'closed')
+        self.assertTrue(raw.empty())
+
+    def test_raw_consumer_limit_and_unsubscribe_are_separate_from_browser_listeners(self):
+        first, raw = self.hub.subscribe_raw()
+        self.hub.subscribe_raw()
+        with self.assertRaises(ValueError):
+            self.hub.subscribe_raw()
+        for _ in range(self.hub.MAX_LISTENERS):
+            self.hub.subscribe()
+        self.hub.unsubscribe_raw(first)
+        self.assertEqual(raw.get_nowait()[0], 'closed')
+        self.hub.subscribe_raw()
+        self.assertEqual(self.hub.status()['live_audio']['listeners'], self.hub.MAX_LISTENERS)
+
+
 if __name__ == "__main__":
     unittest.main()

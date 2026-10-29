@@ -1,0 +1,19 @@
+--- a/hdlc.c
++++ b/hdlc.c
+@@ -109,6 +109,16 @@
+ 		return;
+ 	if (*hdr++ != 0xf0) // PID 0xf0 = no layer 3 protocol
+ 		return;
++
++#ifdef REPEATER_AX25_HEX
++	/* Dedicated receive-only output: the caller verified the frame CRC and
++	 * removed its two-byte FCS. Keep every payload byte out of line framing. */
++	verbprintf(0, "AX25HEX:");
++	for (unsigned int index = 0; index < len; index++)
++		verbprintf(0, "%02x", (unsigned int)bp[index]);
++	verbprintf(0, "\n");
++	return;
++#endif
+ 
+ 	verbprintf(0, "APRS: ");
+ 	// source call

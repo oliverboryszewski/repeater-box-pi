@@ -17,9 +17,12 @@ const source = fs.readFileSync(path.resolve(__dirname, '../dashboard/static/app.
   refresh() { return refreshAfterMutation(); },
   softwareProgress() { return refreshSoftwareCheck(); },
   softwareProgressState() { renderSoftwareCheckProgress(); },
+  dataState() { renderData(); },
+  dataRefresh(force=false) { return refreshDataStatus(force); },
+  tab(name) { selectTab(name); },
   };\n})();`);
-function harness({preview=false, hidden=false, updates={}, radios={}, stationIdentification={},messages={}}={}) {
-  let focused = null, onStatus = null, onActivity = null, onSoftwareStatus = null, onSoftwareRequest = null, failActivity = false, failRefresh = false, pairError = null, messageError = null, stationIdError = null, stationIdResult = null, softwareRequests = 1;
+function harness({preview=false, hidden=false, updates={}, radios={}, stationIdentification={},messages={},data={}}={}) {
+  let focused = null, onStatus = null, onActivity = null, onSoftwareStatus = null, onSoftwareRequest = null, onDataStatus = null, onDataRequest = null, failActivity = false, failRefresh = false, pairError = null, messageError = null, stationIdError = null, stationIdResult = null, softwareRequests = 1;
   const elements = new Map(), calls=[], timers=new Map();let timerId=0;
   class Element {
     constructor(id='') {this.id=id;this.listeners={};this.attrs={};this.dataset={};this.open=false;this.classList={add(){},remove(){},toggle(){}};this.value='';this.children=[];this.firstChild={nodeType:3,nodeValue:''};}
@@ -37,6 +40,7 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
   const plan={rx:{memory:1,name:'BOX-RX1',frequency_mhz:'145.300000',receive_tone_hz:88.5,transmit_tone_hz:null,transmit:false,power:'High',mode:'NFM'},tx:{memory:1,name:'BOX-TX1',frequency_mhz:'433.500000',receive_tone_hz:null,transmit_tone_hz:88.5,transmit:true,power:'High',mode:'NFM'}};
   let status={dtmf_control:{available:true,configured:true,bridge_ready:true,enabled:false,status_announcements:true,code_change:{available:true,pending:false,request_id:null,success:null,message:null}},radio_programming:{available:!preview,configured:!preview,catalog_configured:true,catalog_digest:'c'.repeat(64),preview,pending:false,request_id:'radio-1',plan,roles:{rx:{inspected:true,compatible:true,firmware:'HN5RV011',identity:'known-rx',programmed:true,verified:true},tx:{inspected:true,compatible:true,firmware:'HN5RV011',identity:'known-tx',programmed:true,verified:true}},...radios},version:'0.2',wifi_visibility:{available:!preview,preview,pending:false,profile_hidden:hidden,ssid:'Repeater-Box',request_id:'req-1'},admin:{configured:true,authenticated:!preview},network:{ssid:'Repeater-Box'},settings:{},recorder:{},software_updates:{available:!preview,preview,pending:false,current_version:'0.2.2',current_commit:'a'.repeat(40),latest_version:'0.2.3',latest_commit:'b'.repeat(40),update_available:true,action:'check',success:true,request_id:'updates-1',checked_at:'2026-10-19T19:00:00+00:00',...updates}};
   status.radio_messages={available:!preview,can_upload:!preview,can_broadcast:!preview,reason:'',limits:{max_upload_bytes:8388608,max_duration_seconds:30,allowed_extensions:['wav','mp3','m4a'],max_messages:10},messages:[],upload_pending:false,job:null,invocation_id:'b'.repeat(32),pair_id:'default',catalog_digest:'c'.repeat(64),...messages};
+  status.data={available:!preview,enabled:false,running:false,input_enabled:true,mode:'APRS / AX.25 AFSK1200',packet_count:0,last_packet_at:null,last_error:null,limits:{max_packets:1000,max_bytes:8388608},packets:[],rx_name:'BOX-RX1',pair_label:'Pair 1',...data};
   status.station_identification={available:!preview,enabled:true,...stationIdentification};
   const ctx={console, URL, AbortController, Node:{TEXT_NODE:3}, Option:Element, document:{getElementById:el,querySelector:el,createElement:()=>new Element(),addEventListener(){},hidden:false},location:{hash:'#settings',origin:'http://10.42.0.1'},history:{replaceState(){}},window:{addEventListener(){}},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);},setInterval(){},fetch:async(path,options={})=>{
     calls.push({path,options});
@@ -46,6 +50,15 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
       return{ok:true,json:async()=>structuredClone(status)};
     }
     if(path==='/api/activity'){if(onActivity)await onActivity();if(failActivity)throw new Error('offline');return{ok:true,json:async()=>structuredClone(status.radio_activity||{available:false,receiving:null,transmitting:null})};}
+    if(path==='/api/data/status'){
+      if(onDataStatus){const response=await onDataStatus();if(response)return response;}
+      return{ok:true,json:async()=>({data:structuredClone(status.data)})};
+    }
+    if(path==='/api/data/decoding'){
+      if(onDataRequest){const response=await onDataRequest();if(response)return response;}
+      const body=JSON.parse(options.body);status.data={...status.data,enabled:body.enabled,running:body.enabled&&status.data.input_enabled};
+      return{ok:true,json:async()=>({data:structuredClone(status.data)})};
+    }
     if(path==='/api/messages')return{ok:true,json:async()=>({radio_messages:structuredClone(status.radio_messages)})};
     if(path.startsWith('/api/messages/')){
       if(messageError)throw new Error(messageError);
@@ -103,7 +116,7 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
     throw new Error(`unexpected fetch ${path}`);
   }};
   vm.createContext(ctx);vm.runInContext(source,ctx);ctx.testApi.setup(structuredClone(status),structuredClone(auth));
-  return{ctx,el,calls,timers,set onActivity(fn){onActivity=fn;},set failActivity(value){failActivity=value;},get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set onSoftwareStatus(fn){onSoftwareStatus=fn;},set onSoftwareRequest(fn){onSoftwareRequest=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},set messageError(value){messageError=value;},set stationIdError(value){stationIdError=value;},set stationIdResult(value){stationIdResult=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
+  return{ctx,el,calls,timers,set onActivity(fn){onActivity=fn;},set onDataStatus(fn){onDataStatus=fn;},set onDataRequest(fn){onDataRequest=fn;},set failActivity(value){failActivity=value;},get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set onSoftwareStatus(fn){onSoftwareStatus=fn;},set onSoftwareRequest(fn){onSoftwareRequest=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},set messageError(value){messageError=value;},set stationIdError(value){stationIdError=value;},set stationIdResult(value){stationIdResult=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
 }
 const checks=[];
 async function check(name,fn){try{await fn();checks.push(name);}catch(error){throw new Error(name,{cause:error});}}
@@ -141,6 +154,15 @@ function repairHarness(role='rx',kind='editor',options={}) {
   Object.assign(h.status.radio_programming.roles[role],{program_kind:kind,verification_required:true,verified:false,pending_id:'e'.repeat(32)});
   h.ctx.testApi.status(structuredClone(h.status));return h;
 }
+function dataPacket(id='1'.repeat(32),payload='>Packet status') {
+ return{id,time:'2026-10-30T12:00:00Z',source:'TEST1',destination:'APRS',path:['WIDE1-1'],payload,raw:`TEST1>APRS,WIDE1-1:${payload}`,frame_hex:'aa00'};
+}
+function dataHarness(options={}) {
+ const packet=dataPacket();return harness({...options,data:{packets:[packet],packet_count:1,last_packet_at:packet.time,...options.data}});
+}
+async function showData(h) {
+ h.el('panel-live').hidden=false;h.ctx.testApi.dataState();await h.ctx.testApi.dataRefresh(true);h.calls.length=0;
+}
 function messageEntry(id='1'.repeat(32),name='Field message.wav') {
  return{id,sha256:'d'.repeat(64),name,duration_seconds:12.4,bytes:1190444,created_at:'2026-10-29T19:00:00+00:00',preview_url:`/api/messages/${id}/audio`};
 }
@@ -169,6 +191,93 @@ function dashboardMarkup() {
   return{html,ids,nodes,inside};
 }
 (async()=>{
+  await check('Data controls belong to Live audio, expose packet JSON/text only and make the first mode explicit',async()=>{
+    const {html,ids,inside}=dashboardMarkup();assert.equal(inside('data-card','panel-live'),true);
+    assert.equal(ids.get('data-enabled').attrs.role,'switch');assert.equal(ids.get('data-enabled').attrs['aria-labelledby'],'data-enabled-label');
+    for(const id of['data-download-json','data-download-text'])assert.equal(Object.hasOwn(ids.get(id).attrs,'download'),true);
+    assert.match(html,/AFSK1200/);assert.match(html,/Exports contain decoded packets/);assert.equal(ids.has('data-delete'),false);
+  });
+  await check('Data defaults off while saved packet contents and fixed export links are available to admin',async()=>{
+    const h=dataHarness();assert.equal(h.el('data-card').hidden,false);assert.equal(h.el('data-enabled').checked,false);assert.equal(h.el('data-enabled-value').textContent,'Off');
+    assert.equal(h.el('data-source').textContent,'Pair 1 · BOX-RX1');assert.equal(h.el('data-download-json').attrs.href,'/api/data/export?format=json');assert.equal(h.el('data-download-text').attrs.href,'/api/data/export?format=txt');assert.equal(h.posts().length,0);
+    assert.equal([...h.timers.values()].some(timer=>timer.ms===1000),false);
+  });
+  await check('Sign-out clears packet DOM, private source labels and export links and prevents forced decoding changes',async()=>{
+    const h=dataHarness({data:{enabled:true,running:true}});await showData(h);assert.equal(h.el('data-packets').children.length,1);
+    h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});assert.equal(h.el('data-card').hidden,true);assert.equal(h.el('data-auth-note').hidden,false);
+    assert.equal(h.el('data-packets').children.length,0);assert.equal(h.el('data-download-json').attrs.href,undefined);assert.equal(h.el('data-download-text').attrs.href,undefined);assert.doesNotMatch(h.el('data-source').textContent,/BOX-RX1/);
+    h.el('data-enabled').checked=true;await h.el('data-enabled').dispatch('change');assert.equal(h.posts().length,0);assert.equal([...h.timers.values()].some(timer=>timer.ms===1000),false);
+  });
+  await check('Data enable sends only a CSRF-protected boolean and leaves audio listening and recording controls independent',async()=>{
+    const h=dataHarness();h.el('data-enabled').checked=true;await h.el('data-enabled').dispatch('change');assert.equal(h.posts().length,1);
+    const request=h.posts()[0];assert.equal(request.path,'/api/data/decoding');assert.deepEqual(JSON.parse(request.options.body),{enabled:true});assert.equal(request.options.headers['X-CSRF-Token'],'token-1');assert.equal(request.options.credentials,'same-origin');
+    assert.equal(h.el('data-enabled').checked,true);assert.equal(h.el('data-state').textContent,'Listening');assert.equal(h.calls.some(call=>/recording|live\.pcm|radio-programming|radio-pair|messages\/broadcast/.test(call.path)),false);
+  });
+  await check('Data remains enabled while receiver feed is off and explains how to supply audio',async()=>{
+    const h=dataHarness({data:{enabled:true,input_enabled:false,running:false}});assert.equal(h.el('data-enabled').checked,true);assert.equal(h.el('data-state').textContent,'Audio feed off');assert.equal(h.el('data-input-note').hidden,false);
+    assert.match(h.el('data-description').textContent,/waiting for the radio audio feed/);assert.equal(h.posts().length,0);
+  });
+  await check('Unavailable decoder cannot enable but an already enabled preference can be turned off',async()=>{
+    const off=dataHarness({data:{available:false,enabled:false,reason:'Install the receiver decoder.'}});assert.equal(off.el('data-enabled').disabled,true);off.el('data-enabled').checked=true;await off.el('data-enabled').dispatch('change');assert.equal(off.posts().length,0);
+    const on=dataHarness({data:{available:false,enabled:true}});assert.equal(on.el('data-enabled').disabled,false);on.el('data-enabled').checked=false;await on.el('data-enabled').dispatch('change');assert.deepEqual(JSON.parse(on.posts()[0].options.body),{enabled:false});
+  });
+  await check('Packet route, payload and raw text never become HTML; nodes remain stable without new packets',async()=>{
+    const payload='<img src=x onerror=alert(1)>',packet={...dataPacket('1'.repeat(32),payload),source:'<script>',destination:'&APRS',path:['<path>']};
+    const h=dataHarness({data:{packets:[packet]}}),list=h.el('data-packets'),row=list.children[0];
+    assert.equal(row.children[1].textContent,payload);assert.equal(row.children[2].children[1].textContent,packet.raw);assert.match(row.children[0].children[0].textContent,/<script> → &APRS · via <path>/);
+    h.ctx.testApi.status(structuredClone(h.status));assert.equal(list.children[0],row);assert.equal(h.posts().length,0);
+  });
+  await check('Only latest100 packets render and server-supplied download URLs are ignored',async()=>{
+    const packets=Array.from({length:110},(_,index)=>dataPacket(index.toString(16).padStart(32,'0'),String(index)));
+    const h=dataHarness({data:{packets,packet_count:1000,download_url:'https://outside.invalid/data'}});assert.equal(h.el('data-packets').children.length,100);assert.equal(h.el('data-packets').children[0].children[1].textContent,'0');
+    assert.match(h.el('data-packet-summary').textContent,/latest 100 of 1000/);assert.equal(h.el('data-download-json').attrs.href,'/api/data/export?format=json');
+  });
+  await check('Live visible enabled data uses one lightweight status request and one polling timer',async()=>{
+    const h=dataHarness({data:{enabled:true,running:true}});await showData(h);assert.equal([...h.timers.values()].filter(timer=>timer.ms===1000).length,1);
+    await h.ctx.testApi.dataRefresh();assert.deepEqual(h.calls.map(call=>call.path),['/api/data/status']);assert.equal(h.calls[0].options.credentials,'same-origin');assert.equal(h.posts().length,0);
+    assert.equal([...h.timers.values()].filter(timer=>timer.ms===1000).length,1);
+  });
+  await check('Disabled data gets one explicit refresh on Live entry and no recurring polls',async()=>{
+    const h=dataHarness();await showData(h);assert.equal([...h.timers.values()].some(timer=>timer.ms===1000),false);await h.ctx.testApi.dataRefresh();assert.equal(h.calls.length,0);
+    const hidden=dataHarness({data:{enabled:true}});await hidden.ctx.testApi.dataRefresh(true);assert.equal(hidden.calls.length,0);
+  });
+  for(const [name,hide]of[
+    ['hidden document',h=>{h.ctx.document.hidden=true;h.ctx.testApi.dataState();}],
+    ['another tab',h=>h.ctx.testApi.tab('overview')],
+    ['signed-out session',h=>h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null})]
+  ])await check(`Data ${name} aborts its one poll and ignores a late packet reply`,async()=>{
+    const h=dataHarness({data:{enabled:true}});await showData(h);let release;h.onDataStatus=()=>new Promise(resolve=>{release=resolve;});const pending=h.ctx.testApi.dataRefresh();
+    const signal=h.calls.at(-1).options.signal;hide(h);assert.equal(signal.aborted,true);
+    release({ok:true,json:async()=>({data:{...h.status.data,packets:[dataPacket('2'.repeat(32),'late packet')]}})});await pending;
+    assert.equal([...h.timers.values()].some(timer=>timer.ms===1000),false);assert.equal(JSON.stringify(h.el('data-packets').children.map(row=>row.children[1].textContent)).includes('late packet'),false);
+  });
+  await check('Overlapping data polls share one request; fresh packets replace the live list',async()=>{
+    const h=dataHarness({data:{enabled:true}});await showData(h);let release;h.onDataStatus=()=>new Promise(resolve=>{release=resolve;});const first=h.ctx.testApi.dataRefresh();await h.ctx.testApi.dataRefresh();assert.equal(h.calls.length,1);
+    release({ok:true,json:async()=>({data:{...h.status.data,packets:[dataPacket('2'.repeat(32),'fresh packet')]}})});await first;assert.equal(h.el('data-packets').children[0].children[1].textContent,'fresh packet');
+  });
+  await check('Late forbidden data response cannot sign out a newly authenticated admin',async()=>{
+    const h=dataHarness({data:{enabled:true}});await showData(h);let release;h.onDataStatus=()=>new Promise(resolve=>{release=resolve;});const pending=h.ctx.testApi.dataRefresh();
+    h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});h.el('panel-live').hidden=true;
+    h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'new-session'});
+    release({ok:false,status:403,json:async()=>({error:'Old session'})});await pending;assert.equal(h.el('admin-options').hidden,false);assert.equal(h.el('data-card').hidden,false);
+  });
+  await check('Current forbidden data response clears history and stops polling',async()=>{
+    const h=dataHarness({data:{enabled:true}});await showData(h);h.onDataStatus=()=>({ok:false,status:403,json:async()=>({error:'Sign in required'})});await h.ctx.testApi.dataRefresh();
+    assert.equal(h.el('data-card').hidden,true);assert.equal(h.el('data-packets').children.length,0);assert.equal(h.el('data-download-json').attrs.href,undefined);assert.equal([...h.timers.values()].some(timer=>timer.ms===1000),false);
+  });
+  await check('Network interruption preserves saved packets and retries without repeating a mutation',async()=>{
+    const h=dataHarness({data:{enabled:true}});await showData(h);h.onDataStatus=()=>{throw new Error('offline');};await h.ctx.testApi.dataRefresh();
+    assert.match(h.el('data-message').textContent,/Reconnecting automatically/);assert.equal(h.el('data-packets').children.length,1);assert.equal([...h.timers.values()].filter(timer=>timer.ms===1000).length,1);assert.equal(h.posts().length,0);
+  });
+  await check('A slow full snapshot cannot overwrite packets received by a newer lightweight poll',async()=>{
+    const h=dataHarness({data:{enabled:true}});await showData(h);let release;h.onStatus=()=>new Promise(resolve=>{release=resolve;});const snapshot=h.ctx.testApi.refresh();
+    h.onDataStatus=()=>({ok:true,json:async()=>({data:{...h.status.data,packets:[dataPacket('2'.repeat(32),'newest')]}})});await h.ctx.testApi.dataRefresh();release();await snapshot;
+    assert.equal(h.el('data-packets').children[0].children[1].textContent,'newest');
+  });
+  await check('Failed data mutation restores checked state and shows a recoverable error',async()=>{
+    const h=dataHarness();h.onDataRequest=()=>{throw new Error('Decoder unavailable');};h.el('data-enabled').checked=true;await h.el('data-enabled').dispatch('change');
+    assert.equal(h.el('data-enabled').checked,false);assert.match(h.el('data-message').textContent,/Decoder unavailable/);assert.equal(h.el('data-enabled').disabled,false);
+  });
   await check('Overview uses the selected verified pair rather than an old default template',async()=>{
     const h=pairHarness();Object.assign(h.status.radio_programming.pair,{pair_id:'rpt1',plan:{name:'BOX-RX2 / BOX-TX2',rx_hz:145330000,tx_hz:433525000,tone_hz:88.5,power:'High'}});
     h.status.setup={rf_enabled:true,radio_plan:{verified:true,rx_mhz:'145.300000',tx_mhz:'433.500000',tone_hz:88.5,power:'High',label:'Pair 2',rx_name:'BOX-RX2',tx_name:'BOX-TX2'}};

@@ -60,6 +60,16 @@
   let activityGeneration = 0;
   let activityRunning = false;
   let activityLastPoll = null;
+  let dataTimer = null;
+  let dataController = null;
+  let dataRequestForced = false;
+  let dataGeneration = 0;
+  let dataPageActive = true;
+  let dataBusy = false;
+  let dataError = "";
+  let dataPacketKey = null;
+  let dataSessionToken = null;
+  let dataRevision = 0;
   let audioContext = null;
   let audioGain = null;
   let liveController = null;
@@ -300,6 +310,7 @@
 
   function renderStatus(data) {
     latestStatus = data;
+    if (!dataBusy && data.data && typeof data.data === "object" && data.data.admin_required !== true) dataError = "";
     if (data.radio_messages && typeof data.radio_messages === "object") radioMessageUncertain = false;
     renderChannelPair(data);
     if (document.hidden) renderRadioActivity(null);
@@ -377,6 +388,7 @@
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
     const updateRevision = softwareUpdateRevision;
+    const dataSnapshotRevision = dataRevision;
     try {
       const response = await fetch("/api/status", { cache: "no-store", signal: controller.signal, headers: { Accept: "application/json" } });
       if (!response.ok) throw new Error(`Status ${response.status}`);
@@ -384,6 +396,7 @@
       if (!data || typeof data !== "object" || Array.isArray(data) || typeof data.version !== "string") throw new Error("Invalid status data");
       // A lightweight check result or POST may finish during the slower system snapshot.
       if (updateRevision !== softwareUpdateRevision) data.software_updates = latestStatus?.software_updates;
+      if (dataSnapshotRevision !== dataRevision) data.data = latestStatus?.data;
       renderStatus(data);
       lastSuccess = new Date();
       byId("connection-banner").className = "connection-banner";
@@ -413,6 +426,8 @@
     setText("page-title", tabCopy[active][0]);
     setText("page-intro", tabCopy[active][1]);
     if (location.hash !== `#${active}`) history.replaceState(null, "", `#${active}`);
+    renderData();
+    if (active === "live") refreshDataStatus(true);
   }
 
   function message(id, value, kind = "") {
@@ -460,6 +475,7 @@
     renderRadioPairControls();
     renderAdminLayout();
     renderRadioMessages();
+    renderData();
   }
 
   function radioToolsNeedAttention(state = latestStatus?.radio_programming) {
@@ -1612,6 +1628,158 @@
     }
   }
 
+  function dataPanelVisible() {
+    return dataPageActive && !document.hidden && byId("panel-live").hidden === false;
+  }
+
+  function dataAdmin() {
+    return sessionKnown && session.authenticated && typeof session.csrf_token === "string" && !!session.csrf_token;
+  }
+
+  function canChangeData() {
+    const value = latestStatus?.data;
+    return dataAdmin() && !dataBusy && !mutationBusy && typeof value?.enabled === "boolean" &&
+      (value.available === true || value.enabled === true);
+  }
+
+  function stopDataPolling() {
+    if (dataTimer !== null) clearTimeout(dataTimer);
+    dataTimer = null; dataGeneration += 1;
+    dataController?.abort(); dataController = null;
+    dataRequestForced = false;
+  }
+
+  function scheduleDataPoll() {
+    if (!dataPanelVisible() || !dataAdmin() || dataBusy) {
+      stopDataPolling(); return;
+    }
+    if (latestStatus?.data?.enabled !== true) {
+      if (!dataController || !dataRequestForced) stopDataPolling();
+      return;
+    }
+    if (dataTimer !== null || dataController) return;
+    dataTimer = setTimeout(() => { dataTimer = null; return refreshDataStatus(); },1000);
+  }
+
+  function dataPackets(value) {
+    return Array.isArray(value?.packets) ? value.packets.slice(0,100).filter((packet) => packet &&
+      typeof packet.id === "string" && packet.id.length > 0 && packet.id.length <= 128 &&
+      typeof packet.source === "string" && typeof packet.destination === "string" &&
+      typeof packet.payload === "string" && typeof packet.raw === "string") : [];
+  }
+
+  function renderData() {
+    const signedIn = dataAdmin();
+    const value = signedIn ? latestStatus?.data : null;
+    byId("data-card").hidden = !signedIn;
+    byId("data-auth-note").hidden = signedIn;
+    if (!signedIn) {
+      dataSessionToken = null; dataError = "";
+      stopDataPolling();
+    }
+    if (!dataBusy) byId("data-enabled").checked = value?.enabled === true;
+    byId("data-enabled").disabled = !canChangeData();
+    setText("data-enabled-value",dataBusy ? "Saving…" : value?.enabled === true ? "On" : "Off");
+    const error = typeof value?.last_error === "string" ? value.last_error : "";
+    pill("data-state", dataBusy ? "Updating" : !value || value.admin_required === true ? "Unavailable"
+      : value.available !== true ? "Decoder unavailable" : value.enabled !== true ? "Off"
+      : value.input_enabled !== true ? "Audio feed off" : error ? "Check decoder" : value.running === true ? "Listening" : "Starting",
+      dataBusy ? "amber" : error ? "error" : value?.running === true ? "good" : "muted");
+    setText("data-description", !value || value.admin_required === true ? "Connect and sign in to check received-data decoding."
+      : value.available !== true ? value.reason || "The receiver decoder needs its one-time Pi setup before it can be enabled."
+      : value.enabled !== true ? "Decoding is off. Saved packets remain available for export."
+      : value.input_enabled !== true ? "Decoding is enabled and waiting for the radio audio feed."
+      : "Listening to the RX radio for APRS / AX.25 AFSK1200 packets. Listening in the browser is optional.");
+    setText("data-source", [value?.pair_label,value?.rx_name].filter((item) => typeof item === "string" && item.trim()).join(" · ") || "RX input · current radio channel");
+    setText("data-mode",typeof value?.mode === "string" ? value.mode : "APRS / AX.25 AFSK1200");
+    setText("data-count",finite(value?.packet_count) ? String(value.packet_count) : absent);
+    setText("data-last-packet",typeof value?.last_packet_at === "string" ? localTime(value.last_packet_at,true) : "None yet");
+    const maxPackets = finite(value?.limits?.max_packets) ? value.limits.max_packets : 1000;
+    const maxMiB = finite(value?.limits?.max_bytes) ? value.limits.max_bytes / 1048576 : 8;
+    setText("data-limits-note",`This first decoder supports APRS / AX.25 at 1200 baud. Exports contain decoded packets; other digital modes and file-transfer protocols need their own decoder. The saved log keeps up to ${maxPackets.toLocaleString()} packets or ${Number.isInteger(maxMiB) ? maxMiB : maxMiB.toFixed(1)} MiB; older packets are removed as needed.`);
+    byId("data-input-note").hidden = value?.enabled !== true || value?.input_enabled === true;
+    message("data-message",dataError || error,dataError || error ? "error" : "");
+    const packets = dataPackets(value);
+    const key = JSON.stringify(packets);
+    const list = byId("data-packets");
+    if (key !== dataPacketKey) {
+      const position = list.scrollTop;
+      list.replaceChildren();
+      for (const packet of packets) {
+        const row = document.createElement("article"); row.className = "data-packet"; row.setAttribute("role","listitem");
+        const header = document.createElement("div"); header.className = "data-packet-header";
+        const route = document.createElement("strong"), timestamp = document.createElement("time");
+        const path = Array.isArray(packet.path) ? packet.path.filter((item) => typeof item === "string").join(", ") : "";
+        route.textContent = `${packet.source} → ${packet.destination}${path ? " · via " + path : ""}`;
+        timestamp.textContent = localTime(packet.time,true);
+        if (typeof packet.time === "string") timestamp.setAttribute("datetime",packet.time);
+        header.append(route,timestamp);
+        const payload = document.createElement("pre"); payload.textContent = packet.payload;
+        const details = document.createElement("details"), summary = document.createElement("summary"), raw = document.createElement("pre");
+        summary.textContent = "Packet details"; raw.textContent = packet.raw;
+        details.append(summary,raw); row.append(header,payload,details); list.append(row);
+      }
+      if (finite(position)) list.scrollTop = position;
+      dataPacketKey = key;
+    }
+    byId("data-empty").hidden = packets.length > 0;
+    setText("data-packet-summary",packets.length ? `Showing the latest ${packets.length} of ${finite(value?.packet_count) ? value.packet_count : packets.length} saved packets · exports include the saved log` : "No decoded packets yet");
+    const exportable = signedIn && finite(value?.packet_count) && value.packet_count > 0;
+    byId("data-downloads").hidden = !exportable;
+    for (const [id,format] of [["data-download-json","json"],["data-download-text","txt"]]) {
+      if (exportable) byId(id).setAttribute("href",`/api/data/export?format=${format}`);
+      else byId(id).removeAttribute("href");
+    }
+    if (signedIn && dataSessionToken !== session.csrf_token) {
+      dataSessionToken = session.csrf_token;
+      if (dataPanelVisible()) refreshDataStatus(true);
+    }
+    scheduleDataPoll();
+  }
+
+  async function refreshDataStatus(force = false) {
+    if (!dataPanelVisible() || !dataAdmin() || dataBusy || dataController || (!force && latestStatus?.data?.enabled !== true)) return;
+    if (dataTimer !== null) clearTimeout(dataTimer);
+    dataTimer = null;
+    const generation = dataGeneration, csrf = session.csrf_token;
+    const controller = new AbortController(); dataController = controller; dataRequestForced = force;
+    const timeout = setTimeout(() => controller.abort(),4000);
+    try {
+      const response = await fetch("/api/data/status",{cache:"no-store",credentials:"same-origin",signal:controller.signal,headers:{Accept:"application/json"}});
+      const result = await response.json();
+      if (generation !== dataGeneration || controller.signal.aborted || csrf !== session.csrf_token || !dataAdmin() || !dataPanelVisible()) return;
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) { session.authenticated = false; session.csrf_token = null; renderAdmin(); }
+        throw new Error("Data status unavailable");
+      }
+      if (!result.data || typeof result.data !== "object" || Array.isArray(result.data)) throw new Error("Unreadable data status");
+      dataRevision += 1; dataError = ""; latestStatus = {...latestStatus,data:result.data}; renderData();
+    } catch (_) {
+      if (generation === dataGeneration && dataAdmin() && dataPanelVisible()) {
+        dataError = "Data status connection interrupted. Reconnecting automatically…"; message("data-message",dataError,"error");
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (dataController === controller) { dataController = null; dataRequestForced = false; }
+      if (generation === dataGeneration) scheduleDataPoll();
+    }
+  }
+
+  byId("data-admin-link").addEventListener("click",() => selectTab("settings",true));
+  byId("data-enabled").addEventListener("change",async() => {
+    if (!canChangeData()) { renderData(); return; }
+    const enabled = byId("data-enabled").checked, csrf = session.csrf_token;
+    dataBusy = true; mutationBusy = true; dataError = ""; stopDataPolling(); renderAdmin();
+    try {
+      const result = await postJson("/api/data/decoding",{enabled});
+      if (!result.data || typeof result.data.enabled !== "boolean") throw new Error("The Pi returned an unreadable decoder status.");
+      if (dataAdmin() && session.csrf_token === csrf) {
+        dataRevision += 1; latestStatus = {...latestStatus,data:result.data};
+      }
+    } catch (error) { dataError = error.message; }
+    finally { dataBusy = false; mutationBusy = false; renderAdmin(); }
+  });
+
   function emitLiveAudio(state = liveState) {
     if (typeof window.dispatchEvent !== "function" || typeof CustomEvent !== "function") return;
     try {
@@ -2326,9 +2494,10 @@
     emitLiveAudio();
   });
   byId("recording-audio").addEventListener("play", () => { if (liveState !== "stopped") stopListening(true); });
-  window.addEventListener("pagehide", () => { softwareCheckPageActive = false; stopSoftwareCheckPolling(); stopListening(); stopRadioActivity(); });
+  window.addEventListener("pagehide", () => { dataPageActive = false; stopDataPolling(); softwareCheckPageActive = false; stopSoftwareCheckPolling(); stopListening(); stopRadioActivity(); });
   window.addEventListener("pageshow", startRadioActivity);
   window.addEventListener("pageshow", () => { softwareCheckPageActive = true; renderSoftwareCheckProgress(); });
+  window.addEventListener("pageshow", () => { dataPageActive = true; renderData(); });
   selectTab(location.hash.slice(1));
   loadSession();
   byId("refresh-button").addEventListener("click", () => { refresh(); loadSession(); });
@@ -2338,6 +2507,7 @@
     if (document.hidden) stopRadioActivity();
     else { refresh(); startRadioActivity(); }
     renderSoftwareCheckProgress();
+    renderData();
   });
   refresh();
   startRadioActivity();

@@ -22,7 +22,8 @@ COPY_GROUPS = (
         "repeater-box-events.tcl", "run-svxlink.py", "build-dtmf-prompts.py",
         "check-bench-config.py", "configure-live.py", "check-live-config.py",
         "repeater-live-events.tcl", "migrate-live-profile.py",
-        "convert-message-audio.py", "broadcast-message.py")),
+        "convert-message-audio.py", "broadcast-message.py",
+        "install-data-decoder.sh", "multimon-ax25-hex.patch")),
     ("dashboard/static", "/opt/repeater-box/dashboard/static", (
         "index.html", "app.js", "style.css", "audio-visualizer.js",
         "audio-visualizer.css", "radio-editor.html", "radio-editor.js",

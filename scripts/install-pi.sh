@@ -77,6 +77,9 @@ install -m 644 "$bundle_dir/scripts/apply-software-update.py" /opt/repeater-box/
 install -m 644 "$bundle_dir/scripts/"{program-radio.py,radio_plan.py,configure-channel-pairs.py,configure-radios.py,configure-pair-switching.py} /opt/repeater-box/scripts/
 install -m 644 "$bundle_dir/scripts/"{configure-dtmf.py,dtmf-client.py,repeater-box-events.tcl,run-svxlink.py,build-dtmf-prompts.py,check-bench-config.py} /opt/repeater-box/scripts/
 install -m 644 "$bundle_dir/scripts/"{configure-live.py,check-live-config.py,repeater-live-events.tcl,migrate-live-profile.py,convert-message-audio.py,broadcast-message.py} /opt/repeater-box/scripts/
+# The optional APRS prerequisite is installed separately; copying its reviewed
+# helper does not build a decoder or change an existing radio service.
+install -m 644 "$bundle_dir/scripts/"{install-data-decoder.sh,multimon-ax25-hex.patch} /opt/repeater-box/scripts/
 # The existing maintenance lock covers this private, offline profile migration.
 # It never opens a radio or starts live operation; authorization is revoked first.
 /usr/bin/python3 - <<'LIVE_PROFILE_PY'
