@@ -17,6 +17,7 @@ import re
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import queue
 import time
@@ -33,9 +34,27 @@ from software_updates import SoftwareUpdates
 from radio_programming import RadioProgramming
 from radio_editor import MODELS
 
-VERSION = "0.10.2"
+VERSION = "0.10.3"
 STATIC = Path(__file__).parent / "static"
+STATIC_ROUTES = {
+    "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
+    "/audio-visualizer.js": "audio-visualizer.js", "/audio-visualizer.css": "audio-visualizer.css",
+    "/radio-editor": "radio-editor.html", "/radio-editor.js": "radio-editor.js",
+    "/radio-editor.css": "radio-editor.css",
+}
 MEDIA_TYPES = {".wav": "audio/wav", ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".flac": "audio/flac"}
+
+
+def static_files_ready():
+    """A running web process is not ready if its interface files are missing."""
+    try:
+        for name in set(STATIC_ROUTES.values()):
+            info = (STATIC / name).stat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size == 0:
+                return False
+    except OSError:
+        return False
+    return True
 
 
 def read_text(path):
@@ -418,7 +437,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlsplit(self.path).path
         if path == "/api/health":
             # Readiness for the updater must not wait for slow hardware inventory.
-            self.json_response(200, {"version": VERSION, "ready": True}, head=head)
+            ready = static_files_ready()
+            self.json_response(200 if ready else 503, {"version": VERSION, "ready": ready}, head=head)
             return
         if path == "/api/radio-programming/status":
             self.json_response(200, {"radio_programming": self.server.programming.status()}, head=head)
@@ -482,12 +502,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/live.pcm":
             self.serve_live(head)
             return
-        static = {"/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
-                  "/audio-visualizer.js": "audio-visualizer.js", "/audio-visualizer.css": "audio-visualizer.css",
-                  "/radio-editor": "radio-editor.html", "/radio-editor.js": "radio-editor.js",
-                  "/radio-editor.css": "radio-editor.css"}
-        if path in static:
-            target = STATIC / static[path]
+        if path in STATIC_ROUTES:
+            target = STATIC / STATIC_ROUTES[path]
             try:
                 data = target.read_bytes()
             except OSError:

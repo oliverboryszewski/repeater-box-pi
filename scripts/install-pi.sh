@@ -15,9 +15,12 @@ if [[ $(dpkg --print-architecture) != arm64 ]]; then
   exit 1
 fi
 bundle_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-for required in dashboard/server.py dashboard/radio_programming.py dashboard/radio_editor.py dashboard/dtmf_control.py dashboard/station_identification.py dashboard/static/index.html dashboard/static/radio-editor.html scripts/program-radio.py scripts/radio_plan.py scripts/configure-channel-pairs.py scripts/configure-dtmf.py scripts/dtmf-client.py scripts/repeater-box-events.tcl scripts/repeater-live-events.tcl scripts/configure-live.py scripts/check-live-config.py scripts/run-svxlink.py scripts/build-dtmf-prompts.py scripts/install-chirp.sh config/svxlink-bench.conf systemd/repeater-dashboard.service systemd/repeater-engine.service systemd/repeater-live.service; do
-  [[ -f "$bundle_dir/$required" ]] || { echo "Missing bundle file: $required" >&2; exit 1; }
-done
+integrity_checker="$bundle_dir/scripts/check-install-files.py"
+[[ -f "$integrity_checker" && ! -L "$integrity_checker" && -s "$integrity_checker" ]] || {
+  echo 'Missing or empty installer integrity checker.' >&2; exit 1;
+}
+# Reject incomplete source bundles before changing managed files or services.
+/usr/bin/python3 "$integrity_checker" --bundle "$bundle_dir"
 # Serialize manual installs with browser updates and radio programming.
 install -d -o root -g root -m 755 /opt/repeater-box
 exec 9>/opt/repeater-box/.maintenance.lock
@@ -146,6 +149,9 @@ install -m 644 "$bundle_dir/systemd/"{repeater-wifi-visibility.service,repeater-
 install -m 644 "$bundle_dir/systemd/"{repeater-software-update.service,repeater-software-update.path} /etc/systemd/system/
 install -m 644 "$bundle_dir/systemd/"{repeater-radio-programming.service,repeater-radio-programming.path} /etc/systemd/system/
 install -m 644 "$bundle_dir/systemd/"{repeater-dtmf-code.service,repeater-dtmf-code.path} /etc/systemd/system/
+# Detect incomplete copies and flush their filesystems before activating them.
+/usr/bin/python3 "$integrity_checker" --bundle "$bundle_dir" --verify-installed
+sync -f /opt/repeater-box /etc/systemd/system
 systemctl daemon-reload
 systemctl enable --now avahi-daemon.service
 systemctl enable --now repeater-wifi-visibility.path

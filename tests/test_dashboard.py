@@ -143,6 +143,33 @@ class DashboardHTTPTest(unittest.TestCase):
         self.assertEqual(json.loads(body), {"version": dashboard.VERSION, "ready": True})
         self.assertIn("no-store", headers["Cache-Control"])
 
+    def test_health_refuses_missing_empty_and_nonregular_interface_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            static = Path(temporary)
+            for name in set(dashboard.STATIC_ROUTES.values()):
+                (static / name).write_bytes(b"complete interface asset\n")
+            with mock.patch.object(dashboard, "STATIC", static), \
+                    mock.patch.object(self.server.monitor, "status", side_effect=AssertionError("No hardware check")):
+                self.assertEqual(self.request("/api/health")[0], 200)
+                for name in ("index.html", "app.js", "radio-editor.js"):
+                    path = static / name
+                    for kind in ("empty", "missing", "directory"):
+                        with self.subTest(name=name, kind=kind):
+                            path.unlink()
+                            if kind == "empty":
+                                path.touch()
+                            elif kind == "directory":
+                                path.mkdir()
+                            code, _, body = self.request("/api/health")
+                            self.assertEqual(code, 503)
+                            self.assertEqual(json.loads(body), {"version": dashboard.VERSION, "ready": False})
+                            if kind == "directory":
+                                path.rmdir()
+                            elif path.exists():
+                                path.unlink()
+                            path.write_bytes(b"complete interface asset\n")
+                self.assertEqual(self.request("/api/health")[0], 200)
+
     def test_media_full_and_byte_ranges_for_mobile_players(self):
         path = "/recordings/test%20clip.wav"
         code, _, body = self.request(path)

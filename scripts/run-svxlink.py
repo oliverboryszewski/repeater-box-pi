@@ -20,8 +20,11 @@ def run(config):
     child = subprocess.Popen(["/usr/bin/svxlink", "--config=" + config],
                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                              text=True, errors="replace", bufsize=1)
+    requested_stop = None
     def stop(signum, _frame):
-        if child.poll() is None:
+        nonlocal requested_stop
+        if requested_stop is None and child.poll() is None:
+            requested_stop = signum
             child.send_signal(signum)
     signal.signal(signal.SIGTERM, stop)
     signal.signal(signal.SIGINT, stop)
@@ -29,7 +32,12 @@ def run(config):
         for line in child.stdout:
             if safe_line(line):
                 print(line, end="", flush=True)
-        return child.wait()
+        returncode = child.wait()
+        # A requested stop may end through the child's signal handler or by the
+        # signal itself. Preserve every unrelated failure as a service failure.
+        if requested_stop is not None and returncode in (0, -requested_stop):
+            return 0
+        return returncode
     finally:
         if child.poll() is None:
             child.terminate()

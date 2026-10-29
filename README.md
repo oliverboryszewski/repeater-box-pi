@@ -1,6 +1,6 @@
 # Repeater Box — Pi dashboard
 
-Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.10.2.
+Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.10.3.
 
 Source: [GitHub repository](https://github.com/oliverboryszewski/repeater-box-pi).
 
@@ -222,7 +222,9 @@ Setup guidance appears only while the related setup is incomplete. Password inst
 
 ## Updating an installed box
 
-Version 0.10.2 requires rerunning the Pi installer once (update API 14). It installs the matching DTMF protocol, new control prompts and grouped Admin page. Download the current bundle using section 3 and rerun the installer; existing passwords, hotspot, private channel pairs, radio bindings, backups, recordings and settings are preserved. Older browser updaters refuse this release before replacing the dashboard. An existing live service is stopped and disabled during a manual installation. An already prepared 0.10.1 live configuration keeps its authorization, audio gain and interval; deliberately start it after reviewing the result. Older live configurations without the interval field need preparation and authorization again. Re-enable boot startup only after commissioning. Do not rerun password or hotspot setup when those are already working. Later dashboard updates compatible with API 14 can use the browser updater again.
+Version 0.10.3 requires rerunning the Pi installer once (update API 15). Required source files must be nonempty regular files, installed software and service files must match the bundle, and filesystem writes must be flushed before services start. The dashboard health endpoint rejects missing or empty page assets. The radio service wrapper forwards one stop signal to SvxLink and reports an expected termination as a clean stop. Existing station configuration is preserved; later dashboard updates compatible with API 15 can use the browser updater.
+
+Version 0.10.2 requires rerunning the Pi installer once (update API 14). It installs the matching DTMF protocol, new control prompts and grouped Admin page. Download the current bundle using section 3 and rerun the installer; existing passwords, hotspot, private channel pairs, radio bindings, backups, recordings and settings are preserved. Older browser updaters refuse this release before replacing the dashboard. An existing live service is stopped and disabled during a manual installation. An already prepared 0.10.1 live configuration keeps its authorization, audio gain and interval; deliberately start it after reviewing the result. Older live configurations without the interval field need preparation and authorization again. Re-enable boot startup only after commissioning. Do not rerun password or hotspot setup when those are already working.
 
 During an upgrade, the installer migrates an older installed channel table into the private Pi catalog before replacing that helper. An existing valid private catalog is retained. Migration preserves the existing frequencies, tones and pair order, while assigning generic pair labels and the numbered `BOX-RXn` / `BOX-TXn` radio names. Device qualification and protected backups remain intact. Saving or migrating a catalog does not rename physical radio memories: review and program the default pair afterward to apply the new names. A fresh installation supplies no implicit frequencies; run the local configuration command above.
 
