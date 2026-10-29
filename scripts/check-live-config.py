@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from radio_plan import catalog_digest, pair_plans, validate_catalog
@@ -47,6 +48,10 @@ RX_TUNING = {'SQL_START_DELAY': (0, 5000), 'SQL_DELAY': (0, 5000),
 TX_FIXED = {'TYPE': 'Local', 'AUDIO_CHANNEL': '0', 'LIMITER_THRESH': '-9', 'PREEMPHASIS': '0',
             'PTT_TYPE': 'SerialPin', 'PTT_PIN': 'DTR', 'SERIAL_SET_PINS': '!DTR!RTS',
             'TIMEOUT': '15', 'PTT_HANGTIME': '0', 'TX_DELAY': '300'}
+
+
+class DevicesNotReady(ValueError):
+    """A configured interface or its sysfs attributes have not appeared yet."""
 
 
 def callsign(value):
@@ -235,41 +240,79 @@ def validate_parser(parser, authorization):
 
 
 def usb_identity(path):
-    device = path.resolve(strict=True)
-    for parent in (device, *device.parents):
-        if (parent / 'idVendor').is_file():
-            return tuple((parent / name).read_text().strip() for name in ('idVendor', 'idProduct', 'serial'))
-    raise ValueError('A configured radio interface has no USB identity.')
+    try:
+        device = path.resolve(strict=True)
+        for parent in (device, *device.parents):
+            if (parent / 'idVendor').is_file():
+                return tuple((parent / name).read_text().strip() for name in ('idVendor', 'idProduct', 'serial'))
+    except FileNotFoundError:
+        raise DevicesNotReady('A configured radio interface USB identity is not available yet.') from None
+    raise DevicesNotReady('A configured radio interface USB identity is not available yet.')
 
 
 def serial_usb_identity(path, tty_root=Path('/sys/class/tty')):
-    return usb_identity(tty_root / Path(path).resolve(strict=True).name / 'device')
+    try:
+        device_name = Path(path).resolve(strict=True).name
+    except FileNotFoundError:
+        raise DevicesNotReady('A configured AIOC serial connection is not available yet.') from None
+    return usb_identity(tty_root / device_name / 'device')
 
 
 def verify_runtime_devices(authorization, sound_root=Path('/sys/class/sound')):
     """Read device identity only; never open an audio or serial connection."""
     devices = authorization['devices']
-    for path in devices.values():
-        if not stat.S_ISCHR(os.stat(path).st_mode):
+    unavailable = False
+    available_serial = set()
+    for role, path in devices.items():
+        try:
+            info = os.stat(path)
+        except FileNotFoundError:
+            unavailable = True
+            continue
+        if not stat.S_ISCHR(info.st_mode):
             raise ValueError('A configured AIOC serial connection is not available.')
-    if os.path.samefile(devices['rx'], devices['tx']):
-        raise ValueError('The two radio connections resolve to the same AIOC.')
+        available_serial.add(role)
+    if len(available_serial) == 2:
+        try:
+            duplicate = os.path.samefile(devices['rx'], devices['tx'])
+        except FileNotFoundError:
+            unavailable = True
+        else:
+            if duplicate:
+                raise ValueError('The two radio connections resolve to the same AIOC.')
     for role in ('rx', 'tx'):
         expected_id = authorization[role + '_alsa_id']
         expected_serial = DEVICE_RE.fullmatch(devices[role]).group(1)
         expected = ('1209', '7388', expected_serial)
-        if serial_usb_identity(devices[role]) != expected:
-            raise ValueError('A serial radio connection does not match its authorized physical AIOC.')
-        matching = []
+        if role in available_serial:
+            try:
+                identity = serial_usb_identity(devices[role])
+            except DevicesNotReady:
+                unavailable = True
+            else:
+                if identity != expected:
+                    raise ValueError('A serial radio connection does not match its authorized physical AIOC.')
+        matching = 0
         for card in sound_root.glob('card[0-9]*'):
             try:
                 if (card / 'id').read_text().strip() != expected_id:
                     continue
-                matching.append(usb_identity(card / 'device'))
-            except (OSError, ValueError):
+            except FileNotFoundError:
                 continue
-        if matching != [expected]:
-            raise ValueError('An ALSA radio name does not match its authorized physical AIOC.')
+            matching += 1
+            if matching > 1:
+                raise ValueError('An ALSA radio name does not match its authorized physical AIOC.')
+            try:
+                identity = usb_identity(card / 'device')
+            except DevicesNotReady:
+                unavailable = True
+            else:
+                if identity != expected:
+                    raise ValueError('An ALSA radio name does not match its authorized physical AIOC.')
+        if matching == 0:
+            unavailable = True
+    if unavailable:
+        raise DevicesNotReady('Configured AIOC serial connections and ALSA names are not ready yet.')
 
 
 def check(config_path=CONFIG_PATH, auth_path=AUTH_PATH, radio_config_path=RADIO_CONFIG_PATH,
@@ -292,11 +335,36 @@ def check(config_path=CONFIG_PATH, auth_path=AUTH_PATH, radio_config_path=RADIO_
     return authorization
 
 
+def check_when_ready(wait_seconds=0, clock=time.monotonic, pause=time.sleep, **check_options):
+    """Bound enumeration waits while rechecking every RF interlock each time."""
+    if type(wait_seconds) is not int or not 0 <= wait_seconds <= 30:
+        raise ValueError('Device readiness wait must be between zero and thirty seconds.')
+    deadline = clock() + wait_seconds
+    announced = False
+    while True:
+        try:
+            return check(**check_options)
+        except DevicesNotReady:
+            if wait_seconds == 0:
+                raise
+            remaining = deadline - clock()
+            if remaining <= 0:
+                raise DevicesNotReady('Configured AIOC devices were not ready within the startup deadline.') from None
+            if not announced:
+                print('Waiting briefly for the configured AIOC connections and ALSA names.', flush=True)
+                announced = True
+            pause(min(0.5, remaining))
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if argv not in ([], [str(CONFIG_PATH)]):
-        raise ValueError('Use only the installed local live configuration.')
-    check()
+    if argv in ([], [str(CONFIG_PATH)]):
+        wait_seconds = 0
+    elif argv in (['--wait-for-devices', '30'], [str(CONFIG_PATH), '--wait-for-devices', '30']):
+        wait_seconds = 30
+    else:
+        raise ValueError('Use only the installed local live configuration and optional --wait-for-devices 30.')
+    check_when_ready(wait_seconds)
     print('Local live authorization, radio verification and AIOC identities checked.')
 
 

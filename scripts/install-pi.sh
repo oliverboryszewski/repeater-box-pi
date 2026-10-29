@@ -53,8 +53,8 @@ live_mode_selected=0
 if systemctl is-active --quiet repeater-live.service || systemctl is-enabled --quiet repeater-live.service; then
   live_mode_selected=1
   # Root helpers and event policy are being replaced. A manual install always
-  # leaves live RF stopped and disabled until the operator starts it again.
-  systemctl disable --now repeater-live.service
+  # leaves live RF stopped while retaining the operator's boot startup choice.
+  systemctl stop repeater-live.service
 fi
 # Prevent package installation from starting the distributor's example RF setup.
 # It remains masked: our separate service uses only the hardware-free bench file.
@@ -182,8 +182,8 @@ if [[ $radio_verification_pending == 1 ]]; then
   systemctl disable --now repeater-engine.service repeater-rx-monitor.service repeater-live.service
   echo 'An unfinished radio upload needs verification; radio services were not started.'
 elif [[ $live_mode_selected == 1 ]]; then
-  echo 'Preserved live station configuration. Live RF remains stopped and disabled after this manual upgrade.'
-  echo 'Review the installed configuration, then deliberately start repeater-live.service; enable it again only after commissioning.'
+  echo 'Preserved live station configuration and boot startup preference. Live RF remains stopped after this manual upgrade.'
+  echo 'Review the installed configuration, then deliberately start repeater-live.service when ready.'
 elif [[ $rx_monitor_active == 1 || $rx_monitor_enabled == 1 ]]; then
   /usr/bin/python3 /opt/repeater-box/check-bench-config.py /etc/repeater-box/svxlink-rx-monitor.conf --rx-monitor
   if [[ $rx_monitor_active == 1 ]]; then systemctl restart repeater-rx-monitor.service; fi

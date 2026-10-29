@@ -34,7 +34,7 @@ from software_updates import SoftwareUpdates
 from radio_programming import RadioProgramming
 from radio_editor import MODELS
 
-VERSION = "0.10.3"
+VERSION = "0.10.4"
 STATIC = Path(__file__).parent / "static"
 STATIC_ROUTES = {
     "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",

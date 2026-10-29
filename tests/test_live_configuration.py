@@ -86,6 +86,12 @@ class LiveConfigurationTests(unittest.TestCase):
         options.update(overrides)
         return guard.check(**options)
 
+    def wait_check(self, **overrides):
+        options = {key: value for key, value in self.paths.items() if key != 'monitor_path'}
+        options.update(owner_uid=self.uid, device_check=lambda auth: None)
+        options.update(overrides)
+        return guard.check_when_ready(**options)
+
     def enable(self):
         options = {key: value for key, value in self.paths.items() if key not in ('monitor_path', 'auth_path')}
         return configure.set_enabled(True, self.paths['auth_path'], owner_uid=self.uid,
@@ -299,10 +305,148 @@ class LiveConfigurationTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'serial radio'):
                     guard.verify_runtime_devices(authorization, sound_root)
 
+    def test_boot_wait_retries_missing_devices_and_finishes_when_they_appear(self):
+        self.prepare(); self.enable()
+        elapsed, checks, pauses = [0.0], [], []
+        def devices(authorization):
+            checks.append(authorization)
+            if len(checks) < 3:
+                raise guard.DevicesNotReady('Fixture devices are still appearing.')
+        def pause(seconds):
+            pauses.append(seconds)
+            elapsed[0] += seconds
+        authorization = self.wait_check(wait_seconds=30, clock=lambda: elapsed[0], pause=pause,
+                                        device_check=devices)
+        self.assertTrue(authorization['enabled'])
+        self.assertEqual(len(checks), 3)
+        self.assertEqual(pauses, [0.5, 0.5])
+
+    def test_boot_wait_has_a_deadline_and_manual_check_still_does_not_wait(self):
+        self.prepare(); self.enable()
+        elapsed, pauses = [0.0], []
+        def pause(seconds):
+            pauses.append(seconds)
+            elapsed[0] += seconds
+        def missing(authorization):
+            raise guard.DevicesNotReady('Fixture devices are missing.')
+        with self.assertRaisesRegex(guard.DevicesNotReady, 'startup deadline'):
+            self.wait_check(wait_seconds=2, clock=lambda: elapsed[0], pause=pause, device_check=missing)
+        self.assertEqual(elapsed[0], 2)
+        self.assertEqual(pauses, [0.5] * 4)
+        pauses.clear()
+        with self.assertRaisesRegex(guard.DevicesNotReady, 'Fixture devices'):
+            self.wait_check(wait_seconds=0, clock=lambda: elapsed[0], pause=pause, device_check=missing)
+        self.assertEqual(pauses, [])
+        for value in (-1, 31, 30.0, True):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.wait_check(wait_seconds=value)
+
+    def test_boot_wait_does_not_retry_wrong_physical_mapping(self):
+        self.prepare(); self.enable()
+        def mismatched(authorization):
+            raise ValueError('A serial radio connection does not match its authorized physical AIOC.')
+        with patch.object(guard.time, 'sleep') as pause:
+            with self.assertRaisesRegex(ValueError, 'authorized physical AIOC'):
+                self.wait_check(wait_seconds=30, pause=pause, device_check=mismatched)
+            pause.assert_not_called()
+
+    def test_every_retry_rechecks_pending_authorization_catalog_and_config(self):
+        def pending():
+            changed = copy.deepcopy(self.state)
+            changed['rx']['verification_required'] = True
+            self.write('state_path', changed)
+        def revoke():
+            changed = json.loads(self.paths['auth_path'].read_text())
+            changed['enabled'] = False
+            self.write('auth_path', changed)
+        def catalog():
+            changed = copy.deepcopy(self.catalog)
+            changed['pairs'][0]['rx_hz'] += 10000
+            self.write('catalog_path', changed)
+        def config():
+            self.paths['config_path'].write_bytes(self.paths['config_path'].read_bytes() + b'\n# changed\n')
+        for change, reason in ((pending, 'unfinished'), (revoke, 'not authorized'),
+                               (catalog, 'current private channel catalog'), (config, 'configuration changed')):
+            with self.subTest(change=change.__name__):
+                self.write('state_path', self.state)
+                self.write('catalog_path', self.catalog)
+                self.prepare(); self.enable()
+                elapsed, attempts = [0.0], []
+                def unavailable(authorization):
+                    attempts.append(authorization)
+                    raise guard.DevicesNotReady('Fixture device not ready.')
+                def pause(seconds):
+                    elapsed[0] += seconds
+                    change()
+                with self.assertRaisesRegex(ValueError, reason):
+                    self.wait_check(wait_seconds=30, clock=lambda: elapsed[0], pause=pause,
+                                    device_check=unavailable)
+                self.assertEqual(len(attempts), 1)
+                self.assertEqual(elapsed[0], 0.5)
+
+    def test_runtime_unavailable_is_distinct_from_a_visible_wrong_identity(self):
+        authorization = self.prepare()
+        sound_root = self.root / 'sound'
+        sound_root.mkdir()
+        for index, role in enumerate(('rx', 'tx')):
+            card, usb = sound_root / ('card' + str(index)), self.root / ('usb_' + role)
+            card.mkdir(); usb.mkdir()
+            (card / 'id').write_text('AIOC_' + role.upper())
+            (card / 'device').symlink_to(usb)
+            for name, value in (('idVendor', '1209'), ('idProduct', '7388'), ('serial', role + '_fixture')):
+                (usb / name).write_text(value)
+        original_stat = guard.os.stat
+        missing_serial = set()
+        def device_stat(path, *args, **kwargs):
+            if str(path) in missing_serial:
+                raise FileNotFoundError('Fixture serial alias has not appeared.')
+            if str(path) in self.devices.values():
+                return SimpleNamespace(st_mode=stat.S_IFCHR)
+            return original_stat(path, *args, **kwargs)
+        def serial_identity(path):
+            return '1209', '7388', guard.DEVICE_RE.fullmatch(path).group(1)
+        with patch.object(guard.os, 'stat', side_effect=device_stat), \
+                patch.object(guard.os.path, 'samefile', return_value=False), \
+                patch.object(guard, 'serial_usb_identity', side_effect=serial_identity):
+            guard.verify_runtime_devices(authorization, sound_root)
+            missing_serial.add(self.devices['rx'])
+            with self.assertRaises(guard.DevicesNotReady):
+                guard.verify_runtime_devices(authorization, sound_root)
+            # A wrong physical mapping must fail even while another interface
+            # is still appearing, rather than hiding behind the boot wait.
+            (self.root / 'usb_tx' / 'serial').write_text('other')
+            with self.assertRaises(ValueError) as found:
+                guard.verify_runtime_devices(authorization, sound_root)
+            self.assertNotIsInstance(found.exception, guard.DevicesNotReady)
+            (self.root / 'usb_tx' / 'serial').write_text('tx_fixture')
+            missing_serial.clear()
+            (sound_root / 'card1' / 'id').write_text('UnrenamedFixture')
+            with self.assertRaises(guard.DevicesNotReady):
+                guard.verify_runtime_devices(authorization, sound_root)
+            (sound_root / 'card1' / 'id').write_text('AIOC_TX')
+            (self.root / 'usb_tx' / 'serial').unlink()
+            with self.assertRaises(guard.DevicesNotReady):
+                guard.verify_runtime_devices(authorization, sound_root)
+
+    def test_guard_cli_enables_only_the_fixed_boot_wait_option(self):
+        for arguments, wait in (([], 0), ([str(guard.CONFIG_PATH)], 0),
+                                (['--wait-for-devices', '30'], 30),
+                                ([str(guard.CONFIG_PATH), '--wait-for-devices', '30'], 30)):
+            with self.subTest(arguments=arguments), patch.object(guard, 'check_when_ready') as check_ready, \
+                    contextlib.redirect_stdout(io.StringIO()):
+                guard.main(arguments)
+                check_ready.assert_called_once_with(wait)
+        for arguments in (['/tmp/other.conf'], ['--wait-for-devices', '999'],
+                          [str(guard.CONFIG_PATH), '--wait-for-devices', '0']):
+            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+                guard.main(arguments)
+
     def test_service_is_manual_and_preflight_is_privileged_without_another_lock(self):
         unit = (ROOT / 'systemd/repeater-live.service').read_text()
         self.assertIn('ExecStartPre=+/usr/bin/python3 /opt/repeater-box/scripts/check-live-config.py', unit)
         self.assertIn('Restart=no', unit)
+        self.assertIn(' --wait-for-devices 30\n', unit)
+        self.assertIn('TimeoutStartSec=45\n', unit)
         self.assertIn('Conflicts=repeater-engine.service repeater-rx-monitor.service svxlink.service', unit)
         self.assertNotIn('flock', unit)
         self.assertNotIn('fcntl', (ROOT / 'scripts/check-live-config.py').read_text())

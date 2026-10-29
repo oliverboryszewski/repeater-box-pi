@@ -28,7 +28,7 @@ sudo systemctl start repeater-live.service
 sudo systemctl status repeater-live.service --no-pager
 ```
 
-Starting live mode stops the mutually exclusive receive monitor or bench engine. The root startup guard checks local authorization, protected configuration, current device bindings, the private channel catalog and both radios' verified pair state before SvxLink opens a transmitter. It refuses unfinished programming work, changed bindings or a changed catalog. It does not reread radio frequencies or prove physical cable placement.
+Starting live mode stops the mutually exclusive receive monitor or bench engine. The root startup guard checks local authorization, protected configuration, current device bindings, the private channel catalog and both radios' verified pair state before SvxLink opens a transmitter. On boot it waits up to 30 seconds for the specific mapped serial interfaces and ALSA names to appear. Each retry repeats the full authorization and verification checks; mismatched devices and invalid configuration fail immediately. If devices remain absent, startup stops at the deadline. The service has no automatic restart loop. It refuses unfinished programming work, changed bindings or a changed catalog. It does not reread radio frequencies or prove physical cable placement.
 
 Live startup is silent. Automatic Morse identification groups turns separated by less than 30 seconds into one conversation. A due ID waits for RX closed, TX idle and the spoken menu to finish. The default interval is nine minutes, with recent IDs suppressing another automatic ID; idle time alone never generates a beacon. The CW policy needs no external SvxLink voice pack. Private radio-menu prompts use the project's locally generated audio files.
 
@@ -59,7 +59,7 @@ sudo systemctl disable repeater-engine.service repeater-rx-monitor.service
 sudo systemctl enable repeater-live.service
 ```
 
-A manual installer upgrade stops and disables live RF for review. Compatible dashboard-only updates preserve the running radio service.
+A manual installer upgrade stops live operation while replacing files and preserves an existing enabled-at-boot preference. It leaves live operation stopped until deliberately started or the Pi boots again. An unfinished radio upload still disables radio startup until recovery succeeds. Compatible dashboard-only updates preserve the running radio service.
 
 ## References
 
