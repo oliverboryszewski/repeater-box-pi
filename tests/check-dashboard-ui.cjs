@@ -21,14 +21,14 @@ const source = fs.readFileSync(path.resolve(__dirname, '../dashboard/static/app.
   dataRefresh(force=false) { return refreshDataStatus(force); },
   tab(name) { selectTab(name); },
   };\n})();`);
-function harness({preview=false, hidden=false, updates={}, radios={}, stationIdentification={},messages={},data={}}={}) {
-  let focused = null, onStatus = null, onActivity = null, onSoftwareStatus = null, onSoftwareRequest = null, onDataStatus = null, onDataRequest = null, failActivity = false, failRefresh = false, pairError = null, messageError = null, stationIdError = null, stationIdResult = null, softwareRequests = 1;
+function harness({preview=false, hidden=false, updates={}, radios={}, stationIdentification={},messages={},data={},sstv={}}={}) {
+  let focused = null, onStatus = null, onActivity = null, onSoftwareStatus = null, onSoftwareRequest = null, onDataStatus = null, onDataRequest = null, onSstvRequest = null, failActivity = false, failRefresh = false, pairError = null, messageError = null, stationIdError = null, stationIdResult = null, softwareRequests = 1;
   const elements = new Map(), calls=[], timers=new Map();let timerId=0;
   class Element {
     constructor(id='') {this.id=id;this.listeners={};this.attrs={};this.dataset={};this.open=false;this.classList={add(){},remove(){},toggle(){}};this.value='';this.children=[];this.firstChild={nodeType:3,nodeValue:''};}
     addEventListener(type,fn){(this.listeners[type]??=[]).push(fn);}
     async dispatch(type,extra={}){const event={type,target:this,...extra,preventDefault(){this.defaultPrevented=true;}};for(const fn of this.listeners[type]??[]) await fn(event);return event;}
-    setAttribute(k,v){this.attrs[k]=v;} removeAttribute(k){delete this.attrs[k];if(k==='src')delete this.src;}
+    setAttribute(k,v){this.attrs[k]=v;} getAttribute(k){return this.attrs[k]??null;} removeAttribute(k){delete this.attrs[k];if(k==='src')delete this.src;}
     replaceChildren(...nodes){this.children=nodes;} append(...nodes){this.children.push(...nodes);} add(node){this.children.push(node);}
     focus(){focused=this.id;} pause(){} load(){}
     setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}
@@ -41,6 +41,7 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
   let status={dtmf_control:{available:true,configured:true,bridge_ready:true,enabled:false,status_announcements:true,code_change:{available:true,pending:false,request_id:null,success:null,message:null}},radio_programming:{available:!preview,configured:!preview,catalog_configured:true,catalog_digest:'c'.repeat(64),preview,pending:false,request_id:'radio-1',plan,roles:{rx:{inspected:true,compatible:true,firmware:'HN5RV011',identity:'known-rx',programmed:true,verified:true},tx:{inspected:true,compatible:true,firmware:'HN5RV011',identity:'known-tx',programmed:true,verified:true}},...radios},version:'0.2',wifi_visibility:{available:!preview,preview,pending:false,profile_hidden:hidden,ssid:'Repeater-Box',request_id:'req-1'},admin:{configured:true,authenticated:!preview},network:{ssid:'Repeater-Box'},settings:{},recorder:{},software_updates:{available:!preview,preview,pending:false,current_version:'0.2.2',current_commit:'a'.repeat(40),latest_version:'0.2.3',latest_commit:'b'.repeat(40),update_available:true,action:'check',success:true,request_id:'updates-1',checked_at:'2026-10-19T19:00:00+00:00',...updates}};
   status.radio_messages={available:!preview,can_upload:!preview,can_broadcast:!preview,reason:'',limits:{max_upload_bytes:8388608,max_duration_seconds:30,allowed_extensions:['wav','mp3','m4a'],max_messages:10},messages:[],upload_pending:false,job:null,invocation_id:'b'.repeat(32),pair_id:'default',catalog_digest:'c'.repeat(64),...messages};
   status.data={available:!preview,enabled:false,running:false,input_enabled:true,mode:'APRS / AX.25 AFSK1200',packet_count:0,last_packet_at:null,last_error:null,limits:{max_packets:1000,max_bytes:8388608},packets:[],rx_name:'BOX-RX1',pair_label:'Pair 1',...data};
+  status.sstv={available:!preview,enabled:false,running:false,input_enabled:true,mode:'Robot 36',phase:'idle',progress:0,current:null,images:[],image_count:0,last_error:null,reason:'',limits:{max_images:50,max_bytes:104857600},...sstv};
   status.station_identification={available:!preview,enabled:true,...stationIdentification};
   const ctx={console, URL, AbortController, Node:{TEXT_NODE:3}, Option:Element, document:{getElementById:el,querySelector:el,createElement:()=>new Element(),addEventListener(){},hidden:false},location:{hash:'#settings',origin:'http://10.42.0.1'},history:{replaceState(){}},window:{addEventListener(){}},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);},setInterval(){},fetch:async(path,options={})=>{
     calls.push({path,options});
@@ -52,12 +53,17 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
     if(path==='/api/activity'){if(onActivity)await onActivity();if(failActivity)throw new Error('offline');return{ok:true,json:async()=>structuredClone(status.radio_activity||{available:false,receiving:null,transmitting:null})};}
     if(path==='/api/data/status'){
       if(onDataStatus){const response=await onDataStatus();if(response)return response;}
-      return{ok:true,json:async()=>({data:structuredClone(status.data)})};
+      return{ok:true,json:async()=>({data:structuredClone(status.data),sstv:structuredClone(status.sstv)})};
     }
     if(path==='/api/data/decoding'){
       if(onDataRequest){const response=await onDataRequest();if(response)return response;}
       const body=JSON.parse(options.body);status.data={...status.data,enabled:body.enabled,running:body.enabled&&status.data.input_enabled};
       return{ok:true,json:async()=>({data:structuredClone(status.data)})};
+    }
+    if(path==='/api/sstv/decoding'){
+      if(onSstvRequest){const response=await onSstvRequest();if(response)return response;}
+      const body=JSON.parse(options.body);status.sstv={...status.sstv,enabled:body.enabled,running:body.enabled&&status.sstv.input_enabled};
+      return{ok:true,json:async()=>({sstv:structuredClone(status.sstv)})};
     }
     if(path==='/api/messages')return{ok:true,json:async()=>({radio_messages:structuredClone(status.radio_messages)})};
     if(path.startsWith('/api/messages/')){
@@ -116,7 +122,7 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
     throw new Error(`unexpected fetch ${path}`);
   }};
   vm.createContext(ctx);vm.runInContext(source,ctx);ctx.testApi.setup(structuredClone(status),structuredClone(auth));
-  return{ctx,el,calls,timers,set onActivity(fn){onActivity=fn;},set onDataStatus(fn){onDataStatus=fn;},set onDataRequest(fn){onDataRequest=fn;},set failActivity(value){failActivity=value;},get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set onSoftwareStatus(fn){onSoftwareStatus=fn;},set onSoftwareRequest(fn){onSoftwareRequest=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},set messageError(value){messageError=value;},set stationIdError(value){stationIdError=value;},set stationIdResult(value){stationIdResult=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
+  return{ctx,el,calls,timers,set onActivity(fn){onActivity=fn;},set onDataStatus(fn){onDataStatus=fn;},set onDataRequest(fn){onDataRequest=fn;},set onSstvRequest(fn){onSstvRequest=fn;},set failActivity(value){failActivity=value;},get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set onSoftwareStatus(fn){onSoftwareStatus=fn;},set onSoftwareRequest(fn){onSoftwareRequest=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},set messageError(value){messageError=value;},set stationIdError(value){stationIdError=value;},set stationIdResult(value){stationIdResult=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
 }
 const checks=[];
 async function check(name,fn){try{await fn();checks.push(name);}catch(error){throw new Error(name,{cause:error});}}
@@ -161,7 +167,16 @@ function dataHarness(options={}) {
  const packet=dataPacket();return harness({...options,data:{packets:[packet],packet_count:1,last_packet_at:packet.time,...options.data}});
 }
 async function showData(h) {
- h.el('panel-live').hidden=false;h.ctx.testApi.dataState();await h.ctx.testApi.dataRefresh(true);h.calls.length=0;
+ h.el('panel-data').hidden=false;h.ctx.testApi.dataState();await h.ctx.testApi.dataRefresh(true);h.calls.length=0;
+}
+function sstvImage(id='a'.repeat(32),changes={}) {
+ return{id,created_at:'2026-10-30T12:00:00Z',mode:'Robot 36',width:320,height:240,complete:true,lines_received:240,size_bytes:12345,preview_url:'https://outside.invalid/untrusted.png',download_url:'//outside.invalid/untrusted.png',...changes};
+}
+function sstvCurrent(changes={}) {
+ return{id:'b'.repeat(32),revision:4,width:320,height:240,lines_received:60,started_at:'2026-10-30T12:00:00Z',preview_url:'https://outside.invalid/live.png',...changes};
+}
+function setSstv(h,changes) {
+ Object.assign(h.status.sstv,changes);h.ctx.testApi.status(structuredClone(h.status));h.ctx.testApi.dataState();
 }
 function messageEntry(id='1'.repeat(32),name='Field message.wav') {
  return{id,sha256:'d'.repeat(64),name,duration_seconds:12.4,bytes:1190444,created_at:'2026-10-29T19:00:00+00:00',preview_url:`/api/messages/${id}/audio`};
@@ -191,8 +206,8 @@ function dashboardMarkup() {
   return{html,ids,nodes,inside};
 }
 (async()=>{
-  await check('Data controls belong to Live audio, expose packet JSON/text only and make the first mode explicit',async()=>{
-    const {html,ids,inside}=dashboardMarkup();assert.equal(inside('data-card','panel-live'),true);
+  await check('Data controls have their own tab alongside SSTV and keep packet exports explicit',async()=>{
+    const {html,ids,inside}=dashboardMarkup();assert.equal(inside('data-card','panel-data'),true);assert.equal(inside('data-card','panel-live'),false);assert.equal(inside('sstv-card','panel-data'),true);assert.equal(ids.get('tab-data').attrs['aria-controls'],'panel-data');
     assert.equal(ids.get('data-enabled').attrs.role,'switch');assert.equal(ids.get('data-enabled').attrs['aria-labelledby'],'data-enabled-label');
     for(const id of['data-download-json','data-download-text'])assert.equal(Object.hasOwn(ids.get(id).attrs,'download'),true);
     assert.match(html,/AFSK1200/);assert.match(html,/Exports contain decoded packets/);assert.equal(ids.has('data-delete'),false);
@@ -237,7 +252,7 @@ function dashboardMarkup() {
     await h.ctx.testApi.dataRefresh();assert.deepEqual(h.calls.map(call=>call.path),['/api/data/status']);assert.equal(h.calls[0].options.credentials,'same-origin');assert.equal(h.posts().length,0);
     assert.equal([...h.timers.values()].filter(timer=>timer.ms===1000).length,1);
   });
-  await check('Disabled data gets one explicit refresh on Live entry and no recurring polls',async()=>{
+  await check('Disabled data gets one explicit refresh on Data entry and no recurring polls',async()=>{
     const h=dataHarness();await showData(h);assert.equal([...h.timers.values()].some(timer=>timer.ms===1000),false);await h.ctx.testApi.dataRefresh();assert.equal(h.calls.length,0);
     const hidden=dataHarness({data:{enabled:true}});await hidden.ctx.testApi.dataRefresh(true);assert.equal(hidden.calls.length,0);
   });
@@ -257,7 +272,7 @@ function dashboardMarkup() {
   });
   await check('Late forbidden data response cannot sign out a newly authenticated admin',async()=>{
     const h=dataHarness({data:{enabled:true}});await showData(h);let release;h.onDataStatus=()=>new Promise(resolve=>{release=resolve;});const pending=h.ctx.testApi.dataRefresh();
-    h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});h.el('panel-live').hidden=true;
+    h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});h.el('panel-data').hidden=true;
     h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'new-session'});
     release({ok:false,status:403,json:async()=>({error:'Old session'})});await pending;assert.equal(h.el('admin-options').hidden,false);assert.equal(h.el('data-card').hidden,false);
   });
@@ -277,6 +292,98 @@ function dashboardMarkup() {
   await check('Failed data mutation restores checked state and shows a recoverable error',async()=>{
     const h=dataHarness();h.onDataRequest=()=>{throw new Error('Decoder unavailable');};h.el('data-enabled').checked=true;await h.el('data-enabled').dispatch('change');
     assert.equal(h.el('data-enabled').checked,false);assert.match(h.el('data-message').textContent,/Decoder unavailable/);assert.equal(h.el('data-enabled').disabled,false);
+  });
+  await check('SSTV controls start off and require admin while completed and partial PNGs share a bounded gallery',async()=>{
+    const {ids}=dashboardMarkup();assert.equal(ids.get('sstv-enabled').attrs.role,'switch');assert.equal(ids.get('sstv-progress').tag,'progress');assert.equal(ids.get('sstv-current-image').attrs.width,'320');
+    const h=dataHarness();assert.equal(h.el('sstv-card').hidden,false);assert.equal(h.el('sstv-enabled').checked,false);assert.equal(h.el('sstv-state').textContent,'Off');assert.equal(h.el('sstv-gallery').children.length,0);assert.equal(h.posts().length,0);
+    assert.match(h.el('sstv-limits-note').textContent,/50 pictures or 100 MiB/);
+  });
+  await check('Data tab is independent of Live audio and keyboard navigation includes it',async()=>{
+    const h=dataHarness({sstv:{enabled:true}});h.ctx.testApi.tab('data');await Promise.resolve();assert.equal(h.el('panel-data').hidden,false);assert.equal(h.el('panel-live').hidden,true);assert.equal(h.el('page-title').textContent,'Data');
+    h.ctx.testApi.tab('live');assert.equal(h.el('panel-data').hidden,true);assert.equal([...h.timers.values()].some(timer=>timer.ms===1000),false);
+    await h.el('tab-live').dispatch('keydown',{key:'ArrowRight'});assert.equal(h.el('panel-data').hidden,false);assert.equal(h.focused,'tab-data');
+  });
+  await check('SSTV enable sends one CSRF-protected boolean without touching APRS audio recording or RF',async()=>{
+    const h=dataHarness();h.el('sstv-enabled').checked=true;await h.el('sstv-enabled').dispatch('change');assert.equal(h.posts().length,1);
+    const request=h.posts()[0];assert.equal(request.path,'/api/sstv/decoding');assert.deepEqual(JSON.parse(request.options.body),{enabled:true});assert.equal(request.options.headers['X-CSRF-Token'],'token-1');assert.equal(request.options.credentials,'same-origin');
+    assert.equal(h.el('sstv-enabled').checked,true);assert.equal(h.el('data-enabled').checked,false);assert.equal(h.el('sstv-state').textContent,'Waiting for picture');assert.equal(h.calls.some(call=>/recording|live\.pcm|radio-programming|radio-pair|messages\/broadcast/.test(call.path)),false);
+  });
+  await check('SSTV missing setup or disabled audio is explained and saved pictures remain usable',async()=>{
+    const h=dataHarness({sstv:{available:false,reason:'Install the fixed SSTV runtime.'}});assert.equal(h.el('sstv-enabled').disabled,true);assert.match(h.el('sstv-description').textContent,/Install the fixed SSTV runtime/);
+    setSstv(h,{enabled:true,input_enabled:false});assert.equal(h.el('sstv-enabled').disabled,false);assert.equal(h.el('sstv-enabled').checked,true);
+    setSstv(h,{available:true});assert.equal(h.el('sstv-state').textContent,'Audio feed off');assert.equal(h.el('sstv-input-note').hidden,false);
+  });
+  await check('SSTV-only reception shares the existing one-request data poll with APRS',async()=>{
+    const h=dataHarness({sstv:{enabled:true}});await showData(h);assert.equal([...h.timers.values()].filter(timer=>timer.ms===1000).length,1);
+    await h.ctx.testApi.dataRefresh();assert.deepEqual(h.calls.map(call=>call.path),['/api/data/status']);assert.equal(h.calls[0].options.credentials,'same-origin');assert.equal(h.el('data-enabled').checked,false);
+  });
+  await check('APRS and SSTV together still schedule one polling timer and one in-flight request',async()=>{
+    const h=dataHarness({data:{enabled:true},sstv:{enabled:true}});await showData(h);let release;h.onDataStatus=()=>new Promise(resolve=>{release=resolve;});const first=h.ctx.testApi.dataRefresh();await h.ctx.testApi.dataRefresh();assert.equal(h.calls.length,1);
+    release({ok:true,json:async()=>({data:h.status.data,sstv:{...h.status.sstv,phase:'receiving',current:sstvCurrent()}})});await first;assert.equal([...h.timers.values()].filter(timer=>timer.ms===1000).length,1);assert.equal(h.el('sstv-state').textContent,'Receiving picture');
+  });
+  await check('Live image uses an ID-bound revision URL and real received-line progress rather than the supplied percentage',async()=>{
+    const current=sstvCurrent();const h=dataHarness({sstv:{enabled:true,phase:'receiving',progress:99,current}});await showData(h);
+    assert.equal(h.el('sstv-current-image').attrs.src,`/api/sstv/current.png?id=${current.id}&revision=4`);assert.equal(h.el('sstv-progress').value,25);assert.match(h.el('sstv-progress-note').textContent,/60 of 240 lines · 25%/);assert.equal(h.el('sstv-state').textContent,'Receiving picture');assert.equal(h.el('sstv-reception').hidden,false);
+    setSstv(h,{current:sstvCurrent({revision:5,lines_received:120})});assert.equal(h.el('sstv-current-image').attrs.src,`/api/sstv/current.png?id=${current.id}&revision=5`);assert.equal(h.el('sstv-progress').value,50);
+  });
+  await check('Current image revision restarts safely with a new receive ID and zero lines do not fetch a PNG',async()=>{
+    const h=dataHarness({sstv:{enabled:true,phase:'receiving',current:sstvCurrent()}});await showData(h);
+    const current=sstvCurrent({id:'c'.repeat(32),revision:1,lines_received:1});setSstv(h,{current});assert.equal(h.el('sstv-current-image').attrs.src,`/api/sstv/current.png?id=${current.id}&revision=1`);
+    setSstv(h,{current:sstvCurrent({revision:0,lines_received:0})});assert.equal(h.el('sstv-current-image').attrs.src,undefined);assert.equal(h.el('sstv-preview-empty').hidden,false);assert.equal(h.el('sstv-progress').value,0);
+  });
+  await check('Malformed current image identities revisions and line counts never create image URLs',async()=>{
+    const h=dataHarness({sstv:{enabled:true,phase:'receiving'}});await showData(h);
+    for(const current of[sstvCurrent({id:'../secret'}),sstvCurrent({revision:-1}),sstvCurrent({revision:Infinity}),sstvCurrent({width:100000}),sstvCurrent({lines_received:241}),sstvCurrent({lines_received:'60'})]){
+      setSstv(h,{current});assert.equal(h.el('sstv-current-image').attrs.src,undefined);assert.equal(h.el('sstv-reception').hidden,true);
+    }
+  });
+  await check('Gallery images and download links use fixed IDs while radio-provided text remains plain text',async()=>{
+    const image=sstvImage('a'.repeat(32),{mode:'<script>Robot</script>'});const h=dataHarness({sstv:{images:[image],image_count:1}});await showData(h);
+    const button=h.el('sstv-gallery').children[0].children[0],thumbnail=button.children[0];assert.equal(thumbnail.attrs.src,`/api/sstv/images/${image.id}.png`);assert.equal(thumbnail.loading,'lazy');assert.equal(thumbnail.decoding,'async');
+    assert.equal(h.el('sstv-selected-image').attrs.src,`/api/sstv/images/${image.id}.png`);assert.equal(h.el('sstv-download').attrs.href,`/api/sstv/images/${image.id}.png?download=1`);assert.equal(h.el('sstv-selected-title').textContent,'<script>Robot</script>');assert.equal(h.el('sstv-selected-title').innerHTML,undefined);
+  });
+  await check('Partial pictures remain downloadable and their missing lines are clearly labelled',async()=>{
+    const image=sstvImage('a'.repeat(32),{complete:false,lines_received:140});const h=dataHarness({sstv:{images:[image],image_count:1,phase:'interrupted'}});await showData(h);
+    assert.match(h.el('sstv-selected-title').textContent,/Partial/);assert.match(h.el('sstv-selected-detail').textContent,/140\/240 lines received/);assert.match(h.el('sstv-gallery').children[0].children[0].children[1].textContent,/Partial · 140\/240 lines/);assert.equal(h.el('sstv-download').attrs.href,`/api/sstv/images/${image.id}.png?download=1`);
+  });
+  await check('Gallery selection changes the large view without network mutations and stale selections fall back safely',async()=>{
+    const first=sstvImage(),second=sstvImage('c'.repeat(32));const h=dataHarness({sstv:{images:[first,second]}});await showData(h);
+    await h.el('sstv-gallery').children[1].children[0].dispatch('click');assert.equal(h.el('sstv-selected-image').attrs.src,`/api/sstv/images/${second.id}.png`);assert.equal(h.posts().length,0);assert.equal(h.el('sstv-gallery').children[1].children[0].attrs['aria-pressed'],'true');assert.equal(h.el('sstv-gallery').children[0].children[0].attrs['aria-pressed'],'false');
+    setSstv(h,{images:[first]});assert.equal(h.el('sstv-selected-image').attrs.src,`/api/sstv/images/${first.id}.png`);
+    setSstv(h,{images:[]});assert.equal(h.el('sstv-selected').hidden,true);assert.equal(h.el('sstv-selected-image').attrs.src,undefined);assert.equal(h.el('sstv-download').attrs.href,undefined);
+  });
+  await check('Gallery ignores malformed image metadata and caps thumbnails at 50 without trusting URLs',async()=>{
+    const valid=Array.from({length:55},(_,i)=>sstvImage(i.toString(16).padStart(32,'0')));const h=dataHarness({sstv:{images:valid}});await showData(h);assert.equal(h.el('sstv-gallery').children.length,50);
+    setSstv(h,{images:[sstvImage('../bad'),sstvImage('d'.repeat(32),{complete:'true'}),sstvImage('e'.repeat(32),{created_at:'not a date'}),sstvImage('f'.repeat(32),{height:0})]});assert.equal(h.el('sstv-gallery').children.length,0);assert.equal(h.el('sstv-download').attrs.href,undefined);
+  });
+  for(const [name,hide]of[['another tab',h=>h.ctx.testApi.tab('live')],['hidden page',h=>{h.ctx.document.hidden=true;h.ctx.testApi.dataState();}],['signed out',h=>h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null})]])await check(`SSTV ${name} removes active image sources and ignores late receive updates`,async()=>{
+    const h=dataHarness({sstv:{enabled:true,phase:'receiving',current:sstvCurrent(),images:[sstvImage()]}});await showData(h);let release;h.onDataStatus=()=>new Promise(resolve=>{release=resolve;});const pending=h.ctx.testApi.dataRefresh();const signal=h.calls.at(-1).options.signal;
+    hide(h);assert.equal(signal.aborted,true);assert.equal(h.el('sstv-current-image').attrs.src,undefined);assert.equal(h.el('sstv-selected-image').attrs.src,undefined);assert.equal(h.el('sstv-download').attrs.href,undefined);
+    if(name==='signed out'){assert.equal(h.el('sstv-gallery').children.length,0);assert.equal(h.el('sstv-card').hidden,true);}
+    release({ok:true,json:async()=>({data:h.status.data,sstv:{...h.status.sstv,current:sstvCurrent({revision:100,lines_received:239})}})});await pending;assert.equal(h.el('sstv-current-image').attrs.src,undefined);assert.equal([...h.timers.values()].some(timer=>timer.ms===1000),false);
+  });
+  await check('A fresh Data entry restores safe image URLs without rebuilding unchanged gallery nodes on every poll',async()=>{
+    const h=dataHarness({sstv:{images:[sstvImage()]}});await showData(h);const item=h.el('sstv-gallery').children[0];h.ctx.testApi.dataState();assert.equal(h.el('sstv-gallery').children[0],item);
+    h.ctx.testApi.tab('live');assert.equal(h.el('sstv-gallery').children[0].children[0].children[0].attrs.src,undefined);h.ctx.testApi.tab('data');await Promise.resolve();assert.match(h.el('sstv-selected-image').attrs.src,/^\/api\/sstv\/images\//);
+  });
+  await check('Network loss freezes the last measured preview with an explicit reconnecting state',async()=>{
+    const h=dataHarness({sstv:{enabled:true,phase:'receiving',current:sstvCurrent(),images:[sstvImage()]}});await showData(h);h.onDataStatus=()=>{throw new Error('offline');};await h.ctx.testApi.dataRefresh();assert.equal(h.el('sstv-state').textContent,'Connection interrupted');assert.equal(h.el('sstv-progress').value,25);assert.match(h.el('sstv-progress-note').textContent,/Preview paused/);assert.match(h.el('sstv-message').textContent,/Reconnecting automatically/);assert.equal(h.posts().length,0);
+  });
+  await check('SSTV toggle failure restores the previous switch and does not affect packet decoding',async()=>{
+    const h=dataHarness({data:{enabled:true}});h.onSstvRequest=()=>{throw new Error('SSTV setup missing');};h.el('sstv-enabled').checked=true;await h.el('sstv-enabled').dispatch('change');assert.equal(h.el('sstv-enabled').checked,false);assert.equal(h.el('data-enabled').checked,true);assert.match(h.el('sstv-message').textContent,/SSTV setup missing/);
+  });
+  await check('SSTV mutation replies from an old admin session cannot resurrect private images',async()=>{
+    const h=dataHarness();let release;h.onSstvRequest=()=>new Promise(resolve=>{release=resolve;});h.el('sstv-enabled').checked=true;const pending=h.el('sstv-enabled').dispatch('change');h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});
+    release({ok:true,json:async()=>({sstv:{...h.status.sstv,enabled:true,current:sstvCurrent(),images:[sstvImage()]}})});await pending;assert.equal(h.el('sstv-card').hidden,true);assert.equal(h.el('sstv-current-image').attrs.src,undefined);assert.equal(h.el('sstv-gallery').children.length,0);
+  });
+  await check('A slow full snapshot cannot overwrite a newer SSTV preview or gallery from the shared light poll',async()=>{
+    const h=dataHarness({sstv:{enabled:true}});await showData(h);let release;h.onStatus=()=>new Promise(resolve=>{release=resolve;});const snapshot=h.ctx.testApi.refresh();
+    h.onDataStatus=()=>({ok:true,json:async()=>({data:h.status.data,sstv:{...h.status.sstv,phase:'receiving',current:sstvCurrent({revision:12,lines_received:180}),images:[sstvImage()]}})});await h.ctx.testApi.dataRefresh();release();await snapshot;
+    assert.equal(h.el('sstv-progress').value,75);assert.match(h.el('sstv-current-image').attrs.src,/revision=12$/);assert.equal(h.el('sstv-gallery').children.length,1);
+  });
+  await check('Preview image load failure remains recoverable at the next valid receive revision',async()=>{
+    const h=dataHarness({sstv:{enabled:true,phase:'receiving',current:sstvCurrent()}});await showData(h);await h.el('sstv-current-image').dispatch('error');assert.equal(h.el('sstv-current-image').attrs.src,undefined);assert.equal(h.el('sstv-preview-empty').hidden,false);
+    setSstv(h,{current:sstvCurrent({revision:5,lines_received:70})});assert.match(h.el('sstv-current-image').attrs.src,/revision=5$/);assert.equal(h.el('sstv-preview-empty').hidden,true);
   });
   await check('Overview uses the selected verified pair rather than an old default template',async()=>{
     const h=pairHarness();Object.assign(h.status.radio_programming.pair,{pair_id:'rpt1',plan:{name:'BOX-RX2 / BOX-TX2',rx_hz:145330000,tx_hz:433525000,tone_hz:88.5,power:'High'}});
@@ -578,9 +685,9 @@ function dashboardMarkup() {
     assert.match(bar,/aria-label="Checking for software updates"/);assert.match(bar,/aria-describedby="software-check-progress-note"/);
     assert.doesNotMatch(bar,/\b(?:value|max)=/);assert.match(html,/<div[^>]*id="software-check-progress"[^>]*hidden/);
     const editor=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/radio-editor.html'),'utf8');
-    for(const [document,ids]of[[html,['software-check-progress-bar','radio-progress-bar','radio-message-job-progress']],[editor,['task-progress-bar']]])for(const id of ids){
+    for(const [document,ids]of[[html,['software-check-progress-bar','radio-progress-bar','radio-message-job-progress','sstv-progress']],[editor,['task-progress-bar']]])for(const id of ids){
       const progress=document.match(new RegExp('<progress[^>]*id="'+id+'"[^>]*>'))[0];assert.match(progress,/class="task-progress"/);
-      if(id==='radio-progress-bar'||id==='task-progress-bar')assert.match(progress,/max="100"/);
+      if(id==='radio-progress-bar'||id==='task-progress-bar'||id==='sstv-progress')assert.match(progress,/max="100"/);
       else assert.doesNotMatch(progress,/\b(?:value|max)=/);
     }
     assert.match(editor,/<link[^>]*href="\/style\.css"/);

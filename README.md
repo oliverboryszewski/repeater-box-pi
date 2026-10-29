@@ -1,6 +1,6 @@
 # Repeater Box — Pi dashboard
 
-Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.12.0.
+Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.13.0.
 
 Source: [GitHub repository](https://github.com/oliverboryszewski/repeater-box-pi).
 
@@ -13,7 +13,8 @@ This package is ready for installation on a fresh Pi OS card. Automated checks v
 | Dashboard tab | Available features |
 |---|---|
 | **Overview** | Pi temperature, uptime, storage, voltage flags, network/service status, and USB audio/serial inventory |
-| **Live audio** | Start/stop listening over Wi-Fi, local listening volume, and optional admin-only APRS packet decoding and downloads |
+| **Live audio** | Start/stop listening over Wi-Fi, with local listening volume |
+| **Data** | Admin-only SSTV Robot 36 live preview and PNG gallery, APRS packet decoding and log downloads |
 | **Audio archives** | Browse, play, and download saved clips; admin-controlled recording on/off |
 | **Settings / Admin** | Password sign-in, station/audio toggle switches, archive limits, Wi-Fi broadcast visibility, optional DTMF status/recording control, on-demand radio programming, and software updates |
 
@@ -162,7 +163,7 @@ Optional **[radio DTMF control](config/DTMF_CONTROL.md)** provides option **0** 
 
 After separate receive-audio and transmit key/release/audio tests pass, follow **[Live repeater commissioning](config/LIVE_REPEATER.md)**. The separate `repeater-live.service` uses private station configuration, synthesized CW identification, the existing receiver feed and restricted DTMF menu. Installation leaves live RF stopped; activation is a deliberate local terminal step. Radio programming pauses this service and leaves it paused if verification or connection release fails. Remote pair changes can resume the previously active live service only after both radios verify against the authorized private catalog.
 
-Optional **[Live data decoding](config/DATA_AUDIO.md)** adds receive-only APRS / AX.25 AFSK1200 decoding to the Live audio tab. It shares the existing raw receiver feed, works offline after its one-time native decoder installation, and is independent of listening and audio recording. Admins can enable decoding, view the latest packets and download bounded JSON or text logs. It does not retune the radio, transmit packets or reconstruct arbitrary files.
+Optional **[Live data decoding](config/DATA_AUDIO.md)** adds receive-only SSTV Robot 36 pictures and APRS / AX.25 AFSK1200 packets to the separate **Data** tab. Both share the existing raw receiver feed, work offline after their one-time native decoder installations, and remain independent of listening and audio recording. Admins can view pictures as scanlines arrive, browse and download complete or clearly marked partial PNGs, and export bounded packet logs. Decoding does not retune the radio, transmit data or reconstruct arbitrary files.
 
 **Automatic station identification** has its own confirmed Admin switch, on by default. Turning it off saves a manual-identification preference across restarts and leaves spoken DTMF prompts enabled. An ID already playing may finish. Automatic scheduling groups nearby speaker turns into a conversation, waits for a safe idle gap, and suppresses Morse during the radio menu. The local default interval is nine minutes; an explicit 30-minute testing profile is available. The operator remains responsible for identification on the transmitting channel, including when automatic identification is off or testing mode is selected.
 
@@ -223,6 +224,8 @@ The visibility worker log is available with `journalctl -u repeater-wifi-visibil
 Setup guidance appears only while the related setup is incomplete. Password instructions disappear once an admin password exists, including while signed out. Wi-Fi instructions and checklist step 2 disappear once the hotspot profile exists, including when it is inactive. Checklist step 1 disappears when the installed software is running on the Pi. AIOC assignment and radio commissioning remain on the checklist; USB detection alone does not complete either step. The first-audio guidance disappears after the receive monitor is running and the dashboard has received audio during this service run. Fresh installations show the relevant instructions again.
 
 ## Updating an installed box
+
+Version 0.13.0 moves decoding to a separate Data tab and adds SSTV Robot 36 live scanline previews and a private PNG gallery. It remains compatible with update API 17. Its new optional SSTV engine needs one native installation using the reviewed helper in [Live data decoding](config/DATA_AUDIO.md); the helper leaves radio services running. The default SSTV switch is off, and existing APRS and recording preferences are preserved. Reload the page after the dashboard update to load its new tab and assets.
 
 Version 0.12.0 adds admin-only live APRS decoding and bounded packet-log downloads. It remains compatible with update API 17, so the dashboard can update from Admin while live operation continues. The optional native decoder needs a separate one-time installation described in [Live data decoding](config/DATA_AUDIO.md); running that helper does not restart radio services.
 

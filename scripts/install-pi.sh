@@ -80,6 +80,7 @@ install -m 644 "$bundle_dir/scripts/"{configure-live.py,check-live-config.py,rep
 # The optional APRS prerequisite is installed separately; copying its reviewed
 # helper does not build a decoder or change an existing radio service.
 install -m 644 "$bundle_dir/scripts/"{install-data-decoder.sh,multimon-ax25-hex.patch} /opt/repeater-box/scripts/
+install -m 644 "$bundle_dir/scripts/"{install-sstv-decoder.sh,sstv-robot36.rs,sstv-rust185.patch} /opt/repeater-box/scripts/
 # The existing maintenance lock covers this private, offline profile migration.
 # It never opens a radio or starts live operation; authorization is revoked first.
 /usr/bin/python3 - <<'LIVE_PROFILE_PY'

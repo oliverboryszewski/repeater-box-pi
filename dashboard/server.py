@@ -27,7 +27,7 @@ from http.cookies import SimpleCookie, CookieError
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, quote, unquote, urlsplit
 from controls import SettingsStore, AdminAuth
-from audio_hub import AudioHub, DataDecoder
+from audio_hub import AudioHub, DataDecoder, SstvDecoder
 from dtmf_control import DtmfControl
 from station_identification import StationIdentification
 from wifi_visibility import WifiVisibility
@@ -37,7 +37,7 @@ from radio_editor import MODELS
 from native_state import NativeState
 from radio_messages import RadioMessages, MessageError, MAX_UPLOAD_BYTES, upload_name
 
-VERSION = "0.12.0"
+VERSION = "0.13.0"
 STATIC = Path(__file__).parent / "static"
 STATIC_ROUTES = {
     "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
@@ -146,6 +146,35 @@ def data_status(server):
     """Receiver data only: no subprocess inventory or radio connection probe."""
     value = server.data_decoder.status()
     value["packets"] = server.data_decoder.list_packets(limit=100)
+    plan = getattr(server, "data_radio_plan", None)
+    confirmed = isinstance(plan, dict) and plan.get("verified") is True
+    value["rx_name"] = plan.get("rx_name") if confirmed else None
+    value["pair_label"] = plan.get("label") if confirmed else None
+    return value
+
+
+def sstv_status(server):
+    """Cached private image reception only; never probe radio hardware."""
+    value = dict(server.sstv_decoder.status())
+    value["images"] = [dict(image) for image in server.sstv_decoder.list_images(limit=50)
+                       if isinstance(image, dict)]
+    current = value.get("current")
+    if isinstance(current, dict):
+        current = value["current"] = dict(current)
+        current.pop("preview_url", None)
+    if isinstance(current, dict) and re.fullmatch(r"[0-9a-f]{32}", str(current.get("id", ""))):
+        revision = current.get("revision")
+        if type(revision) is int and 0 < revision < 2**31:
+            current["preview_url"] = f"/api/sstv/current.png?id={current['id']}&revision={revision}"
+        else:
+            current.pop("preview_url", None)
+    for image in value["images"]:
+        if isinstance(image, dict):
+            image.pop("preview_url", None)
+            image.pop("download_url", None)
+        if isinstance(image, dict) and re.fullmatch(r"[0-9a-f]{32}", str(image.get("id", ""))):
+            image["preview_url"] = f"/api/sstv/images/{image['id']}.png"
+            image["download_url"] = image["preview_url"] + "?download=1"
     plan = getattr(server, "data_radio_plan", None)
     confirmed = isinstance(plan, dict) and plan.get("verified") is True
     value["rx_name"] = plan.get("rx_name") if confirmed else None
@@ -341,9 +370,10 @@ class Monitor:
 
 class Handler(BaseHTTPRequestHandler):
     def log_request(self, code="-", size="-"):
-        # Visible dashboards poll activity twice per second. Keep errors in the
-        # journal without writing every successful indicator refresh to the SD.
-        if code == 200 and urlsplit(self.path).path == "/api/activity":
+        # Visible dashboards poll activity and receive-data progress. Keep
+        # errors without writing every successful refresh to the SD card.
+        if code == 200 and urlsplit(self.path).path in (
+                "/api/activity", "/api/data/status", "/api/sstv/status", "/api/sstv/current.png"):
             return
         super().log_request(code, size)
 
@@ -415,23 +445,28 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, PermissionError) as error:
                 self.json_response(401, {"error": str(error)})
             return
-        if path not in ("/api/admin/logout", "/api/recording", "/api/settings", "/api/wifi-visibility", "/api/software-updates/check", "/api/software-updates/install", "/api/radio-programming", "/api/radio-pair", "/api/radio-editor/read", "/api/radio-editor/write", "/api/dtmf-control", "/api/dtmf-password", "/api/station-identification", "/api/messages/delete", "/api/messages/broadcast", "/api/data/decoding"):
+        if path not in ("/api/admin/logout", "/api/recording", "/api/settings", "/api/wifi-visibility", "/api/software-updates/check", "/api/software-updates/install", "/api/radio-programming", "/api/radio-pair", "/api/radio-editor/read", "/api/radio-editor/write", "/api/dtmf-control", "/api/dtmf-password", "/api/station-identification", "/api/messages/delete", "/api/messages/broadcast", "/api/data/decoding", "/api/sstv/decoding"):
             self.json_response(404, {"error": "Unknown endpoint"})
             return
         if not self.server.auth.authorize(token, self.headers.get("X-CSRF-Token")):
             self.json_response(403, {"error": "Sign in as admin before changing settings or recording"})
             return
-        if path == "/api/data/decoding":
+        if path in ("/api/data/decoding", "/api/sstv/decoding"):
             # A receiver-only preference does not alter radio/audio services,
             # and may be changed while live RF or other maintenance is active.
             with self.server.mutation_lock:
                 try:
                     if set(data) != {"enabled"} or type(data["enabled"]) is not bool:
-                        raise ValueError("Send only the data decoding enabled flag as true or false")
+                        raise ValueError("Send only the decoding enabled flag as true or false")
                     with self.server.settings_lock:
-                        settings = self.server.settings.update({"data_decode_enabled": data["enabled"]})
-                        self.server.data_decoder.set_enabled(settings["data_decode_enabled"])
-                    self.json_response(200, {"data": data_status(self.server)})
+                        if path == "/api/sstv/decoding":
+                            settings = self.server.settings.update({"sstv_decode_enabled": data["enabled"]})
+                            self.server.sstv_decoder.set_enabled(settings["sstv_decode_enabled"])
+                        else:
+                            settings = self.server.settings.update({"data_decode_enabled": data["enabled"]})
+                            self.server.data_decoder.set_enabled(settings["data_decode_enabled"])
+                    self.json_response(200, {"sstv": sstv_status(self.server)} if path == "/api/sstv/decoding"
+                                       else {"data": data_status(self.server)})
                 except (ValueError, OSError):
                     self.json_response(400, {"error": "Data decoding could not be updated. Check its status and try again."})
             return
@@ -506,8 +541,9 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.hub.set_recording(data["enabled"])
                     self.json_response(200, self.server.hub.status())
                 elif path == "/api/settings":
-                    if "data_decode_enabled" in data and data["data_decode_enabled"] != self.server.settings.get()["data_decode_enabled"]:
-                        raise ValueError("Use the Live audio data control to change packet decoding")
+                    if any(key in data and data[key] != self.server.settings.get()[key]
+                           for key in ("data_decode_enabled", "sstv_decode_enabled")):
+                        raise ValueError("Use the Data tab controls to change packet or picture decoding")
                     if "automatic_station_id" in data and data["automatic_station_id"] != self.server.settings.get()["automatic_station_id"]:
                         raise ValueError("Review the station identification confirmation before changing automatic identification")
                     if any(key in data and data[key] != self.server.settings.get()[key]
@@ -517,6 +553,7 @@ class Handler(BaseHTTPRequestHandler):
                         settings = self.server.settings.update(data)
                         self.server.hub.update_settings(settings)
                         self.server.data_decoder.set_enabled(settings["data_decode_enabled"])
+                        self.server.sstv_decoder.set_enabled(settings["sstv_decode_enabled"])
                     self.json_response(200, {"settings": settings})
                 elif path == "/api/wifi-visibility":
                     if set(data) != {"hidden"}:
@@ -655,12 +692,15 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/activity":
             self.json_response(200, radio_activity(self.server), head=head)
             return
+        if path.startswith("/api/sstv/"):
+            self.serve_sstv(path, head)
+            return
         if path in ("/api/data/status", "/api/data/export"):
             if not self.server.auth.session(self.session_token())["authenticated"]:
                 self.json_response(403, {"error": "Sign in as admin to view received data"}, head=head)
                 return
             if path == "/api/data/status":
-                self.json_response(200, {"data": data_status(self.server)}, head=head)
+                self.json_response(200, {"data": data_status(self.server), "sstv": sstv_status(self.server)}, head=head)
                 return
             try:
                 query = urlsplit(self.path).query
@@ -714,6 +754,7 @@ class Handler(BaseHTTPRequestHandler):
             data["admin"].pop("csrf_token", None)
             data["radio_messages"] = radio_message_status(self.server, radio) if data["admin"]["authenticated"] else {"admin_required": True}
             data["data"] = data_status(self.server) if data["admin"]["authenticated"] else {"admin_required": True}
+            data["sstv"] = sstv_status(self.server) if data["admin"]["authenticated"] else {"admin_required": True}
             data["radio_activity"] = radio_activity(self.server)
             data["setup"]["notes"] = ["Channel values come from the last verified pair." if verified_pair(radio)
                                       else "Configure and verify a channel pair to confirm the displayed settings.",
@@ -768,6 +809,70 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_recording(unquote(path[len("/recordings/"):]), head)
             return
         self.send_error(404)
+
+    def serve_sstv(self, path, head):
+        if not self.server.auth.session(self.session_token())["authenticated"]:
+            self.json_response(403, {"error": "Sign in as admin to view received pictures"}, head=head)
+            return
+        query = urlsplit(self.path).query
+        if path == "/api/sstv/status":
+            if query:
+                self.json_response(400, {"error": "SSTV status does not accept query fields"}, head=head)
+            else:
+                self.json_response(200, {"sstv": sstv_status(self.server)}, head=head)
+            return
+        current = path == "/api/sstv/current.png"
+        saved = re.fullmatch(r"/api/sstv/images/([0-9a-f]{32})\.png", path)
+        if not current and saved is None:
+            self.json_response(404, {"error": "The received picture was not found"}, head=head)
+            return
+        try:
+            if len(query) > 96:
+                raise ValueError("Unsupported picture query")
+            fields = parse_qs(query, strict_parsing=True, keep_blank_values=True)
+            download = False
+            if current:
+                if (set(fields) != {"id", "revision"} or any(len(items) != 1 for items in fields.values())
+                        or not re.fullmatch(r"[0-9a-f]{32}", fields["id"][0])
+                        or not re.fullmatch(r"[1-9][0-9]{0,9}", fields["revision"][0])
+                        or not 0 < int(fields["revision"][0]) < 2**31):
+                    raise ValueError("A current picture ID and revision are required")
+                identifier = None
+                current_id, expected_revision = fields["id"][0], int(fields["revision"][0])
+            else:
+                if fields not in ({}, {"download": ["1"]}):
+                    raise ValueError("Unsupported picture query")
+                download = bool(fields)
+                identifier, current_id, expected_revision = saved[1], None, None
+        except ValueError:
+            self.json_response(400, {"error": "Choose a current preview or a saved PNG picture"}, head=head)
+            return
+        try:
+            payload, revision = self.server.sstv_decoder.image(identifier, revision=expected_revision, current_id=current_id)
+            if (not isinstance(payload, bytes) or not 32 <= len(payload) <= 2 * 1024 * 1024
+                    or not payload.startswith(b"\x89PNG\r\n\x1a\n")
+                    or type(revision) is not int or not 0 < revision < 2**31
+                    or current and revision != expected_revision):
+                raise OSError("Invalid private image response")
+        except FileNotFoundError:
+            self.json_response(404, {"error": "The received picture is no longer available"}, head=head)
+            return
+        except ValueError:
+            self.json_response(409, {"error": "The live picture changed. Refresh its preview."}, head=head)
+            return
+        except OSError:
+            self.json_response(503, {"error": "The received-picture store is temporarily unavailable"}, head=head)
+            return
+        filename = "sstv-" + (current_id if current else identifier) + ".png"
+        self.headers_for(200, "image/png", len(payload),
+                         {"Content-Disposition": ("attachment" if download else "inline")
+                          + "; filename*=UTF-8''" + quote(filename, safe=""),
+                          "X-SSTV-Revision": str(revision)})
+        if not head:
+            try:
+                self.wfile.write(payload)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                self.close_connection = True
 
     def serve_message_preview(self, identifier, head):
         if not self.server.auth.session(self.session_token())["authenticated"]:
@@ -888,6 +993,8 @@ class Handler(BaseHTTPRequestHandler):
 
 class DashboardServer(ThreadingHTTPServer):
     def server_close(self):
+        if hasattr(self, "sstv_decoder"):
+            self.sstv_decoder.close()
         if hasattr(self, "data_decoder"):
             self.data_decoder.close()
         if hasattr(self, "dtmf"):
@@ -916,6 +1023,8 @@ def make_server(host, port, recordings, state_dir=None, admin_file=None):
         server.data_radio_plan = None
         server.data_decoder = DataDecoder(state_dir, server.hub, enabled=server.settings.get()["data_decode_enabled"])
         server.data_decoder.start()
+        server.sstv_decoder = SstvDecoder(state_dir, server.hub, enabled=server.settings.get()["sstv_decode_enabled"])
+        server.sstv_decoder.start()
         server.dtmf = DtmfControl(server, state_dir=state_dir, prompt_feedback=server.native_state.live)
         server.messages = RadioMessages(state_dir, native_state_reader=server.native_state.read,
                                        busy_check=lambda: message_busy_reason(server), mutation_lock=server.mutation_lock)

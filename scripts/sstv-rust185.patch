@@ -1,0 +1,50 @@
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -2,7 +2,7 @@
+ name = "sstv"
+ version = "0.3.1"
+ edition = "2024"
+-rust-version = "1.88"
++rust-version = "1.85"
+ description = "Encode and decode slow-scan television (SSTV) transmissions, no_std compatible"
+ repository = "https://github.com/unexcellent/sstv"
+ license = "MIT"
+--- a/src/decode/demodulator.rs
++++ b/src/decode/demodulator.rs
+@@ -219,7 +219,7 @@
+     }
+ 
+     const fn midpoint(self, other: Self) -> Self {
+-        Self(i32::midpoint(self.0, other.0))
++        Self(((self.0 as i64 + other.0 as i64) / 2) as i32)
+     }
+ }
+ 
+--- a/src/modes/vis_code.rs
++++ b/src/modes/vis_code.rs
+@@ -130,7 +130,7 @@
+         }
+ 
+         let ones = bits.iter().filter(|&&bit| bit).count();
+-        if received != DATA_BITS || !ones.is_multiple_of(2) {
++        if received != DATA_BITS || ones % 2 != 0 {
+             return None;
+         }
+         let (code_bits, _parity) = bits.split_at(DATA_BITS - 1);
+--- a/src/modes/mode.rs
++++ b/src/modes/mode.rs
+@@ -119,10 +119,10 @@
+     /// Blue and Red scans.
+     pub(crate) fn sync_pulse(&self) -> (Duration, Duration) {
+         for (offset, step) in self.step_offsets() {
+-            if let Step::Control(tone) = step
+-                && tone.frequency == SYNC_FREQUENCY
+-            {
+-                return (offset, tone.duration);
++            if let Step::Control(tone) = step {
++                if tone.frequency == SYNC_FREQUENCY {
++                    return (offset, tone.duration);
++                }
+             }
+         }
+         // Every mode's sequence contains a sync pulse.

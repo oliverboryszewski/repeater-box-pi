@@ -70,6 +70,11 @@
   let dataPacketKey = null;
   let dataSessionToken = null;
   let dataRevision = 0;
+  let sstvBusy = false;
+  let sstvError = "";
+  let sstvGalleryKey = null;
+  let sstvPreviewKey = "";
+  let sstvSelectedId = "";
   let audioContext = null;
   let audioGain = null;
   let liveController = null;
@@ -77,10 +82,11 @@
   const audioNodes = new Set();
   let liveState = "stopped";
   let liveGeneration = 0;
-  const tabNames = ["overview", "live", "archives", "settings"];
+  const tabNames = ["overview", "live", "data", "archives", "settings"];
   const tabCopy = {
     overview: ["Station overview", "Pi health, radio interfaces, and your portable station at a glance."],
     live: ["Live audio", "Radio audio, directly over the box’s Wi-Fi."],
+    data: ["Data", "Receive packets and pictures over the box’s radio input."],
     archives: ["Audio archives", "Control traffic recording and listen to saved radio audio."],
     settings: ["Settings / Admin", "Manage the dashboard and radio audio service on your Pi."]
   };
@@ -396,7 +402,7 @@
       if (!data || typeof data !== "object" || Array.isArray(data) || typeof data.version !== "string") throw new Error("Invalid status data");
       // A lightweight check result or POST may finish during the slower system snapshot.
       if (updateRevision !== softwareUpdateRevision) data.software_updates = latestStatus?.software_updates;
-      if (dataSnapshotRevision !== dataRevision) data.data = latestStatus?.data;
+      if (dataSnapshotRevision !== dataRevision) { data.data = latestStatus?.data; data.sstv = latestStatus?.sstv; }
       renderStatus(data);
       lastSuccess = new Date();
       byId("connection-banner").className = "connection-banner";
@@ -427,7 +433,7 @@
     setText("page-intro", tabCopy[active][1]);
     if (location.hash !== `#${active}`) history.replaceState(null, "", `#${active}`);
     renderData();
-    if (active === "live") refreshDataStatus(true);
+    if (active === "data") refreshDataStatus(true);
   }
 
   function message(id, value, kind = "") {
@@ -1629,7 +1635,7 @@
   }
 
   function dataPanelVisible() {
-    return dataPageActive && !document.hidden && byId("panel-live").hidden === false;
+    return dataPageActive && !document.hidden && byId("panel-data").hidden === false;
   }
 
   function dataAdmin() {
@@ -1650,15 +1656,19 @@
   }
 
   function scheduleDataPoll() {
-    if (!dataPanelVisible() || !dataAdmin() || dataBusy) {
+    if (!dataPanelVisible() || !dataAdmin() || dataBusy || sstvBusy) {
       stopDataPolling(); return;
     }
-    if (latestStatus?.data?.enabled !== true) {
+    if (!decodingEnabled()) {
       if (!dataController || !dataRequestForced) stopDataPolling();
       return;
     }
     if (dataTimer !== null || dataController) return;
     dataTimer = setTimeout(() => { dataTimer = null; return refreshDataStatus(); },1000);
+  }
+
+  function decodingEnabled() {
+    return latestStatus?.data?.enabled === true || latestStatus?.sstv?.enabled === true;
   }
 
   function dataPackets(value) {
@@ -1674,7 +1684,7 @@
     byId("data-card").hidden = !signedIn;
     byId("data-auth-note").hidden = signedIn;
     if (!signedIn) {
-      dataSessionToken = null; dataError = "";
+      dataSessionToken = null; dataError = ""; sstvError = "";
       stopDataPolling();
     }
     if (!dataBusy) byId("data-enabled").checked = value?.enabled === true;
@@ -1683,7 +1693,7 @@
     const error = typeof value?.last_error === "string" ? value.last_error : "";
     pill("data-state", dataBusy ? "Updating" : !value || value.admin_required === true ? "Unavailable"
       : value.available !== true ? "Decoder unavailable" : value.enabled !== true ? "Off"
-      : value.input_enabled !== true ? "Audio feed off" : error ? "Check decoder" : value.running === true ? "Listening" : "Starting",
+      : value.input_enabled !== true ? "Audio feed off" : error ? "Check decoder" : value.running === true ? "Listening" : "Waiting for audio",
       dataBusy ? "amber" : error ? "error" : value?.running === true ? "good" : "muted");
     setText("data-description", !value || value.admin_required === true ? "Connect and sign in to check received-data decoding."
       : value.available !== true ? value.reason || "The receiver decoder needs its one-time Pi setup before it can be enabled."
@@ -1696,7 +1706,7 @@
     setText("data-last-packet",typeof value?.last_packet_at === "string" ? localTime(value.last_packet_at,true) : "None yet");
     const maxPackets = finite(value?.limits?.max_packets) ? value.limits.max_packets : 1000;
     const maxMiB = finite(value?.limits?.max_bytes) ? value.limits.max_bytes / 1048576 : 8;
-    setText("data-limits-note",`This first decoder supports APRS / AX.25 at 1200 baud. Exports contain decoded packets; other digital modes and file-transfer protocols need their own decoder. The saved log keeps up to ${maxPackets.toLocaleString()} packets or ${Number.isInteger(maxMiB) ? maxMiB : maxMiB.toFixed(1)} MiB; older packets are removed as needed.`);
+    setText("data-limits-note",`APRS / AX.25 at 1200 baud. Exports contain decoded packets, not reconstructed files. The saved log keeps up to ${maxPackets.toLocaleString()} packets or ${Number.isInteger(maxMiB) ? maxMiB : maxMiB.toFixed(1)} MiB; older packets are removed as needed.`);
     byId("data-input-note").hidden = value?.enabled !== true || value?.input_enabled === true;
     message("data-message",dataError || error,dataError || error ? "error" : "");
     const packets = dataPackets(value);
@@ -1730,6 +1740,7 @@
       if (exportable) byId(id).setAttribute("href",`/api/data/export?format=${format}`);
       else byId(id).removeAttribute("href");
     }
+    renderSstv();
     if (signedIn && dataSessionToken !== session.csrf_token) {
       dataSessionToken = session.csrf_token;
       if (dataPanelVisible()) refreshDataStatus(true);
@@ -1738,7 +1749,7 @@
   }
 
   async function refreshDataStatus(force = false) {
-    if (!dataPanelVisible() || !dataAdmin() || dataBusy || dataController || (!force && latestStatus?.data?.enabled !== true)) return;
+    if (!dataPanelVisible() || !dataAdmin() || dataBusy || sstvBusy || dataController || (!force && !decodingEnabled())) return;
     if (dataTimer !== null) clearTimeout(dataTimer);
     dataTimer = null;
     const generation = dataGeneration, csrf = session.csrf_token;
@@ -1753,10 +1764,10 @@
         throw new Error("Data status unavailable");
       }
       if (!result.data || typeof result.data !== "object" || Array.isArray(result.data)) throw new Error("Unreadable data status");
-      dataRevision += 1; dataError = ""; latestStatus = {...latestStatus,data:result.data}; renderData();
+      dataRevision += 1; dataError = ""; latestStatus = {...latestStatus,data:result.data,sstv:result.sstv && typeof result.sstv === "object" && !Array.isArray(result.sstv) ? result.sstv : latestStatus?.sstv}; renderData();
     } catch (_) {
       if (generation === dataGeneration && dataAdmin() && dataPanelVisible()) {
-        dataError = "Data status connection interrupted. Reconnecting automatically…"; message("data-message",dataError,"error");
+        dataError = "Data status connection interrupted. Reconnecting automatically…"; message("data-message",dataError,"error"); renderSstv();
       }
     } finally {
       clearTimeout(timeout);
@@ -1778,6 +1789,150 @@
       }
     } catch (error) { dataError = error.message; }
     finally { dataBusy = false; mutationBusy = false; renderAdmin(); }
+  });
+
+  function canChangeSstv() {
+    const value = latestStatus?.sstv;
+    return dataAdmin() && !sstvBusy && !mutationBusy && typeof value?.enabled === "boolean" &&
+      (value.available === true || value.enabled === true);
+  }
+
+  function sstvId(value) { return typeof value === "string" && /^[0-9a-f]{32}$/.test(value); }
+  function sstvDimensions(value) {
+    return Number.isInteger(value?.width) && Number.isInteger(value?.height) &&
+      value.width >= 1 && value.width <= 1024 && value.height >= 1 && value.height <= 1024;
+  }
+  function sstvImages(value) {
+    return Array.isArray(value?.images) ? value.images.slice(0,50).filter(image => image && sstvId(image.id) &&
+      typeof image.complete === "boolean" && sstvDimensions(image) && Number.isInteger(image.lines_received) &&
+      image.lines_received >= 1 && image.lines_received <= image.height && typeof image.created_at === "string" &&
+      Number.isFinite(new Date(image.created_at).getTime())) : [];
+  }
+  function sstvImageUrl(id, download = false) {
+    return sstvId(id) ? `/api/sstv/images/${id}.png${download ? "?download=1" : ""}` : "";
+  }
+  function currentSstv(value) {
+    const current = value?.current;
+    return current && sstvId(current.id) && sstvDimensions(current) &&
+      Number.isSafeInteger(current.revision) && current.revision >= 0 &&
+      Number.isInteger(current.lines_received) && current.lines_received >= 0 && current.lines_received <= current.height ? current : null;
+  }
+  function clearSstvImage(element) {
+    element.removeAttribute("src"); element.hidden = true;
+  }
+  function renderSstv() {
+    const signedIn = dataAdmin(), value = signedIn ? latestStatus?.sstv : null;
+    const visible = signedIn && dataPanelVisible();
+    byId("sstv-card").hidden = !signedIn;
+    if (!sstvBusy) byId("sstv-enabled").checked = value?.enabled === true;
+    byId("sstv-enabled").disabled = !canChangeSstv();
+    setText("sstv-enabled-value",sstvBusy ? "Saving…" : value?.enabled === true ? "On" : "Off");
+    const error = typeof value?.last_error === "string" ? value.last_error : "";
+    const current = currentSstv(value), receiving = value?.phase === "receiving" && current !== null;
+    pill("sstv-state",sstvBusy ? "Updating" : !value || value.admin_required === true ? "Unavailable"
+      : value.available !== true ? "Decoder unavailable" : value.enabled !== true ? "Off"
+      : value.input_enabled !== true ? "Audio feed off" : error ? "Check decoder"
+      : dataError ? "Connection interrupted" : receiving ? "Receiving picture"
+      : value.phase === "interrupted" ? "Reception interrupted" : "Waiting for picture",
+      sstvBusy ? "amber" : error ? "error" : receiving && !dataError ? "good" : "muted");
+    setText("sstv-description",!value || value.admin_required === true ? "Connect and sign in to check SSTV reception."
+      : value.available !== true ? value.reason || "The SSTV receiver needs its one-time Pi setup before it can be enabled."
+      : value.enabled !== true ? "SSTV decoding is off. Saved pictures remain in the gallery."
+      : value.input_enabled !== true ? "SSTV is enabled and waiting for the radio audio feed."
+      : receiving ? "Receiving a Robot 36 picture from the RX radio. The preview follows the image lines received."
+      : value.phase === "interrupted" ? "Reception ended before the whole picture arrived. Any saved partial picture is marked in the gallery."
+      : "Waiting for a Robot 36 signal on the RX radio’s current channel. Browser listening is optional.");
+    byId("sstv-input-note").hidden = value?.enabled !== true || value?.input_enabled === true;
+    message("sstv-message",sstvError || error || dataError,sstvError || error || dataError ? "error" : "");
+    byId("sstv-reception").hidden = !current;
+    const preview = byId("sstv-current-image");
+    const previewKey = visible && current && current.lines_received > 0 ? `${current.id}:${current.revision}` : "";
+    if (previewKey !== sstvPreviewKey) {
+      setText("sstv-preview-empty","Waiting for the first image lines.");
+      clearSstvImage(preview);
+      if (previewKey) {
+        preview.setAttribute("src",`/api/sstv/current.png?id=${current.id}&revision=${current.revision}`);
+        preview.hidden = false;
+      }
+      sstvPreviewKey = previewKey;
+    }
+    byId("sstv-preview-empty").hidden = Boolean(previewKey);
+    if (current) {
+      const progress = Math.min(100,Math.max(0,current.lines_received / current.height * 100));
+      byId("sstv-progress").value = progress;
+      byId("sstv-progress").setAttribute("aria-valuetext",`${current.lines_received} of ${current.height} image lines received`);
+      setText("sstv-current-title",receiving ? "Receiving picture" : value?.phase === "interrupted" ? "Picture interrupted" : "Latest reception");
+      setText("sstv-current-detail",`${typeof value.mode === "string" ? value.mode : "Robot 36"} · ${current.width} × ${current.height}${typeof current.started_at === "string" ? " · " + localTime(current.started_at,true) : ""}`);
+      setText("sstv-progress-note",`${current.lines_received} of ${current.height} lines · ${Math.floor(progress)}%${dataError ? " · Preview paused while reconnecting" : ""}`);
+    } else {
+      byId("sstv-progress").value = 0; byId("sstv-progress").removeAttribute("aria-valuetext");
+      setText("sstv-current-title","Receiving picture"); setText("sstv-current-detail",""); setText("sstv-progress-note","Waiting for image data.");
+    }
+    const images = sstvImages(value);
+    const galleryKey = JSON.stringify([visible,images]);
+    if (galleryKey !== sstvGalleryKey) {
+      const gallery = byId("sstv-gallery"); gallery.replaceChildren();
+      for (const image of images) {
+        const item = document.createElement("article"); item.className = "sstv-gallery-item"; item.setAttribute("role","listitem");
+        const button = document.createElement("button"); button.type = "button"; button.className = "sstv-thumbnail";
+        button.setAttribute("aria-label",`View ${typeof image.mode === "string" ? image.mode : "SSTV"} picture received ${localTime(image.created_at,true)}`);
+        button.dataset.imageId = image.id;
+        const thumbnail = document.createElement("img"); thumbnail.alt = "Received SSTV picture"; thumbnail.loading = "lazy"; thumbnail.decoding = "async";
+        thumbnail.width = image.width; thumbnail.height = image.height;
+        if (visible) thumbnail.setAttribute("src",sstvImageUrl(image.id));
+        const caption = document.createElement("span"); caption.textContent = `${localTime(image.created_at,true)} · ${image.complete ? "Complete" : "Partial · " + image.lines_received + "/" + image.height + " lines"}`;
+        button.append(thumbnail,caption); button.addEventListener("click",() => {
+          if (!dataAdmin() || !dataPanelVisible() || !sstvImages(latestStatus?.sstv).some(item => item.id === image.id)) return;
+          sstvSelectedId = image.id; renderSstv();
+        });
+        item.append(button); gallery.append(item);
+      }
+      sstvGalleryKey = galleryKey;
+    }
+    if (!images.some(image => image.id === sstvSelectedId)) sstvSelectedId = images[0]?.id || "";
+    for (const row of byId("sstv-gallery").children) {
+      const button = row.children[0], selected = button.dataset.imageId === sstvSelectedId;
+      button.setAttribute("aria-pressed",String(selected));
+      button.classList.toggle("selected",selected);
+    }
+    const selected = visible ? images.find(image => image.id === sstvSelectedId) : null;
+    byId("sstv-selected").hidden = !selected;
+    const selectedImage = byId("sstv-selected-image");
+    if (selected) {
+      const source = sstvImageUrl(selected.id);
+      if (selectedImage.getAttribute("src") !== source) selectedImage.setAttribute("src",source);
+      selectedImage.hidden = false;
+      setText("sstv-selected-title",`${typeof selected.mode === "string" ? selected.mode : "Received picture"}${selected.complete ? "" : " · Partial"}`);
+      setText("sstv-selected-detail",`${localTime(selected.created_at,true)} · ${selected.width} × ${selected.height} · ${selected.complete ? "Complete" : selected.lines_received + "/" + selected.height + " lines received"}${finite(selected.size_bytes) ? " · " + formatBytes(selected.size_bytes) : ""}`);
+      byId("sstv-download").setAttribute("href",sstvImageUrl(selected.id,true));
+    } else {
+      clearSstvImage(selectedImage); byId("sstv-download").removeAttribute("href");
+      setText("sstv-selected-title","Received picture"); setText("sstv-selected-detail","");
+    }
+    if (!signedIn) sstvSelectedId = "";
+    byId("sstv-empty").hidden = images.length > 0;
+    setText("sstv-gallery-summary",images.length ? `${images.length} saved picture${images.length === 1 ? "" : "s"} · newest first` : "No received pictures yet");
+    const maximum = finite(value?.limits?.max_images) ? value.limits.max_images : 50;
+    const mib = finite(value?.limits?.max_bytes) ? value.limits.max_bytes / 1048576 : 100;
+    setText("sstv-limits-note",`The gallery keeps up to ${maximum.toLocaleString()} pictures or ${Number.isInteger(mib) ? mib : mib.toFixed(1)} MiB; the oldest pictures are removed when a limit is reached. Picture quality depends on the radio signal and audio level.`);
+  }
+  byId("sstv-current-image").addEventListener("error",() => {
+    if (!dataAdmin() || !dataPanelVisible()) return;
+    clearSstvImage(byId("sstv-current-image")); sstvPreviewKey = ""; byId("sstv-preview-empty").hidden = false;
+    setText("sstv-preview-empty","Preview not available yet. Waiting for the next image update.");
+  });
+  byId("sstv-enabled").addEventListener("change",async() => {
+    if (!canChangeSstv()) { renderData(); return; }
+    const enabled = byId("sstv-enabled").checked, csrf = session.csrf_token;
+    sstvBusy = true; mutationBusy = true; sstvError = ""; stopDataPolling(); renderAdmin();
+    try {
+      const result = await postJson("/api/sstv/decoding",{enabled});
+      if (!result.sstv || typeof result.sstv.enabled !== "boolean") throw new Error("The Pi returned an unreadable SSTV status.");
+      if (dataAdmin() && session.csrf_token === csrf) {
+        dataRevision += 1; latestStatus = {...latestStatus,sstv:result.sstv};
+      }
+    } catch (error) { sstvError = error.message; }
+    finally { sstvBusy = false; mutationBusy = false; renderAdmin(); }
   });
 
   function emitLiveAudio(state = liveState) {
@@ -2494,7 +2649,7 @@
     emitLiveAudio();
   });
   byId("recording-audio").addEventListener("play", () => { if (liveState !== "stopped") stopListening(true); });
-  window.addEventListener("pagehide", () => { dataPageActive = false; stopDataPolling(); softwareCheckPageActive = false; stopSoftwareCheckPolling(); stopListening(); stopRadioActivity(); });
+  window.addEventListener("pagehide", () => { dataPageActive = false; stopDataPolling(); renderSstv(); softwareCheckPageActive = false; stopSoftwareCheckPolling(); stopListening(); stopRadioActivity(); });
   window.addEventListener("pageshow", startRadioActivity);
   window.addEventListener("pageshow", () => { softwareCheckPageActive = true; renderSoftwareCheckProgress(); });
   window.addEventListener("pageshow", () => { dataPageActive = true; renderData(); });

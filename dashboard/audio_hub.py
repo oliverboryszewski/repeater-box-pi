@@ -26,12 +26,14 @@ import select
 import shutil
 import socket
 import stat
+import struct
 import subprocess
 import sys
 import threading
 import time
 import uuid
 import wave
+import zlib
 
 
 class AudioHub:
@@ -1054,11 +1056,9 @@ class DataDecoder:
             options = {"stdout": subprocess.PIPE, "stderr": subprocess.DEVNULL,
                        "bufsize": 0, "close_fds": True,
                        "env": {"PATH": "/usr/bin:/bin", "LC_ALL": "C"}}
-            sox = self._factory([self.sox_path, "--buffer", "2048", "-q", "-D",
-                "-t", "raw", "-e", "floating-point", "-b", "32", "-L", "-r", "48000", "-c", "1", "-",
-                "-t", "raw", "-e", "signed-integer", "-b", "16", "-L", "-r", "22050", "-c", "1", "-"],
+            sox = self._factory(self._resampler_command(),
                 stdin=subprocess.PIPE, **options)
-            decoder = self._factory([self.decoder_path, "-q", "-c", "-a", "AFSK1200", "-A", "-t", "raw", "-"],
+            decoder = self._factory(self._decoder_command(),
                                     stdin=sox.stdout, **options)
             sox.stdout.close()
             with self._lock:
@@ -1074,9 +1074,17 @@ class DataDecoder:
         except (OSError, ValueError):
             self._dispose(tuple(process for process in (sox, decoder) if process is not None))
             with self._lock:
-                self._error = "The receive-only packet decoder could not start."
+                self._error = "The receive-only data decoder could not start."
                 self._retry_at = self._clock() + self.RETRY_SECONDS
             return False
+
+    def _resampler_command(self):
+        return [self.sox_path, "--buffer", "2048", "-q", "-D",
+                "-t", "raw", "-e", "floating-point", "-b", "32", "-L", "-r", "48000", "-c", "1", "-",
+                "-t", "raw", "-e", "signed-integer", "-b", "16", "-L", "-r", "22050", "-c", "1", "-"]
+
+    def _decoder_command(self):
+        return [self.decoder_path, "-q", "-c", "-a", "AFSK1200", "-A", "-t", "raw", "-"]
 
     def _run(self):
         while not self._stop.is_set():
@@ -1106,7 +1114,7 @@ class DataDecoder:
             if processes is not None and any(process.poll() is not None for process in processes):
                 self._end_pipeline()
                 with self._lock:
-                    self._error = "The receive-only packet decoder stopped. Retrying automatically."
+                    self._error = "The receive-only data decoder stopped. Retrying automatically."
                     self._retry_at = self._clock() + self.RETRY_SECONDS
                 continue
             if processes is None:
@@ -1165,7 +1173,7 @@ class DataDecoder:
                 except queue.Empty:
                     break
 
-    def status(self):
+    def _worker_status(self):
         with self._lock:
             recheck = not self._closed and not self._tools_ready and self._clock() >= self._tools_check_at
             if recheck:
@@ -1186,10 +1194,15 @@ class DataDecoder:
                       else "Data decoding is off." if not self._enabled else "")
             return {"available": available, "enabled": self._enabled, "running": running,
                     "input_enabled": input_enabled, "mode": self.MODE,
-                    "packet_count": len(self._packets), "stored_bytes": self._total_bytes,
-                    "last_packet_at": self._packets[-1]["time"] if self._packets else None,
-                    "last_error": self._error, "reason": reason,
-                    "limits": {"max_packets": self.MAX_PACKETS, "max_bytes": self.MAX_BYTES}}
+                    "stored_bytes": self._total_bytes, "last_error": self._error, "reason": reason}
+
+    def status(self):
+        value = self._worker_status()
+        with self._lock:
+            value.update(packet_count=len(self._packets),
+                         last_packet_at=self._packets[-1]["time"] if self._packets else None,
+                         limits={"max_packets": self.MAX_PACKETS, "max_bytes": self.MAX_BYTES})
+            return value
 
     def list_packets(self, limit=100):
         if type(limit) is not int or not 1 <= limit <= self.MAX_PACKETS:
@@ -1232,3 +1245,322 @@ class DataDecoder:
         self._end_pipeline()
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=2)
+
+
+class SstvDecoder(DataDecoder):
+    """Robot 36 scanlines and private PNGs, sharing only the bounded RX tap.
+
+    The inherited worker owns process lifetimes and gap/overflow epochs. Image
+    decoding runs in a stdin-only native child; PNG generation and storage run
+    on its output worker, never in AudioHub's audio handler.
+    """
+    DECODER_PATH = "/opt/repeater-box/vendor/sstv/sstv-robot36"
+    MODE = "Robot36"
+    WIDTH, HEIGHT = 320, 240
+    MAX_LINE_BYTES = 4096
+    MAX_IMAGES = 50
+    MAX_BYTES = 100 * 1024 * 1024
+    MAX_PNG_BYTES = 512 * 1024
+    MIN_FREE_BYTES = 256 * 1024 * 1024
+    PREVIEW_SECONDS = 0.4
+    SOURCE_COMMIT = "9761c4c61a6353d7ae2173e1579e434e6c1b1ce3"
+    SOURCE_SHA256 = "11729f8e83c4e6776f25e7c795ad5cf8e66f7302f04bf6f1d0851b6c50b3a716"
+    COMPAT_PATCH_SHA256 = "c0f7fad544dd72f9cb060e6232626192380e9fa9613897264f079a565370c8e1"
+    WRAPPER_SHA256 = "b693e733e30267de9c8d3578e598d9c9c75f5c32908abfea5a4016f3b4527821"
+
+    def __init__(self, state_dir, audio_hub, *, enabled=False,
+                 decoder_path=DECODER_PATH, sox_path=DataDecoder.SOX_PATH,
+                 process_factory=None, monotonic=None, wall_time=None):
+        self.directory = Path(state_dir) / "sstv-images"
+        self.hub, self.decoder_path, self.sox_path = audio_hub, str(decoder_path), str(sox_path)
+        self._factory = process_factory or subprocess.Popen
+        self._clock, self._wall_time = monotonic or time.monotonic, wall_time or time.time
+        self._lock, self._stop = threading.RLock(), threading.Event()
+        self._enabled, self._closed = enabled is True, False
+        self._thread = self._subscription = self._queue = self._processes = self._reader = None
+        self._epoch, self._retry_at, self._last_audio = 0, 0.0, None
+        self._accept_after = self._clock()
+        self._error, self._phase = None, "idle"
+        self._images, self._total_bytes = deque(), 0
+        self._current = self._pixels = None
+        self._previews, self._preview_at = {}, 0.0
+        self._store_ready = False
+        self._tools_ready = process_factory is not None or self._validate_tools()
+        self._tools_check_at = self._clock() + self.RETRY_SECONDS
+        try:
+            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            self._check_directory()
+            self._load_images()
+            self._store_ready = True
+        except (OSError, ValueError, TypeError, UnicodeError, KeyError):
+            self._error = "The private SSTV image store is unavailable."
+
+    def _validate_tools(self):
+        try:
+            binary = self._read_owned(self.decoder_path, owner=0, maximum=16 * 1024 * 1024, executable=True)
+            self._read_owned(self.sox_path, owner=0, maximum=16 * 1024 * 1024, executable=True)
+            path = Path(self.decoder_path).with_name("metadata.json")
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+            with os.fdopen(fd, "rb") as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022 or info.st_size > 4096:
+                    return False
+                actual = json.loads(stream.read(4097))
+            expected = {"schema": 1, "engine": "sstv-robot36", "version": "0.3.1", "source_commit": self.SOURCE_COMMIT,
+                        "source_sha256": self.SOURCE_SHA256, "compat_patch_sha256": self.COMPAT_PATCH_SHA256,
+                        "wrapper_sha256": self.WRAPPER_SHA256, "binary_sha256": hashlib.sha256(binary).hexdigest(),
+                        "input": "s16le-48000", "output": "sstv-json-rows-v1"}
+            return actual == expected
+        except (OSError, ValueError, TypeError, UnicodeError):
+            return False
+
+    def _resampler_command(self):
+        command = super()._resampler_command()
+        command[command.index("22050")] = "48000"
+        return command
+
+    def _decoder_command(self):
+        return [self.decoder_path]
+
+    @staticmethod
+    def _png(pixels):
+        def chunk(kind, content):
+            return struct.pack(">I", len(content)) + kind + content + struct.pack(">I", zlib.crc32(kind + content) & 0xffffffff)
+        stride = SstvDecoder.WIDTH * 3
+        scanlines = b"".join(b"\0" + pixels[row:row + stride] for row in range(0, len(pixels), stride))
+        header = struct.pack(">IIBBBBB", SstvDecoder.WIDTH, SstvDecoder.HEIGHT, 8, 2, 0, 0, 0)
+        return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + chunk(b"IDAT", zlib.compress(scanlines, 1)) + chunk(b"IEND", b"")
+
+    @classmethod
+    def _valid_image(cls, value):
+        fields = {"id", "created_at", "mode", "width", "height", "lines_received", "complete", "size_bytes", "sha256"}
+        if not isinstance(value, dict) or set(value) != fields:
+            return False
+        if not isinstance(value["id"], str) or not cls.ID.fullmatch(value["id"]):
+            return False
+        if (value["mode"] != cls.MODE or value["width"] != cls.WIDTH or value["height"] != cls.HEIGHT
+                or type(value["lines_received"]) is not int or not 1 <= value["lines_received"] <= cls.HEIGHT
+                or type(value["complete"]) is not bool or value["complete"] != (value["lines_received"] == cls.HEIGHT)
+                or type(value["size_bytes"]) is not int or not 0 < value["size_bytes"] <= cls.MAX_PNG_BYTES
+                or not isinstance(value["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", value["sha256"])):
+            return False
+        try:
+            return isinstance(value["created_at"], str) and len(value["created_at"]) <= 40 and dt.datetime.fromisoformat(value["created_at"]).tzinfo is not None
+        except ValueError:
+            return False
+
+    def _load_images(self):
+        entries, seen = [], set()
+        with os.scandir(self.directory) as folder:
+            for count, entry in enumerate(folder, 1):
+                if count > self.MAX_IMAGES * 4 + 32:
+                    raise ValueError("The SSTV directory exceeds its limit")
+                path = self.directory / entry.name
+                if re.fullmatch(r"\.image-[0-9a-f]{32}\.(png|json)\.tmp", entry.name):
+                    self._read_owned(path, owner=os.getuid(), maximum=self.MAX_PNG_BYTES)
+                    path.unlink()
+                    continue
+                if re.fullmatch(r"[0-9a-f]{32}\.png", entry.name):
+                    seen.add(entry.name[:-4])
+                    continue
+                if not self.RECORD_NAME.fullmatch(entry.name):
+                    continue
+                value = json.loads(self._read_owned(path, owner=os.getuid(), maximum=4096))
+                if not self._valid_image(value) or value["id"] + ".json" != entry.name:
+                    raise ValueError("Invalid SSTV image metadata")
+                png = self._read_owned(self.directory / (value["id"] + ".png"), owner=os.getuid(), maximum=self.MAX_PNG_BYTES)
+                if len(png) != value["size_bytes"] or hashlib.sha256(png).hexdigest() != value["sha256"] or not png.startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise ValueError("SSTV image does not match its metadata")
+                entries.append(value)
+        known = {value["id"] for value in entries}
+        for identifier in seen - known:
+            # A crash between atomic image and metadata publication can leave
+            # an unreferenced generated PNG. It is never offered for download.
+            path = self.directory / (identifier + ".png")
+            self._read_owned(path, owner=os.getuid(), maximum=self.MAX_PNG_BYTES)
+            path.unlink()
+        for value in sorted(entries, key=lambda item: (item["created_at"], item["id"])):
+            self._images.append(value)
+            self._total_bytes += value["size_bytes"]
+        self._prune_images_locked()
+
+    def _remove_oldest_locked(self):
+        value = self._images[0]
+        for suffix, maximum in ((".json", 4096), (".png", self.MAX_PNG_BYTES)):
+            path = self.directory / (value["id"] + suffix)
+            self._read_owned(path, owner=os.getuid(), maximum=maximum)
+            path.unlink()
+        self._images.popleft()
+        self._total_bytes -= value["size_bytes"]
+
+    def _prune_images_locked(self, incoming=0):
+        while self._images and (len(self._images) > self.MAX_IMAGES or self._total_bytes + incoming > self.MAX_BYTES
+                or shutil.disk_usage(self.directory).free < self.MIN_FREE_BYTES + incoming):
+            self._remove_oldest_locked()
+        if incoming and shutil.disk_usage(self.directory).free < self.MIN_FREE_BYTES + incoming:
+            raise OSError("Insufficient free space for an SSTV image")
+
+    def _atomic_image_file(self, path, raw):
+        temporary = self.directory / (".image-" + uuid.uuid4().hex + path.suffix + ".tmp")
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(raw); stream.flush(); os.fsync(stream.fileno())
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    def _save_image_locked(self, complete):
+        value = self._current
+        if value is None or value["lines_received"] == 0 or value.get("saved"):
+            return
+        self._check_directory()
+        png = self._png(self._pixels)
+        if len(png) > self.MAX_PNG_BYTES:
+            raise ValueError("SSTV PNG exceeds its limit")
+        metadata = {key: value[key] for key in ("id", "mode", "width", "height", "lines_received")}
+        metadata.update(created_at=value["started_at"], complete=complete,
+                        size_bytes=len(png), sha256=hashlib.sha256(png).hexdigest())
+        if not self._valid_image(metadata):
+            raise ValueError("Invalid generated SSTV image")
+        self._prune_images_locked(len(png) + 4096)
+        image_path = self.directory / (value["id"] + ".png")
+        self._atomic_image_file(image_path, png)
+        try:
+            self._atomic_image_file(self.directory / (value["id"] + ".json"), (json.dumps(metadata) + "\n").encode())
+        except OSError:
+            image_path.unlink(missing_ok=True)
+            raise
+        self._images.append(metadata); self._total_bytes += len(png)
+        value["saved"] = True
+        self._prune_images_locked()
+
+    def _publish_preview_locked(self, force=False):
+        if self._current is None:
+            return
+        now = self._clock()
+        if not force and now - self._preview_at < self.PREVIEW_SECONDS:
+            return
+        self._current["revision"] += 1
+        self._previews[self._current["revision"]] = self._png(self._pixels)
+        while len(self._previews) > 4:
+            del self._previews[next(iter(self._previews))]
+        self._preview_at = now
+
+    def _finish_image_locked(self, complete):
+        if self._current is None or self._phase != "receiving":
+            return
+        complete = bool(complete or self._current["lines_received"] == self.HEIGHT)
+        self._phase = "complete" if complete else "interrupted"
+        self._current["complete"] = complete
+        self._publish_preview_locked(force=True)
+        if self._store_ready:
+            try:
+                self._save_image_locked(complete)
+            except (OSError, ValueError):
+                self._store_ready = False
+                self._error = "The SSTV image could not be saved safely. Decoding is paused."
+
+    @staticmethod
+    def _unique_event(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("Duplicate SSTV event field")
+            result[key] = value
+        return result
+
+    def _accept_output(self, line, epoch):
+        if not isinstance(line, bytes) or len(line) > self.MAX_LINE_BYTES or not line.endswith(b"\n") or not line.startswith(b"SSTV1 "):
+            return False
+        try:
+            event = json.loads(line[6:], object_pairs_hook=self._unique_event)
+        except (ValueError, UnicodeError):
+            return False
+        if not isinstance(event, dict) or not self.hub.raw_input_enabled():
+            return False
+        with self._lock:
+            if self._closed or not self._enabled or epoch != self._epoch or not self._store_ready:
+                return False
+            kind = event.get("event")
+            if kind == "begin":
+                if set(event) != {"event", "mode", "width", "height"} or event["mode"] != self.MODE or type(event["width"]) is not int or type(event["height"]) is not int or (event["width"], event["height"]) != (self.WIDTH, self.HEIGHT):
+                    return False
+                self._finish_image_locked(False)
+                if not self._store_ready:
+                    return False
+                self._current = {"id": uuid.uuid4().hex, "mode": self.MODE, "width": self.WIDTH, "height": self.HEIGHT,
+                    "lines_received": 0, "revision": 0, "complete": False,
+                    "started_at": dt.datetime.fromtimestamp(self._wall_time(), dt.timezone.utc).isoformat()}
+                self._pixels = bytearray(self.WIDTH * self.HEIGHT * 3)
+                self._previews.clear(); self._phase = "receiving"; self._error = None
+                self._publish_preview_locked(force=True)
+                return True
+            if self._current is None or self._phase != "receiving":
+                return False
+            if kind == "row":
+                if (set(event) != {"event", "row", "rgb"} or type(event["row"]) is not int
+                        or event["row"] != self._current["lines_received"] or not 0 <= event["row"] < self.HEIGHT
+                        or not isinstance(event["rgb"], str) or not re.fullmatch(r"[0-9a-fA-F]{1920}", event["rgb"])):
+                    return False
+                rgb = bytes.fromhex(event["rgb"])
+                offset = event["row"] * self.WIDTH * 3
+                self._pixels[offset:offset + len(rgb)] = rgb
+                self._current["lines_received"] += 1
+                self._publish_preview_locked()
+                return True
+            if kind == "end":
+                if set(event) != {"event", "complete"} or type(event["complete"]) is not bool:
+                    return False
+                complete = self._current["lines_received"] == self.HEIGHT
+                if event["complete"] is not complete:
+                    return False
+                self._finish_image_locked(complete)
+                return True
+            return False
+
+    def _end_pipeline(self, drain=False):
+        super()._end_pipeline(drain=drain)
+        with self._lock:
+            self._finish_image_locked(False)
+
+    def status(self):
+        base = self._worker_status()
+        with self._lock:
+            current = {key: value for key, value in self._current.items() if key != "saved"} if self._current else None
+            base.pop("packet_count", None); base.pop("last_packet_at", None)
+            base.update(phase=self._phase, current=current,
+                        progress=round(100 * current["lines_received"] / self.HEIGHT, 1) if current else 0,
+                        image_count=len(self._images), last_image_at=self._images[-1]["created_at"] if self._images else None,
+                        limits={"max_images": self.MAX_IMAGES, "max_bytes": self.MAX_BYTES})
+            if not self._tools_ready:
+                base["reason"] = "Install the receive-only SSTV decoder on the Pi first."
+            elif not self._store_ready:
+                base["reason"] = "The private SSTV image store is unavailable."
+            return base
+
+    def list_images(self, limit=50):
+        if type(limit) is not int or not 1 <= limit <= SstvDecoder.MAX_IMAGES:
+            raise ValueError("Invalid SSTV gallery limit")
+        with self._lock:
+            return [{key: item for key, item in value.items() if key != "sha256"}
+                    for value in list(self._images)[-limit:][::-1]]
+
+    def image(self, identifier=None, revision=None, current_id=None):
+        with self._lock:
+            if identifier is None:
+                if self._current is None:
+                    raise FileNotFoundError("No current SSTV image")
+                if (not isinstance(current_id, str) or current_id != self._current["id"]
+                        or type(revision) is not int or revision not in self._previews):
+                    raise ValueError("SSTV preview has changed")
+                return self._previews[revision], revision
+            if not isinstance(identifier, str) or not self.ID.fullmatch(identifier) or revision is not None or current_id is not None:
+                raise ValueError("Invalid SSTV image")
+            metadata = next((value for value in self._images if value["id"] == identifier), None)
+            if metadata is None:
+                raise FileNotFoundError("Unknown SSTV image")
+            raw = self._read_owned(self.directory / (identifier + ".png"), owner=os.getuid(), maximum=self.MAX_PNG_BYTES)
+            if len(raw) != metadata["size_bytes"] or hashlib.sha256(raw).hexdigest() != metadata["sha256"]:
+                raise OSError("SSTV image failed its integrity check")
+            return raw, 1

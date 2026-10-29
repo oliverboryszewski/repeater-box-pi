@@ -29,6 +29,7 @@
     <nav class="tab-nav" aria-label="Dashboard sections" role="tablist">
       <button type="button" role="tab" id="tab-overview" aria-controls="panel-overview" aria-selected="true" tabindex="0" data-tab="overview">Overview</button>
       <button type="button" role="tab" id="tab-live" aria-controls="panel-live" aria-selected="false" tabindex="-1" data-tab="live">Live audio <span class="tab-live-dot" id="tab-live-dot" hidden aria-label="Listening"></span></button>
+      <button type="button" role="tab" id="tab-data" aria-controls="panel-data" aria-selected="false" tabindex="-1" data-tab="data">Data</button>
       <button type="button" role="tab" id="tab-archives" aria-controls="panel-archives" aria-selected="false" tabindex="-1" data-tab="archives">Audio archives</button>
       <button type="button" role="tab" id="tab-settings" aria-controls="panel-settings" aria-selected="false" tabindex="-1" data-tab="settings">Settings / Admin</button>
     </nav>
@@ -94,11 +95,31 @@
         <dl class="detail-list live-details"><div><dt>Audio source</dt><dd id="live-input-state">Unavailable</dd></div><div><dt>Connected listeners</dt><dd id="live-listeners">Unavailable</dd></div><div><dt>Stream format</dt><dd id="live-format">Unavailable</dd></div><div><dt>Last audio packet</dt><dd id="live-last-packet">Unavailable</dd></div></dl>
         <p class="help-text">Tap Start listening to allow browser audio. Use your device’s volume controls as well. A short delay is normal. Listening continues when you change dashboard tabs; leaving or reloading this page stops it.</p>
       </section>
-      <p class="help-text" id="data-auth-note">Admin sign-in is required to decode and download received packets. <button type="button" class="text-button" id="data-admin-link">Open Settings / Admin</button></p>
+      <div class="two-column"><section class="card"><h2>Live listening and recording</h2><p class="help-text">Listening and recording are independent. You can listen while recording is off, or keep recording with no browser connected. Recording controls are in Audio archives.</p></section><section class="card" id="audio-setup-help" hidden><h2>First audio setup</h2><p class="help-text">The receive AIOC must be assigned and the Pi audio service enabled before this player can receive traffic. A connected USB interface alone does not confirm radio audio.</p></section></div>
+    </section>
+    <section id="panel-data" role="tabpanel" aria-labelledby="tab-data" tabindex="0" hidden>
+      <p class="help-text" id="data-auth-note">Admin sign-in is required to decode data and view or download received packets and pictures. <button type="button" class="text-button" id="data-admin-link">Open Settings / Admin</button></p>
+      <section class="card sstv-card" id="sstv-card" aria-labelledby="sstv-title" hidden>
+        <div class="section-heading"><div><p class="eyebrow">Receive pictures over radio</p><h2 id="sstv-title">SSTV pictures</h2></div><span class="pill pill-muted" id="sstv-state">Checking</span></div>
+        <p class="section-description">Watch a Robot 36 image build as it arrives. Received pictures stay in the gallery for viewing and PNG download. Interrupted pictures are marked Partial.</p>
+        <label class="settings-switch-row"><span class="settings-switch-copy"><strong id="sstv-enabled-label">Decode SSTV pictures</strong><small id="sstv-enabled-help">Uses the same RX feed as packet decoding. The sending radio must use Robot 36.</small></span><span class="toggle-control"><input id="sstv-enabled" type="checkbox" role="switch" aria-labelledby="sstv-enabled-label" aria-describedby="sstv-enabled-help" disabled><span class="toggle-track" aria-hidden="true"></span><span class="toggle-value" id="sstv-enabled-value" aria-hidden="true">Off</span></span></label>
+        <p class="help-text" id="sstv-description">Checking the SSTV receiver…</p>
+        <p class="help-text" id="sstv-input-note" hidden>Turn on <strong>Enable radio audio feed</strong> under Settings / Admin to supply receive audio. Your decoding preference is saved while the feed is off.</p>
+        <p class="form-message" id="sstv-message" role="status" aria-live="polite"></p>
+        <div class="sstv-reception" id="sstv-reception" hidden>
+          <div class="sstv-preview-frame"><img id="sstv-current-image" alt="SSTV picture being received" width="320" height="240" hidden><p class="empty-state" id="sstv-preview-empty">Waiting for the first image lines.</p></div>
+          <div class="sstv-reception-detail"><h3 id="sstv-current-title">Receiving picture</h3><p class="small-text" id="sstv-current-detail"></p><progress id="sstv-progress" class="task-progress" max="100" value="0" aria-label="Received SSTV image lines"></progress><p class="small-text" id="sstv-progress-note">Waiting for image data.</p></div>
+        </div>
+        <div class="data-packet-heading"><div><h3>Received picture gallery</h3><p class="small-text" id="sstv-gallery-summary">No received pictures yet</p></div></div>
+        <div class="sstv-selected" id="sstv-selected" hidden><div class="sstv-selected-heading"><div><h3 id="sstv-selected-title">Received picture</h3><p class="small-text" id="sstv-selected-detail"></p></div><a class="button secondary" id="sstv-download" download>Download PNG</a></div><img id="sstv-selected-image" alt="Selected received SSTV picture" width="320" height="240"></div>
+        <div class="sstv-gallery" id="sstv-gallery" role="list" aria-label="Received SSTV pictures"></div>
+        <p class="empty-state" id="sstv-empty">Enable SSTV decoding, then receive a Robot 36 picture on the RX radio’s current channel.</p>
+        <p class="field-help" id="sstv-limits-note">The gallery keeps up to 50 pictures or 100 MiB; the oldest pictures are removed when a limit is reached. Picture quality depends on the radio signal and audio level.</p>
+      </section>
       <section class="card data-card" id="data-card" aria-labelledby="data-title" hidden>
-        <div class="section-heading"><div><p class="eyebrow">Received digital traffic</p><h2 id="data-title">Live data</h2></div><span class="pill pill-muted" id="data-state">Checking</span></div>
+        <div class="section-heading"><div><p class="eyebrow">Received digital traffic</p><h2 id="data-title">APRS packets</h2></div><span class="pill pill-muted" id="data-state">Checking</span></div>
         <p class="section-description">Decode received AFSK1200 packets, including APRS and AX.25, and save their contents as text or JSON.</p>
-        <label class="settings-switch-row"><span class="settings-switch-copy"><strong id="data-enabled-label">Decode received data</strong><small id="data-enabled-help">Uses the RX radio’s audio. Listening, traffic recording and outgoing repeater audio stay independent.</small></span><span class="toggle-control"><input id="data-enabled" type="checkbox" role="switch" aria-labelledby="data-enabled-label" aria-describedby="data-enabled-help" disabled><span class="toggle-track" aria-hidden="true"></span><span class="toggle-value" id="data-enabled-value" aria-hidden="true">Off</span></span></label>
+        <label class="settings-switch-row"><span class="settings-switch-copy"><strong id="data-enabled-label">Decode APRS packets</strong><small id="data-enabled-help">Uses the RX radio’s audio. Listening, traffic recording and outgoing repeater audio stay independent.</small></span><span class="toggle-control"><input id="data-enabled" type="checkbox" role="switch" aria-labelledby="data-enabled-label" aria-describedby="data-enabled-help" disabled><span class="toggle-track" aria-hidden="true"></span><span class="toggle-value" id="data-enabled-value" aria-hidden="true">Off</span></span></label>
         <p class="help-text" id="data-description">Checking the receiver decoder…</p>
         <dl class="detail-list"><div><dt>Receive source</dt><dd id="data-source">RX input</dd></div><div><dt>Decoder</dt><dd id="data-mode">APRS / AX.25 AFSK1200</dd></div><div><dt>Saved packets</dt><dd id="data-count">Unavailable</dd></div><div><dt>Last decoded packet</dt><dd id="data-last-packet">None yet</dd></div></dl>
         <p class="help-text" id="data-input-note" hidden>Turn on <strong>Enable radio audio feed</strong> under Settings / Admin to supply receive audio. Your decoding preference is saved while the feed is off.</p>
@@ -106,9 +127,8 @@
         <div class="data-packet-heading"><div><h3>Received packets</h3><p class="small-text" id="data-packet-summary">No decoded packets yet</p></div><div class="data-downloads" id="data-downloads" hidden><a class="button secondary" id="data-download-json" download>Export JSON</a><a class="button secondary" id="data-download-text" download>Export text</a></div></div>
         <div class="data-packets" id="data-packets" role="list" aria-label="Decoded receive packets"></div>
         <p class="empty-state" id="data-empty">Enable decoding, then receive an AFSK1200 signal on the RX radio’s current channel.</p>
-        <p class="field-help" id="data-limits-note">This first decoder supports APRS / AX.25 at 1200 baud. Exports contain decoded packets; other digital modes and file-transfer protocols need their own decoder. The saved log keeps up to 1,000 packets or 8 MiB; older packets are removed as needed.</p>
+        <p class="field-help" id="data-limits-note">APRS / AX.25 at 1200 baud. Exports contain decoded packets, not reconstructed files. The saved log keeps up to 1,000 packets or 8 MiB; older packets are removed as needed.</p>
       </section>
-      <div class="two-column"><section class="card"><h2>Live listening and recording</h2><p class="help-text">Listening and recording are independent. You can listen while recording is off, or keep recording with no browser connected. Recording controls are in Audio archives.</p></section><section class="card" id="audio-setup-help" hidden><h2>First audio setup</h2><p class="help-text">The receive AIOC must be assigned and the Pi audio service enabled before this player can receive traffic. A connected USB interface alone does not confirm radio audio.</p></section></div>
     </section>
     <section id="panel-archives" role="tabpanel" aria-labelledby="tab-archives" tabindex="0" hidden>
     <section class="card" aria-labelledby="recordings-title">
