@@ -9,6 +9,7 @@ const source = fs.readFileSync(path.resolve(__dirname, '../dashboard/static/app.
   settings(settings) { renderSettings(settings); },
   live(live) { renderLive(live); },
   channelPair(status) { renderChannelPair(status); },
+  operation(status) { renderOperationStatus(status); },
   activity(value) { renderRadioActivity(value); },
   startActivity() { return startRadioActivity(); },
   stopActivity() { stopRadioActivity(); },
@@ -387,14 +388,14 @@ function dashboardMarkup() {
   });
   await check('Overview uses the selected verified pair rather than an old default template',async()=>{
     const h=pairHarness();Object.assign(h.status.radio_programming.pair,{pair_id:'rpt1',plan:{name:'BOX-RX2 / BOX-TX2',rx_hz:145330000,tx_hz:433525000,tone_hz:88.5,power:'High'}});
-    h.status.setup={rf_enabled:true,radio_plan:{verified:true,rx_mhz:'145.300000',tx_mhz:'433.500000',tone_hz:88.5,power:'High',label:'Pair 2',rx_name:'BOX-RX2',tx_name:'BOX-TX2'}};
+    h.status.setup={rf_enabled:true,radio_plan:{verified:true,rx_mhz:'145.300000',tx_mhz:'433.500000',tone_hz:88.5,power:'High',label:'Pair 2',rx_name:'BOX-RX2',tx_name:'BOX-TX2'}};h.status.svxlink={mode:'repeater',state:'active',transmit_control:'enabled'};
     h.ctx.testApi.channelPair(h.status);assert.equal(h.el('channels-title').textContent,'Active channel pair');
     assert.equal(h.el('rx-frequency').textContent,'145.330000');assert.equal(h.el('tx-frequency').textContent,'433.525000');
     assert.equal(h.el('tone-label').textContent,'Tone');assert.equal(h.el('power-label').textContent,'TX power');assert.equal(h.el('tone-frequency').textContent,'88.5 Hz');
     assert.equal(h.el('channel-pair-caption').textContent,'Pair 2 · BOX-RX2 / BOX-TX2');assert.match(h.el('rf-notice').textContent,/last verified pair/);assert.doesNotMatch(h.el('rf-notice').textContent,/not commissioned/);
   });
   await check('Public overview can show the verified setup pair without private admin programming details',async()=>{
-    const h=harness();const status={setup:{rf_enabled:true,radio_plan:{verified:true,rx_mhz:'145.330000',tx_mhz:'433.525000',tone_hz:null,power:'High',label:'Pair 2',rx_name:'BOX-RX2',tx_name:'BOX-TX2'}},radio_programming:{admin_required:true}};
+    const h=harness();const status={setup:{rf_enabled:true,radio_plan:{verified:true,rx_mhz:'145.330000',tx_mhz:'433.525000',tone_hz:null,power:'High',label:'Pair 2',rx_name:'BOX-RX2',tx_name:'BOX-TX2'}},svxlink:{mode:'repeater',state:'active',transmit_control:'enabled'},radio_programming:{admin_required:true}};
     h.ctx.testApi.channelPair(status);assert.equal(h.el('channels-title').textContent,'Active channel pair');assert.equal(h.el('tone-frequency').textContent,'Off');assert.equal(h.el('rx-frequency').textContent,'145.330000');assert.match(h.el('channel-pair-caption').textContent,/Pair 2/);
   });
   for(const [name,change]of[
@@ -406,7 +407,7 @@ function dashboardMarkup() {
     ['backend marks plan unverified',s=>{s.setup.radio_plan.verified=false;}]
   ])await check(`${name} cannot claim an active verified overview pair`,async()=>{
     const h=pairHarness();h.status.setup={rf_enabled:true,radio_plan:{verified:true,rx_mhz:'145.300000',tx_mhz:'433.500000'}};change(h.status);h.ctx.testApi.channelPair(h.status);
-    assert.doesNotMatch(h.el('channels-title').textContent,/Active/);assert.equal(h.el('tone-label').textContent,'Planned tone');assert.equal(h.el('channel-pair-caption').hidden,true);assert.doesNotMatch(h.el('rf-notice').textContent,/not commissioned/);
+    assert.doesNotMatch(h.el('channels-title').textContent,/Active/);assert.equal(h.el('tone-label').textContent,'Tone');assert.equal(h.el('channel-pair-caption').hidden,true);assert.doesNotMatch(h.el('rf-notice').textContent,/not commissioned/);
   });
   await check('Activity dots represent independent receiver squelch and transmit-command states accessibly',async()=>{
     const h=harness();h.ctx.testApi.activity({available:true,receiving:true,transmitting:false});
@@ -603,7 +604,7 @@ function dashboardMarkup() {
     const h=harness({stationIdentification:{available:false},updates:{available:false},radios:{available:false,configured:false}});
     Object.assign(h.status.wifi_visibility,{available:false,profile_hidden:null});Object.assign(h.status.dtmf_control,{available:false,configured:false,bridge_ready:false,code_change:{available:false}});h.ctx.testApi.status(h.status);
     for(const id of['radio-pair-picker','radio-plan-grid','station-id-enabled','wifi-visibility-fields','software-update-actions','dtmf-enabled','dtmf-announcements','dtmf-password-tools'])assert.equal(h.el(id).hidden,true,id);
-    assert.match(h.el('station-id-help').textContent,/setup on the Pi/);assert.match(h.el('radio-pair-lock-note').textContent,/Configure|qualification/);assert.equal(h.el('radio-tools').open,false);
+    assert.match(h.el('station-id-help').textContent,/setup on the Pi/);assert.match(h.el('radio-pair-lock-note').textContent,/Configure|checks/);assert.equal(h.el('radio-tools').open,false);
     Object.assign(h.status.station_identification,{available:true});Object.assign(h.status.wifi_visibility,{available:true,profile_hidden:false});h.status.software_updates.available=true;Object.assign(h.status.dtmf_control,{available:true,configured:true,bridge_ready:true,code_change:{available:true}});h.ctx.testApi.status(h.status);
     for(const id of['station-id-enabled','wifi-visibility-fields','software-update-actions','dtmf-enabled','dtmf-announcements','dtmf-password-tools'])assert.equal(h.el(id).hidden,false,id);
   });
@@ -613,9 +614,46 @@ function dashboardMarkup() {
     Object.assign(h.status.dtmf_control.code_change,{pending:false,success:false,message:'Password change failed.'});h.ctx.testApi.status(h.status);assert.equal(h.el('dtmf-password-tools').open,true);assert.equal(h.el('dtmf-password-tools').hidden,false);
   });
   await check('Completed bring-up checklist hides only after live control and assigned audio roles are established',async()=>{
-    const h=harness();Object.assign(h.status,{is_pi:true,svxlink:{installed:true,mode:'repeater',transmit_control:'enabled'},audio:{capture:[{id:'AIOC_RX'}],playback:[{id:'AIOC_TX'}]}});Object.assign(h.status.radio_programming,{configured_roles:['rx','tx'],preview:false});h.ctx.testApi.status(h.status);
+    const h=harness();Object.assign(h.status,{is_pi:true,svxlink:{installed:true,mode:'repeater',state:'active',transmit_control:'enabled'},setup:{rf_enabled:true},audio:{capture:[{id:'AIOC_RX'}],playback:[{id:'AIOC_TX'}]}});Object.assign(h.status.radio_programming,{configured_roles:['rx','tx'],preview:false});h.ctx.testApi.status(h.status);
     for(const id of['commissioning-card','checklist-radio','transmit-setup-help'])assert.equal(h.el(id).hidden,true,id);assert.match(h.el('interfaces-description').textContent,/roles are assigned/);
     h.status.svxlink.mode='receive_only';h.ctx.testApi.status(h.status);for(const id of['commissioning-card','checklist-radio','transmit-setup-help'])assert.equal(h.el(id).hidden,false,id);
+  });
+  await check('Initial markup uses a neutral station header without bench or planned-state flashes',async()=>{
+    const {html,ids}=dashboardMarkup();assert.equal(ids.get('station-mode').attrs.class,'eyebrow');assert.match(html,/id="station-mode">Portable repeater \/ Station dashboard/);assert.doesNotMatch(html,/Portable repeater \/ bench setup|>Bench preparation<|>Planned radio channels<|>Bench checklist</);assert.equal(Object.hasOwn(ids.get('commissioning-card').attrs,'hidden'),true);
+  });
+  await check('Confirmed live status replaces setup labels and hides completed first-audio guidance even before traffic arrives',async()=>{
+    const h=harness();Object.assign(h.status,{is_pi:true,svxlink:{installed:true,mode:'repeater',state:'active',transmit_control:'enabled'},setup:{rf_enabled:true},audio:{capture:[{id:'AIOC_RX'}],playback:[{id:'AIOC_TX'}]},live_audio:{configured:true,last_packet_at:null}});Object.assign(h.status.radio_programming,{configured_roles:['rx','tx'],preview:false});
+    h.ctx.testApi.status(h.status);h.ctx.testApi.operation(h.status);assert.equal(h.el('station-mode').textContent,'Portable repeater / Live operation');assert.equal(h.el('brand-subtitle').textContent,'Live repeater');assert.equal(h.el('phase-badge').textContent,'Live repeater');
+    for(const id of['commissioning-card','checklist-pi','checklist-aioc','checklist-radio','transmit-setup-help','audio-setup-help'])assert.equal(h.el(id).hidden,true,id);assert.match(h.el('interfaces-description').textContent,/roles are assigned/);
+    h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});assert.equal(h.el('commissioning-card').hidden,true);assert.equal(h.el('audio-setup-help').hidden,true);
+  });
+  await check('Live operation requires matching active mode RF authorization and transmit-control flags',async()=>{
+    const h=harness();const base={svxlink:{installed:true,mode:'repeater',state:'active',transmit_control:'enabled'},setup:{rf_enabled:true}};
+    for(const change of[s=>{s.svxlink.state='inactive';},s=>{s.svxlink.mode='bench';},s=>{s.svxlink.transmit_control='disabled';},s=>{s.setup.rf_enabled=false;},s=>{delete s.svxlink.state;}]){
+      const status=structuredClone(base);change(status);h.ctx.testApi.operation(status);assert.doesNotMatch(h.el('station-mode').textContent,/Live operation/);assert.notEqual(h.el('phase-badge').textContent,'Live repeater');
+    }
+  });
+  await check('Receive-only bench stopped failed and transitional services have distinct honest operation labels',async()=>{
+    const h=harness();for(const [mode,state,expected]of[['receive_only','active','Receive-only operation'],['bench','active','Station setup'],['stopped','inactive','Radio services stopped'],['stopped','failed','Radio service needs attention'],['stopped','activating','Starting radio services'],['stopped','deactivating','Stopping radio services']]){
+      const status={svxlink:{installed:true,mode,state,transmit_control:'disabled'},setup:{rf_enabled:false}};h.ctx.testApi.operation(status);assert.equal(h.el('station-mode').textContent,'Portable repeater / '+expected);assert.notEqual(h.el('phase-badge').textContent,'Live repeater');
+    }
+    h.ctx.testApi.operation({is_pi:false,svxlink:{mode:'unavailable',state:'unavailable'}});assert.equal(h.el('phase-badge').textContent,'Dashboard preview');
+  });
+  await check('Missing assigned interfaces override the live label and reveal useful connection checks',async()=>{
+    const h=harness();Object.assign(h.status,{is_pi:true,svxlink:{installed:true,mode:'repeater',state:'active',transmit_control:'enabled'},setup:{rf_enabled:true},audio:{capture:[],playback:[{id:'AIOC_TX'}]}});h.ctx.testApi.status(h.status);h.ctx.testApi.operation(h.status);
+    assert.equal(h.el('station-mode').textContent,'Portable repeater / Radio hardware needs attention');assert.equal(h.el('phase-badge').textContent,'Check radio interfaces');assert.match(h.el('interfaces-description').textContent,/interface is missing/);assert.equal(h.el('checklist-aioc').hidden,false);assert.equal(h.el('commissioning-title').textContent,'Radio status needs attention');assert.equal(h.el('checklist-aioc-title').textContent,'Check radio interfaces');assert.equal(h.el('audio-setup-title').textContent,'Check radio audio');
+  });
+  await check('Stopped verified radios keep their saved pair without claiming an active repeater or repeating first-transmission instructions',async()=>{
+    const h=pairHarness();Object.assign(h.status,{is_pi:true,svxlink:{installed:true,mode:'stopped',state:'inactive',transmit_control:'disabled'},setup:{rf_enabled:false},audio:{capture:[{id:'AIOC_RX'}],playback:[{id:'AIOC_TX'}]}});Object.assign(h.status.radio_programming,{configured_roles:['rx','tx'],preview:false});h.ctx.testApi.status(h.status);h.ctx.testApi.operation(h.status);h.ctx.testApi.channelPair(h.status);
+    assert.equal(h.el('channels-title').textContent,'Verified channel pair');assert.equal(h.el('tone-label').textContent,'Tone');assert.equal(h.el('station-mode').textContent,'Portable repeater / Radio services stopped');assert.equal(h.el('commissioning-title').textContent,'Radio status needs attention');assert.equal(h.el('checklist-radio-title').textContent,'Restore radio operation');assert.doesNotMatch(h.el('transmit-setup-help').textContent,/commission|first transmission/);
+  });
+  await check('Unknown status never assumes initial bench mode and a disconnected refresh clears the live label',async()=>{
+    const h=harness();h.ctx.testApi.operation({});assert.equal(h.el('station-mode').textContent,'Portable repeater / Station dashboard');assert.equal(h.el('phase-badge').textContent,'Radio status unavailable');
+    h.ctx.testApi.operation({svxlink:{mode:'repeater',state:'active',transmit_control:'enabled'},setup:{rf_enabled:true}});h.failRefresh=true;await h.ctx.testApi.refresh();assert.equal(h.el('station-mode').textContent,'Portable repeater / Connection interrupted');assert.equal(h.el('phase-badge').textContent,'Radio status unavailable');
+  });
+  await check('A first installation still shows actionable station and radio setup rather than claiming live operation',async()=>{
+    const h=harness();const status={version:'0.13.1',is_pi:true,svxlink:{installed:true,mode:'bench',state:'active',transmit_control:'disabled'},setup:{rf_enabled:false},audio:{capture:[],playback:[]},network:{hotspot_active:false},wifi_visibility:{profile_hidden:null},live_audio:{configured:false,last_packet_at:null}};
+    h.ctx.testApi.setup(status,{configured:false,authenticated:false,csrf_token:null});h.ctx.testApi.operation(status);assert.equal(h.el('phase-badge').textContent,'Station setup');assert.equal(h.el('commissioning-title').textContent,'Complete station setup');assert.equal(h.el('checklist-aioc').hidden,false);assert.equal(h.el('checklist-radio').hidden,false);assert.equal(h.el('audio-setup-help').hidden,false);assert.equal(h.el('admin-setup-help').hidden,false);
   });
   await check('Compact DTMF help includes current settings and all three change options',async()=>{
     const {html,inside}=dashboardMarkup();assert.equal(inside('dtmf-help','dtmf-menu-help'),true);assert.equal(inside('dtmf-code-form','dtmf-password-tools'),true);

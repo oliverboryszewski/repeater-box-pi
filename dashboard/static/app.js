@@ -218,7 +218,7 @@
     setText("recording-summary", count === null ? "Inventory unavailable" : `${count} ${count === 1 ? "recording" : "recordings"} · ${formatBytes(recordings.total_bytes)}`);
     byId("recordings-empty").hidden = selectable.length > 0;
     byId("recording-workspace").hidden = selectable.length === 0;
-    setText("recordings-empty-text", inventory === null ? "Recording inventory unavailable." : count > 0 ? "No playable files are listed in the current inventory." : "No recordings yet. Recording is available after the audio service is configured.");
+    setText("recordings-empty-text", inventory === null ? "Recording inventory unavailable." : count > 0 ? "No playable files are listed in the current inventory." : "No recordings yet. Saved traffic recordings will appear here.");
     const select = byId("recording-select");
     select.replaceChildren(new Option("Select a recording…", ""));
     for (const file of selectable) {
@@ -226,6 +226,33 @@
     }
     if (files.has(selectedRecording)) select.value = selectedRecording;
     else selectRecording("");
+  }
+
+  function operationState(data) {
+    const service = data?.svxlink || {};
+    const radioActive = service.mode === "repeater" && service.state === "active" &&
+      service.transmit_control === "enabled" && data?.setup?.rf_enabled === true;
+    const capture = data?.audio?.capture, playback = data?.audio?.playback;
+    const missingInterfaces = radioActive && (Array.isArray(capture) && !capture.some(card => card?.id === "AIOC_RX") ||
+      Array.isArray(playback) && !playback.some(card => card?.id === "AIOC_TX"));
+    if (missingInterfaces) return {key:"hardware",eyebrow:"Radio hardware needs attention",label:"Check radio interfaces",kind:"amber"};
+    if (radioActive) return {key:"live",eyebrow:"Live operation",label:"Live repeater",kind:"good"};
+    if (service.mode === "receive_only" && service.state === "active") return {key:"receive",eyebrow:"Receive-only operation",label:"Receive-only",kind:"good"};
+    if (service.state === "failed") return {key:"failed",eyebrow:"Radio service needs attention",label:"Radio service failed",kind:"error"};
+    if (service.installed === false) return {key:"setup",eyebrow:"Initial setup",label:"Setup required",kind:"amber"};
+    if (service.state === "deactivating") return {key:"stopping",eyebrow:"Stopping radio services",label:"Stopping radio services",kind:"amber"};
+    if (["inactive","stopped"].includes(service.state)) return {key:"stopped",eyebrow:"Radio services stopped",label:"Radio services stopped",kind:"amber"};
+    if (service.mode === "bench" && service.state === "active") return {key:"setup",eyebrow:"Station setup",label:"Station setup",kind:"amber"};
+    if (service.state === "activating") return {key:"starting",eyebrow:"Starting radio services",label:"Starting radio services",kind:"amber"};
+    if (service.mode === "unavailable" && data?.is_pi === false) return {key:"preview",eyebrow:"Dashboard preview",label:"Dashboard preview",kind:"muted"};
+    return {key:"unknown",eyebrow:"Station dashboard",label:"Radio status unavailable",kind:"muted"};
+  }
+
+  function renderOperationStatus(data, interrupted = false) {
+    const state = interrupted ? {key:"unknown",eyebrow:"Connection interrupted",label:"Radio status unavailable",kind:"muted"} : operationState(data);
+    setText("station-mode",`Portable repeater / ${state.eyebrow}`);
+    setText("brand-subtitle",state.key === "live" ? "Live repeater" : state.key === "receive" ? "Receive-only audio" : "Local station dashboard");
+    pill("phase-badge",state.label,state.kind);
   }
 
   function renderChannelPair(data) {
@@ -244,9 +271,9 @@
     setText("tx-frequency", typeof tx === "string" ? tx : "—");
     setText("tone-frequency", typeof tone === "string" || finite(tone) ? `${tone} Hz` : tone === null ? "Off" : absent);
     setText("radio-power", textOrAbsent(pairPlan?.power || plan.power));
-    setText("channels-title", verified ? "Active channel pair" : pending ? "Channel pair needs verification" : "Planned radio channels");
-    setText("tone-label", verified ? "Tone" : "Planned tone");
-    setText("power-label", verified ? "TX power" : "Planned TX power");
+    setText("channels-title", verified ? operationState(data).key === "live" ? "Active channel pair" : "Verified channel pair" : pending ? "Channel pair needs verification" : "Radio channel pair");
+    setText("tone-label", "Tone");
+    setText("power-label", "TX power");
     const selectedId = pair?.pair_id || plan.pair_id;
     const preset = pairPresets(radio).find((entry) => entry.id === selectedId);
     const label = typeof plan.label === "string" ? plan.label : preset?.label;
@@ -259,7 +286,7 @@
     setText("rf-notice", verified ? "Values from the last verified pair. Dots show receiver squelch and the Pi’s transmit command."
       : pending ? "Radio work is unfinished. The channel pair is not yet verified."
       : pair?.catalog_changed === true ? "The channel catalog changed. Verify the selected pair again."
-      : data?.setup?.rf_enabled === true ? "Live mode is running. Verify a channel pair to confirm these saved values."
+      : operationState(data).key === "live" ? "Live mode is running. Verify a channel pair to confirm these saved values."
       : "Configure and verify a channel pair to display its saved values.");
   }
 
@@ -321,7 +348,7 @@
     renderChannelPair(data);
     if (document.hidden) renderRadioActivity(null);
     else if (activityLastPoll === null || Date.now() - activityLastPoll > 1500) renderRadioActivity(data.radio_activity);
-    pill("phase-badge", data.setup?.phase === "bench" ? "Bench preparation" : textOrAbsent(data.setup?.phase), data.setup?.rf_enabled === true ? "good" : "amber");
+    renderOperationStatus(data);
     setText("cpu-temp", finite(data.cpu_temp_c) ? `${data.cpu_temp_c.toFixed(1)} °C` : absent);
     setText("cpu-load", finite(data.load_1m) ? `1-minute load ${data.load_1m.toFixed(2)}` : "Load unavailable");
     byId("cpu-temp").classList.toggle("warning-text", finite(data.cpu_temp_c) && data.cpu_temp_c >= 80);
@@ -408,6 +435,7 @@
       byId("connection-banner").className = "connection-banner";
       setText("connection-message", data.is_pi === true ? "Connected to the Pi · Live system readings" : "Connected to the dashboard · This host is not identified as a Raspberry Pi");
     } catch (_) {
+      renderOperationStatus(null,true);
       byId("connection-banner").className = "connection-banner offline";
       setText("connection-message", lastSuccess
         ? `Connection lost. Readings below are from ${lastSuccess.toLocaleTimeString()}. Stay on the box’s Wi-Fi; reconnecting automatically.`
@@ -1009,7 +1037,7 @@
       : radioVerificationRoles(state).includes("programmer") ? "The external programmer upload is unfinished. Resolve it in the radio editor before changing the pair."
       : state?.pair?.verification_required === true && state.pair.catalog_changed === true ? "Restore the pending pair’s private catalog on the Pi before retrying."
       : state?.catalog_configured !== true ? "Configure channel pairs locally on the Pi first."
-      : state?.pair_switching?.enabled !== true ? "Paired switching needs one-time bench qualification on this Pi."
+      : state?.pair_switching?.enabled !== true ? "Paired switching needs initial radio checks on this Pi."
       : !allowed ? "Resolve other maintenance or unfinished radio work before changing the pair."
       : "Every change requires the admin password again and a review of both frequencies.");
   }
@@ -1048,7 +1076,7 @@
       : staleCatalogRecord ? catalogReviewMessage
       : pair ? `Requested pair: ${pairPlanText(pair)}. ${verificationRequired || failed ? "The pair is incomplete; radio audio stays paused. Review the activity log before retrying." : "Wait for both radios to finish before treating this as a configured pair."}`
         : "Inspecting or programming one radio does not establish a verified pair.");
-    pill("radio-pair-state",pairPending ? "Changing pair" : verificationRequired || failed ? "Pair incomplete" : staleCatalogRecord ? "Catalog changed" : activationRequired ? "Activation needed" : stored ? "Configured" : state?.pair_switching?.enabled === true ? "Ready" : "Bench setup needed",
+    pill("radio-pair-state",pairPending ? "Changing pair" : verificationRequired || failed ? "Pair incomplete" : staleCatalogRecord ? "Catalog changed" : activationRequired ? "Activation needed" : stored ? "Configured" : state?.pair_switching?.enabled === true ? "Ready" : "Radio checks needed",
       pairPending || staleCatalogRecord || activationRequired ? "amber" : verificationRequired || failed ? "error" : stored ? "good" : "muted");
     byId("radio-pair-stages").hidden=!pair || staleCatalogRecord || stored && !pairPending && !activationRequired && !verificationRequired && !failed;
     for (const role of ["rx","tx"]) {
@@ -1061,7 +1089,7 @@
         : stored && activationRequired ? "Stored settings verified; activation still needs confirmation."
           : stored ? "The configured pair record has been verified. Handhelds must use the matching split frequencies."
             : staleCatalogRecord ? catalogReviewMessage
-              : detail || "Paired changes remain disabled until both radios pass the one-time bench qualification."),radioPairError || failed || verificationRequired ? "error" : stored && !activationRequired ? "success" : "");
+              : detail || "Paired changes remain disabled until both radios pass their initial radio checks."),radioPairError || failed || verificationRequired ? "error" : stored && !activationRequired ? "success" : "");
     renderRadioPairControls();
   }
 
@@ -1203,22 +1231,39 @@
     }
     byId("checklist-pi").hidden = !data || (data.is_pi === true && data.svxlink?.installed === true);
     const radios = data?.radio_programming;
+    const operation = operationState(data);
+    const liveCommissioned=operation.key === "live";
     const capture = data?.audio?.capture;
     const playback = data?.audio?.playback;
-    const aiocsAssigned = data?.is_pi === true && radios?.configured === true && radios.preview === false
+    const mappedAudio = Array.isArray(capture) && capture.some((card) => card?.id === "AIOC_RX")
+      && Array.isArray(playback) && playback.some((card) => card?.id === "AIOC_TX");
+    const aiocsAssigned = liveCommissioned && mappedAudio || data?.is_pi === true && radios?.configured === true && radios.preview === false
       && Array.isArray(radios.configured_roles) && ["rx", "tx"].every((role) => radios.configured_roles.includes(role)
         && radios.roles?.[role]?.inspected === true && radios.roles[role].compatible === true)
-      && Array.isArray(capture) && capture.some((card) => card?.id === "AIOC_RX")
-      && Array.isArray(playback) && playback.some((card) => card?.id === "AIOC_TX");
+      && mappedAudio;
     byId("checklist-aioc").hidden = aiocsAssigned;
-    setText("interfaces-description",aiocsAssigned ? "Stable RX capture and TX playback roles are assigned. Detected devices are listed below." : "Detected devices are listed as the operating system sees them. Input and output roles still need to be assigned.");
-    const liveCommissioned=data?.svxlink?.mode === "repeater" && data.svxlink.transmit_control === "enabled";
+    setText("interfaces-description",aiocsAssigned ? "Stable RX capture and TX playback roles are assigned. Detected devices are listed below."
+      : operation.key === "hardware" ? "An assigned radio audio interface is missing from the current device inventory. Check the RX and TX AIOC connections."
+      : mappedAudio ? "RX capture and TX playback devices are detected. Their saved assignments still need confirmation."
+      : "Detected devices are listed as the operating system sees them. Confirm the RX capture and TX playback assignments on the Pi.");
+    const operationAttention = ["stopped","failed","hardware"].includes(operation.key) || radioToolsNeedAttention(radios);
+    setText("commissioning-eyebrow",operationAttention ? "Radio status" : "Station setup");
+    setText("commissioning-title",operationAttention ? "Radio status needs attention" : "Complete station setup");
+    setText("commissioning-label",operationAttention ? "Status checks" : "Setup checklist");
+    setText("checklist-aioc-title",operationAttention ? "Check radio interfaces" : "Assign both AIOCs");
+    setText("checklist-aioc-description",operationAttention ? "Check that the RX and TX AIOCs are connected in their assigned USB ports and visible to the Pi." : "Identify each interface, label RX and TX, and confirm stable audio and serial device mappings.");
+    setText("checklist-radio-title",operationAttention ? "Restore radio operation" : "Check receive and transmit operation");
+    setText("checklist-radio-description",operationAttention ? "Review the radio service status and any unfinished programming before restoring live operation." : "Verify PTT and receive detection, adjust audio levels, and configure identification and time-out limits before on-air testing.");
+    setText("transmit-setup-help",operationAttention ? "Live radio operation needs attention. Check the radio service, connected interfaces, and any unfinished programming." : "Configure and test audio routing, receive detection, PTT, station identification, and time-out limits before on-air use.");
     byId("checklist-radio").hidden=liveCommissioned;
     byId("transmit-setup-help").hidden=liveCommissioned;
     byId("commissioning-card").hidden=!!data && ["checklist-pi","checklist-wifi","checklist-aioc","checklist-radio"].every((id) => byId(id).hidden) && !radioToolsNeedAttention(radios);
     const receiveMonitorReady = ["receive_only", "repeater"].includes(data?.svxlink?.mode);
     const audioSeen = typeof data?.live_audio?.last_packet_at === "string" && data.live_audio.last_packet_at.trim() !== "";
-    byId("audio-setup-help").hidden = !data || (receiveMonitorReady && audioSeen);
+    setText("audio-setup-title",operationAttention ? "Check radio audio" : "First audio setup");
+    setText("audio-setup-description",operationAttention ? "Check the Pi’s radio service and connected AIOCs. A stopped service or missing interface prevents radio audio from reaching this player." : "The receive AIOC must be assigned and the Pi audio service enabled before this player can receive traffic. A connected USB interface alone does not confirm radio audio.");
+    setText("input-setup-help",operationAttention ? "Restore the radio audio service and check its connected AIOC on the Pi." : "Assign the receive source and enable its audio service on the Pi first.");
+    byId("audio-setup-help").hidden = !data || liveCommissioned || (receiveMonitorReady && audioSeen);
     byId("input-setup-help").hidden = !data || receiveMonitorReady;
     byId("input-enabled").setAttribute("aria-describedby", !data || receiveMonitorReady ? "input-enabled-help" : "input-enabled-help input-setup-help");
   }

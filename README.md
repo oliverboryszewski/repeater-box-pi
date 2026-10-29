@@ -1,6 +1,6 @@
 # Repeater Box — Pi dashboard
 
-Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.13.0.
+Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.13.1.
 
 Source: [GitHub repository](https://github.com/oliverboryszewski/repeater-box-pi).
 
@@ -224,6 +224,8 @@ The visibility worker log is available with `journalctl -u repeater-wifi-visibil
 Setup guidance appears only while the related setup is incomplete. Password instructions disappear once an admin password exists, including while signed out. Wi-Fi instructions and checklist step 2 disappear once the hotspot profile exists, including when it is inactive. Checklist step 1 disappears when the installed software is running on the Pi. AIOC assignment and radio commissioning remain on the checklist; USB detection alone does not complete either step. The first-audio guidance disappears after the receive monitor is running and the dashboard has received audio during this service run. Fresh installations show the relevant instructions again.
 
 ## Updating an installed box
+
+Version 0.13.1 removes completed setup wording from commissioned live dashboards and distinguishes stopped or failed radio services from an active bench engine. Fresh installations retain their setup guidance. It also fixes the optional SSTV installer by stripping unneeded symbols from the final Debian-built decoder before its size check. It remains compatible with update API 17.
 
 Version 0.13.0 moves decoding to a separate Data tab and adds SSTV Robot 36 live scanline previews and a private PNG gallery. It remains compatible with update API 17. Its new optional SSTV engine needs one native installation using the reviewed helper in [Live data decoding](config/DATA_AUDIO.md); the helper leaves radio services running. The default SSTV switch is off, and existing APRS and recording preferences are preserved. Reload the page after the dashboard update to load its new tab and assets.
 

@@ -28,6 +28,7 @@ INSTALL_ROOT = Path('/opt/repeater-box')
 INSTALL_DIR = INSTALL_ROOT / 'vendor/sstv'
 LOCK_PATH = INSTALL_ROOT / '.maintenance.lock'
 MAX_ARCHIVE = 32 * 1024 * 1024
+MAX_BINARY = 8 * 1024 * 1024
 ENVIRONMENT = {'PATH': '/usr/sbin:/usr/bin:/sbin:/bin', 'LANG': 'C', 'LC_ALL': 'C'}
 
 
@@ -153,10 +154,15 @@ def metadata(binary):
             'input': 's16le-48000', 'output': 'sstv-json-rows-v1'}
 
 
+def validate_built_binary(binary):
+    if not isinstance(binary, bytes) or not 0 < len(binary) <= MAX_BINARY:
+        raise ValueError('The built SSTV decoder has an unexpected size.')
+
+
 def existing_install(path, owner_uid=0):
     try:
         protected_directory(path, owner_uid)
-        binary = protected_bytes(path / 'sstv-robot36', owner_uid, 8 * 1024 * 1024)
+        binary = protected_bytes(path / 'sstv-robot36', owner_uid, MAX_BINARY)
         actual = json.loads(protected_bytes(path / 'metadata.json', owner_uid, 4096))
         return (actual == metadata(binary) and stat.S_IMODE((path / 'sstv-robot36').lstat().st_mode) == 0o755
                 and hashlib.sha256(protected_bytes(path / 'source.tar.gz', owner_uid)).hexdigest() == SOURCE_SHA256
@@ -221,10 +227,9 @@ def install(script_dir):
             compile(['--crate-name', 'sstv', '--crate-type', 'rlib', '--cfg', 'feature="std"',
                      '--cfg', 'feature="alloc"', str(source / 'src/lib.rs'), '--out-dir', str(build)])
             compile(['--crate-name', 'sstv_robot36', '--extern', 'sstv=' + str(build / 'libsstv.rlib'),
-                     str(wrapper), '-o', str(build / 'sstv-robot36')])
+                     '-C', 'strip=symbols', str(wrapper), '-o', str(build / 'sstv-robot36')])
             binary = (build / 'sstv-robot36').read_bytes()
-            if not 0 < len(binary) <= 8 * 1024 * 1024:
-                raise ValueError('The built SSTV decoder has an unexpected size.')
+            validate_built_binary(binary)
             probe = subprocess.run([str(build / 'sstv-robot36')], env=ENVIRONMENT,
                 input=b'\0' * 48000, capture_output=True, timeout=10, check=True)
             if probe.stdout:

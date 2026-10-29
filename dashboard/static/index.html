@@ -13,14 +13,14 @@
 <body>
   <header class="site-header">
     <div class="header-inner">
-      <a class="brand" href="#overview" aria-label="Repeater Box dashboard"><span class="brand-mark" aria-hidden="true">RB</span><span>Repeater Box<small>Local station monitor</small></span></a>
+      <a class="brand" href="#overview" aria-label="Repeater Box dashboard"><span class="brand-mark" aria-hidden="true">RB</span><span>Repeater Box<small id="brand-subtitle">Local station dashboard</small></span></a>
       <span class="pill pill-dark"><span class="status-dot"></span>Local access</span>
     </div>
   </header>
 
   <main class="page">
     <section class="page-heading" aria-labelledby="page-title">
-      <div><p class="eyebrow">Portable repeater / bench setup</p><h1 id="page-title">Station overview</h1><p class="intro" id="page-intro">Pi health, radio interfaces, and your portable station at a glance.</p></div>
+      <div><p class="eyebrow" id="station-mode">Portable repeater / Station dashboard</p><h1 id="page-title">Station overview</h1><p class="intro" id="page-intro">Pi health, radio interfaces, and your portable station at a glance.</p></div>
       <button class="button secondary" id="refresh-button" type="button"><span aria-hidden="true">↻</span> Refresh</button>
     </section>
 
@@ -36,12 +36,12 @@
     <div class="listening-strip" id="listening-strip" hidden><span class="status-dot"></span><span>Live audio is playing on this device.</span><button type="button" class="text-button" id="strip-stop">Stop listening</button></div>
     <section id="panel-overview" role="tabpanel" aria-labelledby="tab-overview" tabindex="0">
     <section class="radio-panel" aria-labelledby="channels-title">
-      <div class="section-heading"><div><p class="eyebrow">Radio configuration</p><h2 id="channels-title">Planned radio channels</h2></div><span class="pill pill-amber" id="phase-badge">Bench preparation</span></div>
+      <div class="section-heading"><div><p class="eyebrow">Radio configuration</p><h2 id="channels-title">Radio channel pair</h2></div><span class="pill pill-muted" id="phase-badge">Checking status</span></div>
       <div class="frequencies">
         <div class="frequency-block rx"><span class="channel-label"><span class="radio-activity-dot activity-unknown" id="rx-activity" role="img" aria-label="Receiver activity unavailable"></span>Box receive · input</span><p class="frequency"><span id="rx-frequency">—</span><span class="unit">MHz</span></p><p>Handhelds transmit on this frequency.</p></div>
         <div class="frequency-block tx"><span class="channel-label"><span class="radio-activity-dot activity-unknown" id="tx-activity" role="img" aria-label="Transmit activity unavailable"></span>Box transmit · output</span><p class="frequency"><span id="tx-frequency">—</span><span class="unit">MHz</span></p><p>Handhelds listen on this frequency.</p></div>
       </div>
-      <div class="radio-detail"><span><span id="tone-label">Planned tone</span> <strong id="tone-frequency">Unavailable</strong></span><span><span id="power-label">Planned TX power</span> <strong id="radio-power">Unavailable</strong></span></div>
+      <div class="radio-detail"><span><span id="tone-label">Tone</span> <strong id="tone-frequency">Unavailable</strong></span><span><span id="power-label">TX power</span> <strong id="radio-power">Unavailable</strong></span></div>
       <p class="radio-pair-caption" id="channel-pair-caption" hidden></p>
       <p class="radio-channel-note" id="rf-notice">Configure and verify a channel pair to display its saved values.</p>
     </section>
@@ -62,7 +62,7 @@
       <section class="card" aria-labelledby="software-title">
         <div class="section-heading"><h2 id="software-title">Repeater software</h2><span class="pill pill-muted" id="svxlink-state">Waiting</span></div>
         <dl class="detail-list"><div><dt>SvxLink</dt><dd id="svxlink-installed">Unavailable</dd></div><div><dt>Transmit control</dt><dd id="transmit-control">Unavailable</dd></div><div><dt>Available memory</dt><dd id="memory-available">Unavailable</dd></div><div><dt>System clock</dt><dd id="clock-status">Unavailable</dd></div></dl>
-        <p class="help-text" id="transmit-setup-help">Audio routing, receive detection, PTT, station identification, and time-out limits must be commissioned before on-air use.</p>
+        <p class="help-text" id="transmit-setup-help">Configure and test audio routing, receive detection, PTT, station identification, and time-out limits before on-air use.</p>
       </section>
     </div>
 
@@ -72,9 +72,9 @@
       <div class="interface-grid"><div><h3>Audio capture</h3><ul class="device-list" id="capture-devices"><li class="empty-item">Waiting for device information.</li></ul></div><div><h3>Audio playback</h3><ul class="device-list" id="playback-devices"><li class="empty-item">Waiting for device information.</li></ul></div><div><h3>Serial / PTT ports</h3><ul class="device-list" id="serial-devices"><li class="empty-item">Waiting for device information.</li></ul></div></div>
     </section>
 
-    <section class="card commissioning" id="commissioning-card" aria-labelledby="commissioning-title">
-      <div class="section-heading"><div><p class="eyebrow">Bring-up sequence</p><h2 id="commissioning-title">Before the first transmission</h2></div><span class="small-text">Bench checklist</span></div>
-      <ol class="checklist"><li id="checklist-pi" hidden><span class="step-number">1</span><div><h3>Prepare the SD card</h3><p>Install the supported Pi OS image and dashboard package, then boot the Pi.</p></div></li><li id="checklist-wifi" hidden><span class="step-number">2</span><div><h3>Set up wireless access</h3><p>Configure the box’s Wi-Fi, then join it from a phone or computer and open this dashboard.</p></div></li><li id="checklist-aioc"><span class="step-number">3</span><div><h3>Assign both AIOCs</h3><p>Identify each interface, label RX and TX, and confirm stable audio and serial device mappings.</p></div></li><li id="checklist-radio"><span class="step-number">4</span><div><h3>Commission radio control</h3><p>Verify PTT and receive detection, adjust audio levels, and configure identification and time-out limits before on-air testing.</p></div></li></ol>
+    <section class="card commissioning" id="commissioning-card" aria-labelledby="commissioning-title" hidden>
+      <div class="section-heading"><div><p class="eyebrow" id="commissioning-eyebrow">Station setup</p><h2 id="commissioning-title">Complete station setup</h2></div><span class="small-text" id="commissioning-label">Setup checklist</span></div>
+      <ol class="checklist"><li id="checklist-pi" hidden><span class="step-number">1</span><div><h3>Prepare the SD card</h3><p>Install the supported Pi OS image and dashboard package, then boot the Pi.</p></div></li><li id="checklist-wifi" hidden><span class="step-number">2</span><div><h3>Set up wireless access</h3><p>Configure the box’s Wi-Fi, then join it from a phone or computer and open this dashboard.</p></div></li><li id="checklist-aioc"><span class="step-number">3</span><div><h3 id="checklist-aioc-title">Assign both AIOCs</h3><p id="checklist-aioc-description">Identify each interface, label RX and TX, and confirm stable audio and serial device mappings.</p></div></li><li id="checklist-radio"><span class="step-number">4</span><div><h3 id="checklist-radio-title">Check receive and transmit operation</h3><p id="checklist-radio-description">Verify PTT and receive detection, adjust audio levels, and configure identification and time-out limits before on-air testing.</p></div></li></ol>
       <ul class="setup-notes" id="setup-notes" hidden></ul>
     </section>
 
@@ -85,8 +85,8 @@
         <p class="section-description">Listen to received speech and, when enabled in live mode, the repeater’s menu replies, IDs and broadcast messages. This player cannot transmit.</p>
         <div class="live-player">
           <div class="audio-emblem" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
-          <h3 id="live-player-state">Ready when the receiver is connected</h3>
-          <p id="live-player-description">The Pi will stream radio audio once its audio source is configured.</p>
+          <h3 id="live-player-state">Waiting for radio audio status</h3>
+          <p id="live-player-description">The dashboard will check the Pi’s radio audio feed.</p>
           <div class="audio-visualizer" id="live-audio-visualizer"><canvas id="live-audio-spectrum" role="img" aria-label="Radio audio frequency levels on this device"></canvas><p id="live-audio-spectrum-status" class="audio-visualizer-status" role="status">Start listening to view radio audio.</p></div>
           <div class="listen-buttons"><button type="button" class="button primary" id="listen-button" disabled>Start listening</button><button type="button" class="button secondary" id="stop-button" disabled>Stop</button></div>
           <div class="volume-control"><label for="listen-volume">Listening volume</label><input type="range" id="listen-volume" min="0" max="100" value="75"><output id="volume-value" for="listen-volume">75%</output></div>
@@ -95,7 +95,7 @@
         <dl class="detail-list live-details"><div><dt>Audio source</dt><dd id="live-input-state">Unavailable</dd></div><div><dt>Connected listeners</dt><dd id="live-listeners">Unavailable</dd></div><div><dt>Stream format</dt><dd id="live-format">Unavailable</dd></div><div><dt>Last audio packet</dt><dd id="live-last-packet">Unavailable</dd></div></dl>
         <p class="help-text">Tap Start listening to allow browser audio. Use your device’s volume controls as well. A short delay is normal. Listening continues when you change dashboard tabs; leaving or reloading this page stops it.</p>
       </section>
-      <div class="two-column"><section class="card"><h2>Live listening and recording</h2><p class="help-text">Listening and recording are independent. You can listen while recording is off, or keep recording with no browser connected. Recording controls are in Audio archives.</p></section><section class="card" id="audio-setup-help" hidden><h2>First audio setup</h2><p class="help-text">The receive AIOC must be assigned and the Pi audio service enabled before this player can receive traffic. A connected USB interface alone does not confirm radio audio.</p></section></div>
+      <div class="two-column"><section class="card"><h2>Live listening and recording</h2><p class="help-text">Listening and recording are independent. You can listen while recording is off, or keep recording with no browser connected. Recording controls are in Audio archives.</p></section><section class="card" id="audio-setup-help" hidden><h2 id="audio-setup-title">First audio setup</h2><p class="help-text" id="audio-setup-description">The receive AIOC must be assigned and the Pi audio service enabled before this player can receive traffic. A connected USB interface alone does not confirm radio audio.</p></section></div>
     </section>
     <section id="panel-data" role="tabpanel" aria-labelledby="tab-data" tabindex="0" hidden>
       <p class="help-text" id="data-auth-note">Admin sign-in is required to decode data and view or download received packets and pictures. <button type="button" class="text-button" id="data-admin-link">Open Settings / Admin</button></p>
@@ -165,7 +165,7 @@
           <div class="admin-group-heading"><h2 id="admin-daily-title">Daily operation</h2><p>Channel selection and radio controls for normal use.</p></div>
           <div class="admin-card-grid">
             <section class="card radio-pair-card admin-fullwidth" id="radio-pair-card" aria-labelledby="radio-pair-title">
-        <div class="section-heading"><div><p class="eyebrow">Paired radio setup</p><h3 id="radio-pair-title">Repeater channel pair</h3></div><span class="pill pill-muted" id="radio-pair-state">Checking</span></div>
+        <div class="section-heading"><div><p class="eyebrow">Channel selection</p><h3 id="radio-pair-title">Repeater channel pair</h3></div><span class="pill pill-muted" id="radio-pair-state">Checking</span></div>
         <p class="section-description" id="radio-pair-description">Switch both radios to a saved channel pair. Frequencies show verified settings, not live radio telemetry.</p>
         <div class="radio-pair-saved" id="radio-pair-saved"><strong id="radio-pair-current">No verified pair record</strong><p class="help-text" id="radio-pair-current-detail">Inspecting or programming one radio does not establish a verified pair.</p></div>
         <div class="radio-pair-picker" id="radio-pair-picker"><div><label class="field-label" for="radio-pair-select">Channel pair</label><select class="text-input" id="radio-pair-select" disabled><option value="">Channel pairs unavailable</option></select></div><button type="button" class="button primary" id="radio-pair-change" aria-haspopup="dialog" aria-controls="radio-pair-confirm-dialog" disabled>Change channel pair</button></div>
@@ -173,7 +173,7 @@
         <div class="radio-pair-stages" id="radio-pair-stages" hidden aria-label="Paired programming stages"><span id="radio-pair-stage-rx">RX · Waiting</span><span id="radio-pair-stage-tx">TX · Waiting</span></div>
         <p class="help-text" id="radio-pair-progress-help" hidden>Follow each RX and TX phase in the radio progress panel and activity log below. Both radios stay connected and powered; receiver audio stays paused through the paired operation.</p>
 
-        <p class="help-text" id="radio-pair-lock-note">Admin sign-in and bench qualification are required.</p><p class="form-message" id="radio-pair-message" role="status" aria-live="polite">Checking paired programming availability…</p>
+        <p class="help-text" id="radio-pair-lock-note">Admin sign-in and initial radio checks are required.</p><p class="form-message" id="radio-pair-message" role="status" aria-live="polite">Checking paired programming availability…</p>
       </section>
             <section class="card admin-fullwidth radio-messages-card" id="radio-messages-card" aria-labelledby="radio-messages-title" hidden>
               <div class="section-heading"><div><p class="eyebrow">On-air messages</p><h3 id="radio-messages-title">Radio messages</h3></div><span class="pill pill-muted" id="radio-messages-state">Checking</span></div>
@@ -288,7 +288,7 @@
           <div class="admin-group-heading"><h2 id="admin-radio-tools-title">Radio tools</h2><p>Inspection, individual programming, and recovery when needed.</p></div>
           <details class="admin-tools" id="radio-tools"><summary><span>Inspection and programming</span><span class="small-text" id="radio-tools-summary">Checking radio setup…</span></summary>
             <section class="card" id="radio-programming-card" aria-labelledby="radio-programming-title">
-        <div class="section-heading"><div><p class="eyebrow">Radio setup</p><h3 id="radio-programming-title">Inspect and program radios</h3></div><span class="pill pill-muted" id="radio-programming-state">Checking</span></div>
+        <div class="section-heading"><div><p class="eyebrow">Radio tools</p><h3 id="radio-programming-title">Inspect and program radios</h3></div><span class="pill pill-muted" id="radio-programming-state">Checking</span></div>
         <p class="section-description">Apply the default box plan to one radio on request through its assigned AIOC. These are template settings; programming runs only after confirmation.</p>
         <div class="radio-unfinished-notice" id="radio-unfinished-notice" hidden role="status" aria-live="polite"><strong id="radio-unfinished-title">An upload still needs verification</strong><p id="radio-unfinished-detail"></p><a class="button secondary" id="radio-recovery-link">Open radio editor</a></div>
         <div class="radio-plan-grid" id="radio-plan-grid">
@@ -314,7 +314,7 @@
   </main>
   <dialog class="confirm-dialog" id="radio-message-confirm-dialog" aria-labelledby="radio-message-confirm-title" aria-describedby="radio-message-confirm-description radio-message-confirm-effect"><p class="eyebrow">Radio message</p><h2 id="radio-message-confirm-title">Broadcast this message once?</h2><p id="radio-message-confirm-description"></p><p class="help-text" id="radio-message-confirm-effect"></p><p class="form-message error" id="radio-message-confirm-error" role="alert"></p><div class="dialog-actions"><button type="button" class="button secondary" id="radio-message-confirm-cancel" autofocus>Cancel</button><button type="button" class="button primary" id="radio-message-confirm-apply" disabled>Broadcast once</button></div></dialog>
   <dialog class="confirm-dialog" id="station-id-confirm-dialog" aria-labelledby="station-id-confirm-title" aria-describedby="station-id-confirm-description"><p class="eyebrow">Station identification</p><h2 id="station-id-confirm-title">Change automatic station identification?</h2><p id="station-id-confirm-description"></p><p class="help-text">Changes apply within one second. This switch does not key or release the transmitter.</p><div class="dialog-actions"><button type="button" class="button secondary" id="station-id-confirm-cancel" autofocus>Cancel</button><button type="button" class="button primary" id="station-id-confirm-apply" disabled>Confirm change</button></div></dialog>
-  <dialog class="confirm-dialog" id="dtmf-confirm-dialog" aria-labelledby="dtmf-confirm-title" aria-describedby="dtmf-confirm-description"><p class="eyebrow">Radio DTMF control</p><h2 id="dtmf-confirm-title">Change DTMF control?</h2><p id="dtmf-confirm-description"></p><p class="help-text">The private control code stays on the Pi. This changes radio menu controls for status, recording, and automatic identification; transmitter commissioning and the recording startup preference stay unchanged.</p><p class="form-message error" id="dtmf-confirm-error" role="alert"></p><div class="dialog-actions"><button type="button" class="button secondary" id="dtmf-confirm-cancel" autofocus>Cancel</button><button type="button" class="button primary" id="dtmf-confirm-apply" disabled>Confirm change</button></div></dialog>
+  <dialog class="confirm-dialog" id="dtmf-confirm-dialog" aria-labelledby="dtmf-confirm-title" aria-describedby="dtmf-confirm-description"><p class="eyebrow">Radio DTMF control</p><h2 id="dtmf-confirm-title">Change DTMF control?</h2><p id="dtmf-confirm-description"></p><p class="help-text">The private control code stays on the Pi. This changes radio menu controls for status, recording, and automatic identification; live radio configuration and the recording startup preference stay unchanged.</p><p class="form-message error" id="dtmf-confirm-error" role="alert"></p><div class="dialog-actions"><button type="button" class="button secondary" id="dtmf-confirm-cancel" autofocus>Cancel</button><button type="button" class="button primary" id="dtmf-confirm-apply" disabled>Confirm change</button></div></dialog>
   <dialog class="confirm-dialog" id="wifi-confirm-dialog" aria-labelledby="wifi-confirm-title" aria-describedby="wifi-confirm-description">
     <p class="eyebrow">Wi-Fi visibility</p>
     <h2 id="wifi-confirm-title">Change network visibility?</h2>

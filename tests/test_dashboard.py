@@ -62,13 +62,13 @@ class USBInventoryTest(unittest.TestCase):
 
 
 class EngineModeTest(unittest.TestCase):
-    def status(self, live="inactive", rx="inactive", bench="inactive"):
+    def status(self, live="inactive", rx="inactive", bench="inactive", system="Linux"):
         states = {"repeater-live.service": live, "repeater-rx-monitor.service": rx,
                   "repeater-engine.service": bench}
         def read_command(args):
             return states.get(args[2]) if args[:2] == ["systemctl", "show"] else None
         with tempfile.TemporaryDirectory() as temporary, \
-                mock.patch.object(dashboard.platform, "system", return_value="Linux"), \
+                mock.patch.object(dashboard.platform, "system", return_value=system), \
                 mock.patch.object(dashboard, "read_text", return_value=None), \
                 mock.patch.object(dashboard, "command", side_effect=read_command), \
                 mock.patch.object(dashboard, "count_aioc_usb_devices", return_value=2):
@@ -82,6 +82,8 @@ class EngineModeTest(unittest.TestCase):
         self.assertIsNone(status["svxlink"]["transmitting"])
         self.assertEqual(status["setup"]["phase"], "Live repeater")
         self.assertTrue(status["setup"]["rf_enabled"])
+        self.assertEqual(status["svxlink"]["unit_states"],
+                         {"bench": "inactive", "receive_only": "inactive", "repeater": "active"})
 
     def test_inactive_failed_or_starting_live_service_does_not_claim_rf_active(self):
         for state in ("inactive", "failed", "activating", None):
@@ -90,6 +92,56 @@ class EngineModeTest(unittest.TestCase):
                 self.assertEqual(status["svxlink"]["mode"], "receive_only")
                 self.assertEqual(status["svxlink"]["transmit_control"], "disabled")
                 self.assertFalse(status["setup"]["rf_enabled"])
+
+    def test_active_bench_is_reported_only_when_its_unit_is_running(self):
+        status = self.status(bench="active")
+        self.assertEqual(status["svxlink"]["mode"], "bench")
+        self.assertEqual(status["svxlink"]["state"], "active")
+        self.assertEqual(status["setup"]["phase"], "bench")
+        self.assertFalse(status["setup"]["rf_enabled"])
+
+    def test_all_stopped_units_do_not_turn_a_paused_box_into_bench_setup(self):
+        status = self.status()
+        self.assertEqual(status["svxlink"]["mode"], "stopped")
+        self.assertEqual(status["svxlink"]["state"], "inactive")
+        self.assertEqual(status["setup"]["phase"], "Radio service stopped")
+        self.assertFalse(status["setup"]["rf_enabled"])
+        self.assertEqual(status["svxlink"]["transmit_control"], "disabled")
+
+    def test_failed_radio_unit_surfaces_its_failure_when_no_other_unit_is_active(self):
+        for unit in ("live", "rx", "bench"):
+            with self.subTest(unit=unit):
+                status = self.status(**{unit: "failed"})
+                self.assertEqual(status["svxlink"]["mode"], "stopped")
+                self.assertEqual(status["svxlink"]["state"], "failed")
+                self.assertEqual(status["setup"]["phase"], "Radio service failed")
+                self.assertFalse(status["setup"]["rf_enabled"])
+
+    def test_starting_and_stopping_units_do_not_claim_transmission_or_fresh_bench(self):
+        for state, phase in (("activating", "Radio service starting"), ("deactivating", "Radio service stopping")):
+            with self.subTest(state=state):
+                status = self.status(live=state)
+                self.assertEqual(status["svxlink"]["mode"], "stopped")
+                self.assertEqual(status["svxlink"]["state"], state)
+                self.assertEqual(status["setup"]["phase"], phase)
+                self.assertFalse(status["setup"]["rf_enabled"])
+
+    def test_quiet_live_dashboard_restart_retains_live_service_context_without_audio_packets(self):
+        status = self.status(live="active")
+        self.assertNotIn("live_audio", status)
+        self.assertEqual(status["setup"]["phase"], "Live repeater")
+        self.assertEqual(status["svxlink"]["mode"], "repeater")
+        self.assertNotIn("planned radio settings", " ".join(status["setup"]["notes"]))
+        self.assertIn("Pi's transmit command", " ".join(status["setup"]["notes"]))
+
+    def test_non_linux_preview_does_not_claim_any_radio_service_mode(self):
+        status = self.status(system="Darwin")
+        self.assertEqual(status["svxlink"]["mode"], "unavailable")
+        self.assertEqual(status["svxlink"]["state"], "unavailable")
+        self.assertEqual(status["setup"]["phase"], "Dashboard preview")
+        self.assertFalse(status["setup"]["rf_enabled"])
+        self.assertEqual(status["svxlink"]["unit_states"],
+                         {"bench": None, "receive_only": None, "repeater": None})
 
 
 class DashboardHTTPTest(unittest.TestCase):
@@ -122,12 +174,13 @@ class DashboardHTTPTest(unittest.TestCase):
         conn.close()
         return result
 
-    def test_status_reports_honest_bench_and_recordings(self):
+    def test_status_reports_honest_inactive_service_or_preview_and_recordings(self):
         code, headers, body = self.request("/api/status")
         value = json.loads(body)
         self.assertEqual(code, 200)
         self.assertFalse(value["setup"]["rf_enabled"])
-        self.assertEqual(value["setup"]["phase"], "bench")
+        self.assertEqual(value["setup"]["phase"],
+                         "Radio service stopped" if sys.platform.startswith("linux") else "Dashboard preview")
         self.assertEqual(value["recordings"]["count"], 1)
         self.assertEqual(value["recordings"]["files"][0]["name"], "test clip.wav")
         self.assertIn("no-store", headers["Cache-Control"])

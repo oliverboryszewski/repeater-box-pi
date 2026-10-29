@@ -37,7 +37,7 @@ from radio_editor import MODELS
 from native_state import NativeState
 from radio_messages import RadioMessages, MessageError, MAX_UPLOAD_BYTES, upload_name
 
-VERSION = "0.13.0"
+VERSION = "0.13.1"
 STATIC = Path(__file__).parent / "static"
 STATIC_ROUTES = {
     "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
@@ -326,15 +326,30 @@ class Monitor:
         active = command(["nmcli", "-t", "-f", "NAME", "connection", "show", "--active"]) if linux else None
         hotspot = bool(active and "repeater-ap" in active.splitlines())
         ssid = command(["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", "repeater-ap"]) if hotspot else None
-        state = command(["systemctl", "show", "repeater-engine.service", "--property=ActiveState", "--value"]) if linux else None
+        bench_state = command(["systemctl", "show", "repeater-engine.service", "--property=ActiveState", "--value"]) if linux else None
         rx_state = command(["systemctl", "show", "repeater-rx-monitor.service", "--property=ActiveState", "--value"]) if linux else None
         live_state = command(["systemctl", "show", "repeater-live.service", "--property=ActiveState", "--value"]) if linux else None
+        unit_states = {"bench": bench_state, "receive_only": rx_state, "repeater": live_state}
         rf_enabled = live_state == "active"
-        if rx_state == "active":
-            state = rx_state
         if rf_enabled:
-            state = live_state
-        mode = "repeater" if rf_enabled else "receive_only" if rx_state == "active" else "bench"
+            mode, state, phase = "repeater", live_state, "Live repeater"
+        elif rx_state == "active":
+            mode, state, phase = "receive_only", rx_state, "Receive monitor"
+        elif bench_state == "active":
+            mode, state, phase = "bench", bench_state, "bench"
+        elif linux:
+            mode = "stopped"
+            if "failed" in unit_states.values():
+                state, phase = "failed", "Radio service failed"
+            elif "activating" in unit_states.values():
+                state, phase = "activating", "Radio service starting"
+            elif "deactivating" in unit_states.values():
+                state, phase = "deactivating", "Radio service stopping"
+            else:
+                state = "inactive" if "inactive" in unit_states.values() else "unavailable"
+                phase = "Radio service stopped"
+        else:
+            mode, state, phase = "unavailable", "unavailable", "Dashboard preview"
         installed = bool(shutil.which("svxlink"))
         capture = audio_cards(command(["arecord", "-l"])) if linux else []
         playback = audio_cards(command(["aplay", "-l"])) if linux else []
@@ -344,9 +359,9 @@ class Monitor:
         aioc_count = count_aioc_usb_devices() if linux else None
         clock = command(["timedatectl", "show", "--property=NTPSynchronized", "--value"]) if linux else None
         recordings = media_files(self.recordings)
-        notes = ["The live repeater service is active." if rf_enabled else "Transmission is disabled in bench and receive-only modes.",
-                 "Channel values are the planned radio settings, not live radio telemetry.",
-                 "The dashboard does not measure the radio's PTT state."]
+        notes = ["The live repeater service is active." if rf_enabled else "The selected radio service does not enable transmission.",
+                 "Channel values come from configured settings, not continuous radio telemetry.",
+                 "Activity indicators show receiver squelch and the Pi's transmit command."]
         if not is_pi:
             notes.insert(0, "Development preview: this server is not running on a Raspberry Pi.")
         return {"version": VERSION, "hostname": socket.gethostname(), "platform": model or platform.system(),
@@ -358,12 +373,12 @@ class Monitor:
                     "addresses": addresses, "dashboard_url": "http://10.42.0.1", "internet_required": False},
                 "svxlink": {"installed": installed, "state": state if state else "unavailable",
                             "mode": mode, "transmit_control": "enabled" if rf_enabled else "disabled",
-                            "transmitting": None},
+                            "transmitting": None, "unit_states": unit_states},
                 "audio": {"capture": capture, "playback": playback, "serial_ports": serial,
                           "usb_aioc_count": aioc_count},
                 "recordings": {"count": len(recordings), "total_bytes": sum(f["bytes"] for f in recordings),
                                "files": recordings},
-                "setup": {"phase": "Live repeater" if rf_enabled else "Receive monitor" if rx_state == "active" else "bench", "rf_enabled": rf_enabled,
+                "setup": {"phase": phase, "rf_enabled": rf_enabled,
                           "radio_plan": None, "notes": notes},
                 "clock_synchronized": {"yes": True, "no": False}.get(clock)}
 

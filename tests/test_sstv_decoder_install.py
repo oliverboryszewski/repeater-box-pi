@@ -65,6 +65,15 @@ class SstvDecoderInstallTests(unittest.TestCase):
         self.code['extract_source'](path, destination, digest)
         self.assertEqual((destination / 'file.c').read_bytes(), b'source')
 
+    def test_native_output_limit_accepts_stripped_output_and_refuses_unstripped_debian_size(self):
+        # Debian's prebuilt static standard library carries symbols even when
+        # this project's own code uses debuginfo=0. The final link strips them.
+        for binary in (b'', b'x' * (self.code['MAX_BINARY'] + 1), b'x' * 11692048):
+            with self.subTest(size=len(binary)), self.assertRaisesRegex(ValueError, 'size'):
+                self.code['validate_built_binary'](binary)
+        self.code['validate_built_binary'](b'x' * 512000)
+        self.code['validate_built_binary'](b'x' * self.code['MAX_BINARY'])
+
     def test_archive_rejects_links_traversal_and_duplicate_entries(self):
         for entries in ([('../outside', b'bad', None)], [('file', b'', tarfile.SYMTYPE)],
                         [('file', b'', tarfile.LNKTYPE)], [('file', b'', tarfile.FIFOTYPE)],
