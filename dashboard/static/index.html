@@ -245,6 +245,7 @@
         <dl class="detail-list software-update-details"><div><dt>Installed version</dt><dd id="software-current-version">Unavailable</dd></div><div><dt>Latest version</dt><dd id="software-latest-version">Not checked</dd></div><div><dt>Last checked</dt><dd id="software-checked-at">Not checked</dd></div></dl>
         <p class="help-text">Updates the dashboard app. Wi-Fi, passwords, saved settings, archives, and radio configuration are preserved.</p>
         <div class="software-update-actions" id="software-update-actions"><button type="button" class="button secondary" id="software-check" disabled>Check for updates</button><button type="button" class="button primary" id="software-install" aria-haspopup="dialog" aria-controls="software-confirm-dialog" disabled>Update software</button></div>
+        <div class="software-check-progress" id="software-check-progress" hidden><progress id="software-check-progress-bar" aria-label="Checking for software updates" aria-describedby="software-check-progress-note"></progress><p class="help-text" id="software-check-progress-note">Checking GitHub for the latest dashboard version…</p></div>
         <p class="help-text" id="software-updates-lock-note">Admin sign-in required to manage updates</p>
         <p class="form-message" id="software-updates-message" role="status" aria-live="polite">Checking software update status…</p>
       </section>

@@ -31,6 +31,12 @@
   let softwareUpdateError = "";
   let softwareUpdateAttempt = null;
   let softwareUpdateCheck = null;
+  let softwareUpdateAction = null;
+  let softwareUpdateRevision = 0;
+  let softwareCheckTimer = null;
+  let softwareCheckController = null;
+  let softwareCheckGeneration = 0;
+  let softwareCheckPageActive = true;
   let radioProgrammingProposal = null;
   let radioProgrammingBusy = false;
   let radioProgrammingError = "";
@@ -370,11 +376,14 @@
     byId("refresh-button").disabled = true;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 8000);
+    const updateRevision = softwareUpdateRevision;
     try {
       const response = await fetch("/api/status", { cache: "no-store", signal: controller.signal, headers: { Accept: "application/json" } });
       if (!response.ok) throw new Error(`Status ${response.status}`);
       const data = await response.json();
       if (!data || typeof data !== "object" || Array.isArray(data) || typeof data.version !== "string") throw new Error("Invalid status data");
+      // A lightweight check result or POST may finish during the slower system snapshot.
+      if (updateRevision !== softwareUpdateRevision) data.software_updates = latestStatus?.software_updates;
       renderStatus(data);
       lastSuccess = new Date();
       byId("connection-banner").className = "connection-banner";
@@ -585,12 +594,102 @@
     byId("software-check").disabled = !enabled;
     byId("software-install").disabled = !canInstall;
     byId("software-confirm-apply").disabled = !canInstall;
+    renderSoftwareCheckProgress();
     setText("software-updates-lock-note", updates?.preview === true ? "Updates run on the Pi; this preview cannot install software"
       : !sessionKnown || !session.authenticated ? "Admin sign-in required to manage updates"
       : radioTaskPending() ? "A radio programming task is in progress"
       : updates?.pending === true || softwareUpdateBusy ? "An update task is in progress"
       : !freshSoftwareCheck(updates) ? "Check for updates in this session before installing"
       : "Changes apply only after you confirm installation");
+  }
+
+  function softwareCheckAllowed() {
+    const updates = latestStatus?.software_updates;
+    return softwareCheckPageActive && !document.hidden && sessionKnown && session.authenticated &&
+      updates?.available === true && updates.preview !== true;
+  }
+
+  function softwareCheckPending() {
+    return softwareCheckAllowed() && latestStatus?.software_updates?.pending === true &&
+      latestStatus.software_updates.action === "check";
+  }
+
+  function stopSoftwareCheckPolling() {
+    if (softwareCheckTimer !== null) clearTimeout(softwareCheckTimer);
+    softwareCheckTimer = null;
+    if (softwareCheckController) softwareCheckController.abort();
+    softwareCheckController = null;
+    softwareCheckGeneration += 1;
+  }
+
+  function scheduleSoftwareCheckPoll() {
+    if (!softwareCheckPending() || softwareUpdateBusy) {
+      stopSoftwareCheckPolling();
+      return;
+    }
+    if (softwareCheckTimer !== null || softwareCheckController) return;
+    softwareCheckTimer = setTimeout(() => {
+      softwareCheckTimer = null;
+      refreshSoftwareCheck();
+    }, 750);
+  }
+
+  function renderSoftwareCheckProgress() {
+    const checking = softwareCheckAllowed() && (softwareCheckPending() ||
+      softwareUpdateBusy && softwareUpdateAction === "check");
+    byId("software-check-progress").hidden = !checking;
+    byId("software-check-progress-bar").removeAttribute("value");
+    byId("software-updates-card").setAttribute("aria-busy", String(checking));
+    setText("software-check", checking ? "Checking…" : "Check for updates");
+    setText("software-check-progress-note", "Checking GitHub for the latest dashboard version…");
+    scheduleSoftwareCheckPoll();
+  }
+
+  async function refreshSoftwareCheck() {
+    if (!softwareCheckPending() || softwareUpdateBusy || softwareCheckController) return;
+    if (softwareCheckTimer !== null) clearTimeout(softwareCheckTimer);
+    softwareCheckTimer = null;
+    const csrf = session.csrf_token;
+    const expected = latestStatus.software_updates;
+    const installed = softwareInstalledKey(expected);
+    const generation = softwareCheckGeneration;
+    const controller = new AbortController();
+    softwareCheckController = controller;
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    try {
+      const response = await fetch("/api/software-updates/status", {
+        cache: "no-store", credentials: "same-origin", signal: controller.signal,
+        headers: { Accept: "application/json" }
+      });
+      const result = await response.json();
+      if (generation !== softwareCheckGeneration || controller.signal.aborted || session.csrf_token !== csrf) return;
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) {
+          session.authenticated = false;
+          session.csrf_token = null;
+          renderAdmin();
+        }
+        throw new Error("Update status unavailable");
+      }
+      const updates = result.software_updates;
+      if (!updates || typeof updates !== "object" || Array.isArray(updates)) throw new Error("Unreadable update status");
+      if (generation !== softwareCheckGeneration || controller.signal.aborted || !softwareCheckPending() ||
+          session.csrf_token !== csrf || softwareInstalledKey(latestStatus.software_updates) !== installed ||
+          latestStatus.software_updates.request_id !== expected.request_id) return;
+      if (updates.available === true && updates.preview !== true &&
+          (updates.action !== "check" || updates.request_id !== expected.request_id || softwareInstalledKey(updates) !== installed)) return;
+      softwareUpdateRevision += 1;
+      latestStatus = { ...latestStatus, software_updates: updates };
+      renderSoftwareUpdates(updates);
+    } catch (_) {
+      if (generation === softwareCheckGeneration && softwareCheckPending()) {
+        setText("software-check-progress-note", "Update status connection interrupted. Reconnecting automatically…");
+      }
+    } finally {
+      clearTimeout(timeout);
+      if (softwareCheckController === controller) softwareCheckController = null;
+      if (generation === softwareCheckGeneration) scheduleSoftwareCheckPoll();
+    }
   }
 
   function renderSoftwareUpdates(updates) {
@@ -1792,6 +1891,7 @@
     const check = action === "check" ? { csrf: session.csrf_token, installed: softwareInstalledKey(updates), requestId: null, target: null } : null;
     softwareUpdateCheck = check;
     softwareUpdateBusy = true;
+    softwareUpdateAction = action;
     mutationBusy = true;
     softwareUpdateError = "";
     renderAdmin();
@@ -1809,12 +1909,14 @@
           check.requestId = saved.request_id;
         } else softwareUpdateCheck = null;
       }
+      softwareUpdateRevision += 1;
       latestStatus = { ...latestStatus, software_updates: result.software_updates };
     } catch (error) {
       softwareUpdateCheck = null;
       softwareUpdateError = `${error.message} If the dashboard restarted, wait for it to reconnect before trying again.`;
     } finally {
       softwareUpdateBusy = false;
+      softwareUpdateAction = null;
       mutationBusy = false;
       renderSoftwareUpdates(latestStatus?.software_updates);
       await refreshAfterMutation();
@@ -2224,8 +2326,9 @@
     emitLiveAudio();
   });
   byId("recording-audio").addEventListener("play", () => { if (liveState !== "stopped") stopListening(true); });
-  window.addEventListener("pagehide", () => { stopListening(); stopRadioActivity(); });
+  window.addEventListener("pagehide", () => { softwareCheckPageActive = false; stopSoftwareCheckPolling(); stopListening(); stopRadioActivity(); });
   window.addEventListener("pageshow", startRadioActivity);
+  window.addEventListener("pageshow", () => { softwareCheckPageActive = true; renderSoftwareCheckProgress(); });
   selectTab(location.hash.slice(1));
   loadSession();
   byId("refresh-button").addEventListener("click", () => { refresh(); loadSession(); });
@@ -2234,6 +2337,7 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) stopRadioActivity();
     else { refresh(); startRadioActivity(); }
+    renderSoftwareCheckProgress();
   });
   refresh();
   startRadioActivity();

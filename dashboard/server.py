@@ -37,7 +37,7 @@ from radio_editor import MODELS
 from native_state import NativeState
 from radio_messages import RadioMessages, MessageError, MAX_UPLOAD_BYTES, upload_name
 
-VERSION = "0.11.1"
+VERSION = "0.11.2"
 STATIC = Path(__file__).parent / "static"
 STATIC_ROUTES = {
     "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
@@ -626,6 +626,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/activity":
             self.json_response(200, radio_activity(self.server), head=head)
+            return
+        if path == "/api/software-updates/status":
+            if not self.server.auth.session(self.session_token())["authenticated"]:
+                self.json_response(403, {"error": "Sign in as admin to view software update progress"}, head=head)
+                return
+            self.json_response(200, {"software_updates": self.server.updates.status()}, head=head)
             return
         if path == "/api/messages":
             if not self.server.auth.session(self.session_token())["authenticated"]:

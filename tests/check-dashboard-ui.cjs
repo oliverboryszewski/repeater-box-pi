@@ -15,9 +15,11 @@ const source = fs.readFileSync(path.resolve(__dirname, '../dashboard/static/app.
   messagesProgress() { return refreshRadioMessages(); },
   progress() { return refreshRadioProgress(); },
   refresh() { return refreshAfterMutation(); },
+  softwareProgress() { return refreshSoftwareCheck(); },
+  softwareProgressState() { renderSoftwareCheckProgress(); },
   };\n})();`);
 function harness({preview=false, hidden=false, updates={}, radios={}, stationIdentification={},messages={}}={}) {
-  let focused = null, onStatus = null, onActivity = null, failActivity = false, failRefresh = false, pairError = null, messageError = null, stationIdError = null, stationIdResult = null, softwareRequests = 1;
+  let focused = null, onStatus = null, onActivity = null, onSoftwareStatus = null, onSoftwareRequest = null, failActivity = false, failRefresh = false, pairError = null, messageError = null, stationIdError = null, stationIdResult = null, softwareRequests = 1;
   const elements = new Map(), calls=[], timers=new Map();let timerId=0;
   class Element {
     constructor(id='') {this.id=id;this.listeners={};this.attrs={};this.dataset={};this.open=false;this.classList={add(){},remove(){},toggle(){}};this.value='';this.children=[];this.firstChild={nodeType:3,nodeValue:''};}
@@ -89,14 +91,19 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
       status.settings=JSON.parse(options.body);
       return{ok:true,json:async()=>({settings:structuredClone(status.settings)})};
     }
+    if(path==='/api/software-updates/status'){
+      if(onSoftwareStatus){const response=await onSoftwareStatus();if(response)return response;}
+      return{ok:true,json:async()=>({software_updates:structuredClone(status.software_updates)})};
+    }
     if(path==='/api/software-updates/check'||path==='/api/software-updates/install'){
+      if(onSoftwareRequest)await onSoftwareRequest(path);
       status.software_updates={...status.software_updates,pending:true,action:path.endsWith('/install')?'install':'check',request_id:`updates-${++softwareRequests}`,success:null};
       return{ok:true,json:async()=>({software_updates:structuredClone(status.software_updates)})};
     }
     throw new Error(`unexpected fetch ${path}`);
   }};
   vm.createContext(ctx);vm.runInContext(source,ctx);ctx.testApi.setup(structuredClone(status),structuredClone(auth));
-  return{ctx,el,calls,timers,set onActivity(fn){onActivity=fn;},set failActivity(value){failActivity=value;},get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},set messageError(value){messageError=value;},set stationIdError(value){stationIdError=value;},set stationIdResult(value){stationIdResult=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
+  return{ctx,el,calls,timers,set onActivity(fn){onActivity=fn;},set failActivity(value){failActivity=value;},get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set onSoftwareStatus(fn){onSoftwareStatus=fn;},set onSoftwareRequest(fn){onSoftwareRequest=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},set messageError(value){messageError=value;},set stationIdError(value){stationIdError=value;},set stationIdResult(value){stationIdResult=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
 }
 const checks=[];
 async function check(name,fn){try{await fn();checks.push(name);}catch(error){throw new Error(name,{cause:error});}}
@@ -456,6 +463,104 @@ function dashboardMarkup() {
   await check('Settings switch labels follow loaded and unsaved values',async()=>{const h=harness();h.ctx.testApi.settings({input_enabled:true,record_on_startup:false});assert.equal(h.el('input-enabled').checked,true);assert.equal(h.el('input-enabled-value').textContent,'On');assert.equal(h.el('record-startup-value').textContent,'Off');h.el('input-enabled').checked=false;h.el('record-startup').checked=true;await h.el('settings-form').dispatch('input');assert.equal(h.el('input-enabled-value').textContent,'Off');assert.equal(h.el('record-startup-value').textContent,'On');});
   await check('Update card shows installed/latest versions and requires admin for either task',async()=>{const h=harness();assert.equal(h.el('software-current-version').textContent,'0.2.2 · aaaaaaa');assert.equal(h.el('software-latest-version').textContent,'0.2.3 · bbbbbbb');assert.equal(h.el('software-updates-state').textContent,'Not checked');h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});assert.equal(h.el('software-check').disabled,true);assert.equal(h.el('software-install').disabled,true);await h.el('software-check').dispatch('click');await h.el('software-install').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('software-confirm-dialog').open,false);});
   await check('Authenticated check sends empty object with CSRF and locks management while pending',async()=>{const h=harness();assert.equal(h.el('settings-fields').disabled,false);await h.el('software-check').dispatch('click');assert.equal(h.posts().length,1);assert.equal(h.posts()[0].path,'/api/software-updates/check');assert.deepEqual(JSON.parse(h.posts()[0].options.body),{});assert.equal(h.posts()[0].options.headers['X-CSRF-Token'],'token-1');assert.equal(h.el('software-updates-state').textContent,'Checking');for(const id of ['software-check','software-install','settings-fields','recording-toggle','wifi-visibility-fields'])assert.equal(h.el(id).disabled,true,id);await h.el('software-check').dispatch('click');assert.equal(h.posts().length,1);});
+  await check('Software check progress is labelled and indeterminate with reduced-motion styling',async()=>{
+    const html=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/index.html'),'utf8');
+    const bar=html.match(/<progress[^>]*id="software-check-progress-bar"[^>]*>/)[0];
+    assert.match(bar,/aria-label="Checking for software updates"/);assert.match(bar,/aria-describedby="software-check-progress-note"/);
+    assert.doesNotMatch(bar,/\b(?:value|max)=/);assert.match(html,/<div[^>]*id="software-check-progress"[^>]*hidden/);
+    const css=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/style.css'),'utf8');
+    assert.match(css,/@media\(prefers-reduced-motion:reduce\)\{\.software-check-progress progress\{animation:none/);
+    const h=harness();assert.equal(h.el('software-check-progress').hidden,true);assert.equal(h.el('software-updates-card').attrs['aria-busy'],'false');
+  });
+  await check('Progress appears immediately during the check POST and stays active while the worker checks',async()=>{
+    const h=harness();let release;h.onSoftwareRequest=()=>new Promise(resolve=>{release=resolve;});
+    const request=h.el('software-check').dispatch('click');
+    assert.equal(h.el('software-check-progress').hidden,false);assert.equal(h.el('software-check').textContent,'Checking…');
+    assert.equal(h.el('software-updates-card').attrs['aria-busy'],'true');assert.equal(h.el('software-check-progress-bar').attrs.value,undefined);
+    assert.equal([...h.timers.values()].some(timer=>timer.ms===750),false);
+    release();await request;
+    assert.equal(h.el('software-check-progress').hidden,false);assert.equal([...h.timers.values()].filter(timer=>timer.ms===750).length,1);
+  });
+  await check('Lightweight check polling completes promptly without a hardware status request and retains fresh-check authority',async()=>{
+    const h=harness();await h.el('software-check').dispatch('click');h.calls.length=0;
+    const finished={...h.status.software_updates,pending:false,success:true,can_install:true};
+    h.onSoftwareStatus=()=>({ok:true,json:async()=>({software_updates:finished})});
+    await h.ctx.testApi.softwareProgress();
+    assert.deepEqual(h.calls.map(call=>call.path),['/api/software-updates/status']);
+    assert.equal(h.calls[0].options.cache,'no-store');assert.equal(h.calls[0].options.credentials,'same-origin');
+    assert.equal(h.el('software-check-progress').hidden,true);assert.equal(h.el('software-updates-card').attrs['aria-busy'],'false');
+    assert.equal(h.el('software-updates-state').textContent,'Update available');assert.equal(h.el('software-install').disabled,false);
+    assert.equal([...h.timers.values()].some(timer=>timer.ms===750),false);assert.equal(h.posts().length,0);
+  });
+  await check('Only one lightweight poll runs at a time and pending results schedule a single next poll',async()=>{
+    const h=harness();await h.el('software-check').dispatch('click');h.calls.length=0;let release;
+    h.onSoftwareStatus=()=>new Promise(resolve=>{release=resolve;});
+    const first=h.ctx.testApi.softwareProgress();await h.ctx.testApi.softwareProgress();
+    assert.equal(h.calls.length,1);assert.equal([...h.timers.values()].some(timer=>timer.ms===750),false);
+    release();await first;assert.equal([...h.timers.values()].filter(timer=>timer.ms===750).length,1);
+  });
+  await check('A completed lightweight result cannot regress behind an overlapping slower dashboard snapshot',async()=>{
+    const h=harness();await h.el('software-check').dispatch('click');let release;
+    h.onStatus=()=>new Promise(resolve=>{release=resolve;});const snapshot=h.ctx.testApi.refresh();
+    h.onSoftwareStatus=()=>({ok:true,json:async()=>({software_updates:{...h.status.software_updates,pending:false,success:true,can_install:true}})});
+    await h.ctx.testApi.softwareProgress();assert.equal(h.el('software-install').disabled,false);
+    release();await snapshot;
+    assert.equal(h.el('software-check-progress').hidden,true);assert.equal(h.el('software-updates-state').textContent,'Update available');assert.equal(h.el('software-install').disabled,false);
+  });
+  for(const [name,change]of[
+    ['hidden page',h=>{h.ctx.document.hidden=true;h.ctx.testApi.softwareProgressState();}],
+    ['signed-out admin',h=>h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null})],
+    ['unavailable updater',h=>{h.status.software_updates.available=false;h.ctx.testApi.status(structuredClone(h.status));}],
+    ['preview updater',h=>{h.status.software_updates.preview=true;h.ctx.testApi.status(structuredClone(h.status));}]
+  ])await check(`A ${name} hides progress, aborts its poll, and ignores its late response`,async()=>{
+    const h=harness();await h.el('software-check').dispatch('click');h.calls.length=0;let release;
+    h.onSoftwareStatus=()=>new Promise(resolve=>{release=resolve;});const request=h.ctx.testApi.softwareProgress();
+    const signal=h.calls[0].options.signal;change(h);
+    assert.equal(signal.aborted,true);assert.equal(h.el('software-check-progress').hidden,true);assert.equal(h.el('software-updates-card').attrs['aria-busy'],'false');
+    release({ok:true,json:async()=>({software_updates:{...h.status.software_updates,pending:false,success:true}})});await request;
+    assert.equal(h.el('software-check-progress').hidden,true);assert.equal([...h.timers.values()].some(timer=>timer.ms===750),false);
+  });
+  await check('Check polling resumes when a pending check becomes visible again',async()=>{
+    const h=harness({updates:{pending:true,action:'check',success:null}});h.ctx.document.hidden=true;h.ctx.testApi.softwareProgressState();
+    assert.equal(h.el('software-check-progress').hidden,true);assert.equal([...h.timers.values()].some(timer=>timer.ms===750),false);
+    h.ctx.document.hidden=false;h.ctx.testApi.softwareProgressState();
+    assert.equal(h.el('software-check-progress').hidden,false);assert.equal([...h.timers.values()].filter(timer=>timer.ms===750).length,1);
+  });
+  await check('Expired admin session from the lightweight endpoint stops progress and further polls',async()=>{
+    const h=harness();await h.el('software-check').dispatch('click');h.calls.length=0;
+    h.onSoftwareStatus=()=>({ok:false,status:403,json:async()=>({error:'Sign in required.'})});await h.ctx.testApi.softwareProgress();
+    assert.equal(h.el('software-check-progress').hidden,true);assert.equal(h.el('admin-options').hidden,true);
+    assert.equal([...h.timers.values()].some(timer=>timer.ms===750),false);await h.ctx.testApi.softwareProgress();assert.equal(h.calls.length,1);
+  });
+  await check('A late forbidden result from an aborted poll cannot sign out a new admin session',async()=>{
+    const h=harness();await h.el('software-check').dispatch('click');let release;
+    h.onSoftwareStatus=()=>new Promise(resolve=>{release=resolve;});const request=h.ctx.testApi.softwareProgress();
+    h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});
+    h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'new-session'});
+    release({ok:false,status:403,json:async()=>({error:'Expired old session.'})});await request;
+    assert.equal(h.el('admin-options').hidden,false);assert.equal(h.el('software-check-progress').hidden,false);
+    assert.equal(h.el('software-install').disabled,true);
+  });
+  await check('A failed check and a failed POST hide the indeterminate bar; installations do not use it',async()=>{
+    const h=harness();await h.el('software-check').dispatch('click');
+    h.onSoftwareStatus=()=>({ok:true,json:async()=>({software_updates:{...h.status.software_updates,pending:false,success:false}})});await h.ctx.testApi.softwareProgress();
+    assert.equal(h.el('software-check-progress').hidden,true);assert.equal(h.el('software-updates-state').textContent,'Check failed');
+    const failed=harness();failed.onSoftwareRequest=()=>{throw new Error('Check failed');};await failed.el('software-check').dispatch('click');
+    assert.equal(failed.el('software-check-progress').hidden,true);assert.equal([...failed.timers.values()].some(timer=>timer.ms===750),false);
+    const installing=harness({updates:{pending:true,action:'install',success:null}});assert.equal(installing.el('software-check-progress').hidden,true);assert.equal([...installing.timers.values()].some(timer=>timer.ms===750),false);
+  });
+  await check('A network interruption retries status without reissuing the check POST',async()=>{
+    const h=harness();await h.el('software-check').dispatch('click');h.calls.length=0;h.onSoftwareStatus=()=>{throw new Error('offline');};
+    await h.ctx.testApi.softwareProgress();assert.equal(h.el('software-check-progress').hidden,false);assert.match(h.el('software-check-progress-note').textContent,/Reconnecting/);
+    assert.equal([...h.timers.values()].filter(timer=>timer.ms===750).length,1);assert.equal(h.posts().length,0);
+  });
+  await check('A changed check request ignores an older in-flight completion',async()=>{
+    const h=harness();await h.el('software-check').dispatch('click');h.calls.length=0;let release;const before=structuredClone(h.status.software_updates);
+    h.onSoftwareStatus=()=>new Promise(resolve=>{release=resolve;});const poll=h.ctx.testApi.softwareProgress();
+    h.status.software_updates.request_id='newer-check';h.ctx.testApi.status(structuredClone(h.status));
+    release({ok:true,json:async()=>({software_updates:{...before,pending:false,success:true}})});await poll;
+    assert.equal(h.el('software-check-progress').hidden,false);assert.equal(h.el('software-updates-state').textContent,'Checking');assert.equal(h.el('software-install').disabled,true);
+  });
   await check('Cached update result needs refreshing and cannot offer Install before a page-local check',async()=>{const h=harness();assert.equal(h.el('software-updates-state').textContent,'Not checked');assert.equal(h.el('software-install').disabled,true);assert.match(h.el('software-updates-lock-note').textContent,/Check for updates.*session/);await h.el('software-install').dispatch('click');await h.el('software-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('software-confirm-dialog').open,false);});
   await check('Matching successful check initiated by this page offers and enables Install',async()=>{const h=harness();await freshUpdateCheck(h);assert.equal(h.el('software-updates-state').textContent,'Update available');assert.equal(h.el('software-install').disabled,false);});
   await check('A new page cannot reuse the previous page successful check',async()=>{const h=harness();await freshUpdateCheck(h);const reopened=harness({updates:structuredClone(h.status.software_updates)});assert.equal(reopened.el('software-install').disabled,true);await reopened.el('software-install').dispatch('click');assert.equal(reopened.el('software-confirm-dialog').open,false);});
