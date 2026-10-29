@@ -60,17 +60,17 @@
       <section class="card" aria-labelledby="software-title">
         <div class="section-heading"><h2 id="software-title">Repeater software</h2><span class="pill pill-muted" id="svxlink-state">Waiting</span></div>
         <dl class="detail-list"><div><dt>SvxLink</dt><dd id="svxlink-installed">Unavailable</dd></div><div><dt>Transmit control</dt><dd id="transmit-control">Unavailable</dd></div><div><dt>Available memory</dt><dd id="memory-available">Unavailable</dd></div><div><dt>System clock</dt><dd id="clock-status">Unavailable</dd></div></dl>
-        <p class="help-text">Audio routing, receive detection, PTT, station identification, and time-out limits must be commissioned before on-air use.</p>
+        <p class="help-text" id="transmit-setup-help">Audio routing, receive detection, PTT, station identification, and time-out limits must be commissioned before on-air use.</p>
       </section>
     </div>
 
     <section class="card" aria-labelledby="interfaces-title">
       <div class="section-heading"><div><p class="eyebrow">USB hardware</p><h2 id="interfaces-title">Radio interfaces</h2></div><span class="pill pill-muted" id="aioc-count">AIOCs unavailable</span></div>
-      <p class="section-description">Detected devices are listed as the operating system sees them. Input and output roles still need to be assigned.</p>
+      <p class="section-description" id="interfaces-description">Detected devices are listed as the operating system sees them. Input and output roles still need to be assigned.</p>
       <div class="interface-grid"><div><h3>Audio capture</h3><ul class="device-list" id="capture-devices"><li class="empty-item">Waiting for device information.</li></ul></div><div><h3>Audio playback</h3><ul class="device-list" id="playback-devices"><li class="empty-item">Waiting for device information.</li></ul></div><div><h3>Serial / PTT ports</h3><ul class="device-list" id="serial-devices"><li class="empty-item">Waiting for device information.</li></ul></div></div>
     </section>
 
-    <section class="card commissioning" aria-labelledby="commissioning-title">
+    <section class="card commissioning" id="commissioning-card" aria-labelledby="commissioning-title">
       <div class="section-heading"><div><p class="eyebrow">Bring-up sequence</p><h2 id="commissioning-title">Before the first transmission</h2></div><span class="small-text">Bench checklist</span></div>
       <ol class="checklist"><li id="checklist-pi" hidden><span class="step-number">1</span><div><h3>Prepare the SD card</h3><p>Install the supported Pi OS image and dashboard package, then boot the Pi.</p></div></li><li id="checklist-wifi" hidden><span class="step-number">2</span><div><h3>Set up wireless access</h3><p>Configure the box’s Wi-Fi, then join it from a phone or computer and open this dashboard.</p></div></li><li id="checklist-aioc"><span class="step-number">3</span><div><h3>Assign both AIOCs</h3><p>Identify each interface, label RX and TX, and confirm stable audio and serial device mappings.</p></div></li><li id="checklist-radio"><span class="step-number">4</span><div><h3>Commission radio control</h3><p>Verify PTT and receive detection, adjust audio levels, and configure identification and time-out limits before on-air testing.</p></div></li></ol>
       <ul class="setup-notes" id="setup-notes" hidden></ul>
@@ -126,87 +126,50 @@
         </section>
       </div>
       <div id="admin-options" hidden>
-        <section class="card" aria-labelledby="access-title"><p class="eyebrow">Connect from any browser</p><h2 id="access-title">Your portable dashboard</h2><p class="help-text" id="access-setup-help" hidden>Join the box’s password-protected Wi-Fi on your phone, laptop, or iPad. Keep the connection if your device warns that there is no internet.</p><dl class="detail-list access-details"><div><dt>Wi-Fi network</dt><dd id="settings-ssid">Unavailable</dd></div><div><dt>Dashboard address</dt><dd id="settings-address">Unavailable</dd></div></dl><p class="help-text" id="hotspot-setup-help" hidden>Set up hotspot credentials on the Pi using the setup script. The Wi-Fi control below changes whether its name is broadcast.</p></section>
-      <section class="card" aria-labelledby="wifi-visibility-title">
-        <div class="section-heading"><div><p class="eyebrow">Wireless access</p><h2 id="wifi-visibility-title">Wi-Fi network visibility</h2></div><span class="pill pill-muted" id="wifi-visibility-state">Checking</span></div>
-        <p class="section-description">Choose whether the box’s network name appears in nearby Wi-Fi lists. The Wi-Fi network stays on. Hidden networks still use the same Wi-Fi password.</p>
-        <dl class="detail-list wifi-visibility-details"><div><dt>Wi-Fi network name</dt><dd id="wifi-visibility-ssid">Unavailable</dd></div><div><dt>Saved visibility</dt><dd id="wifi-visibility-current">Unknown</dd></div></dl>
-        <fieldset id="wifi-visibility-fields" disabled>
-          <button type="button" class="wifi-visibility-switch" id="wifi-broadcast" role="switch" aria-checked="false" aria-labelledby="wifi-switch-label" aria-describedby="wifi-visibility-help" aria-haspopup="dialog" aria-controls="wifi-confirm-dialog">
-            <span id="wifi-switch-label">Broadcast Wi-Fi network name</span>
-            <span class="wifi-switch-value" id="wifi-switch-value" aria-hidden="true">Off</span>
-            <span class="wifi-switch-track" aria-hidden="true"></span>
-          </button>
-          <p class="help-text" id="wifi-visibility-help">Toggle to review and confirm the change. Wi-Fi may briefly disconnect when applied. The network name and password stay the same.</p>
-        </fieldset>
-        <p class="help-text" id="wifi-visibility-lock-note">Admin sign-in required to edit</p>
-        <p class="form-message" id="wifi-visibility-message" role="status" aria-live="polite">Checking the Pi’s Wi-Fi configuration…</p>
-      </section>
-      <section class="card radio-pair-card" aria-labelledby="radio-pair-title">
-        <div class="section-heading"><div><p class="eyebrow">Paired radio setup</p><h2 id="radio-pair-title">Repeater channel pair</h2></div><span class="pill pill-muted" id="radio-pair-state">Checking</span></div>
-        <p class="section-description">Configure both box radios together. This shows the last verified saved pair, not live frequency telemetry from the radios.</p>
-        <div class="radio-pair-saved"><strong id="radio-pair-current">No verified pair record</strong><p class="help-text" id="radio-pair-current-detail">Inspecting or programming one radio does not establish a verified pair.</p></div>
-        <div class="radio-pair-picker"><div><label class="field-label" for="radio-pair-select">Channel pair</label><select class="text-input" id="radio-pair-select" disabled><option value="">Channel pairs unavailable</option></select></div><button type="button" class="button primary" id="radio-pair-change" aria-haspopup="dialog" aria-controls="radio-pair-confirm-dialog" disabled>Change channel pair</button></div>
-        <p class="help-text">Pairs use matching BOX-RX1 / BOX-TX1 names, then BOX-RX2 / BOX-TX2 and onward. A change rewrites working memory 1 on RX and TX with High power, NFM and the privately configured tone. Other memories are preserved. The handhelds must use the matching input/output pair.</p>
+        <section class="admin-group" id="admin-daily" aria-labelledby="admin-daily-title">
+          <div class="admin-group-heading"><h2 id="admin-daily-title">Daily operation</h2><p>Channel selection and radio controls for normal use.</p></div>
+          <div class="admin-card-grid">
+            <section class="card radio-pair-card admin-fullwidth" id="radio-pair-card" aria-labelledby="radio-pair-title">
+        <div class="section-heading"><div><p class="eyebrow">Paired radio setup</p><h3 id="radio-pair-title">Repeater channel pair</h3></div><span class="pill pill-muted" id="radio-pair-state">Checking</span></div>
+        <p class="section-description" id="radio-pair-description">Switch both radios to a saved channel pair. Frequencies show verified settings, not live radio telemetry.</p>
+        <div class="radio-pair-saved" id="radio-pair-saved"><strong id="radio-pair-current">No verified pair record</strong><p class="help-text" id="radio-pair-current-detail">Inspecting or programming one radio does not establish a verified pair.</p></div>
+        <div class="radio-pair-picker" id="radio-pair-picker"><div><label class="field-label" for="radio-pair-select">Channel pair</label><select class="text-input" id="radio-pair-select" disabled><option value="">Channel pairs unavailable</option></select></div><button type="button" class="button primary" id="radio-pair-change" aria-haspopup="dialog" aria-controls="radio-pair-confirm-dialog" disabled>Change channel pair</button></div>
+        <details class="inline-details" id="radio-pair-help"><summary>Channel pair details</summary><p class="help-text">Pairs use matching BOX-RX1 / BOX-TX1 names, then BOX-RX2 / BOX-TX2 and onward. A change rewrites working memory 1 on RX and TX with High power, NFM and the privately configured tone. Other memories are preserved. The handhelds must use the matching input/output pair.</p></details>
         <div class="radio-pair-stages" id="radio-pair-stages" hidden aria-label="Paired programming stages"><span id="radio-pair-stage-rx">RX · Waiting</span><span id="radio-pair-stage-tx">TX · Waiting</span></div>
-        <p class="help-text">Follow each RX and TX phase in the radio progress panel and activity log below. Both radios stay connected and powered; receiver audio stays paused through the paired operation.</p>
+        <p class="help-text" id="radio-pair-progress-help" hidden>Follow each RX and TX phase in the radio progress panel and activity log below. Both radios stay connected and powered; receiver audio stays paused through the paired operation.</p>
 
         <p class="help-text" id="radio-pair-lock-note">Admin sign-in and bench qualification are required.</p><p class="form-message" id="radio-pair-message" role="status" aria-live="polite">Checking paired programming availability…</p>
       </section>
-      <section class="card" aria-labelledby="radio-programming-title">
-        <div class="section-heading"><div><p class="eyebrow">Radio setup</p><h2 id="radio-programming-title">Program the radios</h2></div><span class="pill pill-muted" id="radio-programming-state">Checking</span></div>
-        <p class="section-description">Apply the default box plan to one radio on request through its assigned AIOC. These are template settings; programming runs only after confirmation.</p>
-        <div class="radio-unfinished-notice" id="radio-unfinished-notice" hidden role="status" aria-live="polite"><strong id="radio-unfinished-title">An upload still needs verification</strong><p id="radio-unfinished-detail"></p><a class="button secondary" id="radio-recovery-link">Open radio editor</a></div>
-        <div class="radio-plan-grid">
-          <div class="radio-plan"><h3>RX radio</h3><p class="radio-plan-frequency" id="program-rx-frequency">Not configured</p><p class="help-text" id="program-rx-detail">Configure channel pairs locally on the Pi first.</p><p class="help-text" id="radio-rx-identity">Inspect this radio before programming.</p><div class="software-update-actions"><button type="button" class="button secondary" id="radio-inspect-rx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Inspect RX</button><button type="button" class="button primary" id="radio-program-rx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Program RX</button><button type="button" class="button secondary" id="radio-verify-rx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Verify RX</button><button type="button" class="button secondary" id="radio-repair-rx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" hidden disabled>Repair saved upload</button></div></div>
-          <div class="radio-plan"><h3>TX radio</h3><p class="radio-plan-frequency" id="program-tx-frequency">Not configured</p><p class="help-text" id="program-tx-detail">Configure channel pairs locally on the Pi first.</p><p class="help-text" id="radio-tx-identity">Inspect this radio before programming.</p><div class="software-update-actions"><button type="button" class="button secondary" id="radio-inspect-tx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Inspect TX</button><button type="button" class="button primary" id="radio-program-tx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Program TX</button><button type="button" class="button secondary" id="radio-verify-tx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Verify TX</button><button type="button" class="button secondary" id="radio-repair-tx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" hidden disabled>Repair saved upload</button></div></div>
-        </div>
-        <p class="help-text">Each programming task downloads and backs up that radio first, then changes memory 1 and the supported operating settings. Other memories and calibration are preserved. Live receiver audio pauses during the task.</p>
-        <p class="help-text" id="radio-programming-backup" hidden></p>
-        <div class="radio-progress-panel" id="radio-progress-panel" hidden>
-          <div class="radio-progress-heading"><strong id="radio-progress-phase">Waiting</strong><span id="radio-progress-count"></span></div>
-          <progress id="radio-progress-bar" max="100" aria-labelledby="radio-progress-phase" aria-describedby="radio-progress-count"></progress>
-          <p class="help-text" id="radio-progress-note">Progress is for the current step. Keep the radio connected and powered.</p>
-          <details id="radio-progress-log"><summary>Activity log</summary><pre id="radio-progress-events" role="log" aria-live="polite" aria-relevant="text"></pre></details>
-        </div>
-        <p class="help-text" id="radio-programming-lock-note">Admin sign-in required to program radios</p>
-        <p class="form-message" id="radio-programming-message" role="status" aria-live="polite">Checking radio programming status…</p>
-      </section>
-      <section class="card" aria-labelledby="software-updates-title">
-        <div class="section-heading"><div><p class="eyebrow">Dashboard maintenance</p><h2 id="software-updates-title">Software updates</h2></div><span class="pill pill-muted" id="software-updates-state">Checking</span></div>
-        <p class="section-description">Get dashboard updates from <a href="https://github.com/oliverboryszewski/repeater-box-pi" target="_blank" rel="noopener noreferrer">GitHub</a>. Connect the Pi to the internet through Ethernet before checking or installing.</p>
-        <dl class="detail-list software-update-details"><div><dt>Installed version</dt><dd id="software-current-version">Unavailable</dd></div><div><dt>Latest version</dt><dd id="software-latest-version">Not checked</dd></div><div><dt>Last checked</dt><dd id="software-checked-at">Not checked</dd></div></dl>
-        <p class="help-text">Updates the dashboard app. Wi-Fi, passwords, saved settings, archives, and radio configuration are preserved.</p>
-        <div class="software-update-actions"><button type="button" class="button secondary" id="software-check" disabled>Check for updates</button><button type="button" class="button primary" id="software-install" aria-haspopup="dialog" aria-controls="software-confirm-dialog" disabled>Update software</button></div>
-        <p class="help-text" id="software-updates-lock-note">Admin sign-in required to manage updates</p>
-        <p class="form-message" id="software-updates-message" role="status" aria-live="polite">Checking software update status…</p>
-      </section>
-      <section class="card" aria-labelledby="station-id-title">
-        <div class="section-heading"><div><p class="eyebrow">Station identification</p><h2 id="station-id-title">Automatic station identification</h2></div><span class="pill pill-muted" id="station-id-state">Checking</span></div>
+            <section class="card" id="station-id-card" aria-labelledby="station-id-title">
+        <div class="section-heading"><div><p class="eyebrow">Station identification</p><h3 id="station-id-title">Automatic station identification</h3></div><span class="pill pill-muted" id="station-id-state">Checking</span></div>
         <p class="section-description">Choose whether the repeater sends automatic station identification.</p>
         <button type="button" class="wifi-visibility-switch" id="station-id-enabled" role="switch" aria-checked="true" aria-labelledby="station-id-switch-label" aria-describedby="station-id-help station-id-effect" aria-haspopup="dialog" aria-controls="station-id-confirm-dialog" disabled><span id="station-id-switch-label">Automatic station identification</span><span class="wifi-switch-value" id="station-id-switch-value" aria-hidden="true">On</span><span class="wifi-switch-track" aria-hidden="true"></span></button>
         <p class="help-text" id="station-id-help">Checking automatic station identification…</p>
         <p class="help-text" id="station-id-effect">Changes apply within one second. Turning this off stops future automatic IDs; an ID already playing may finish. This switch does not key or release the transmitter.</p>
         <p class="help-text" id="station-id-lock-note">Admin sign-in required to change automatic identification.</p><p class="form-message" id="station-id-message" role="status" aria-live="polite"></p>
       </section>
-      <section class="card" aria-labelledby="dtmf-title">
-        <div class="section-heading"><div><p class="eyebrow">Radio administration</p><h2 id="dtmf-title">Radio DTMF control</h2></div><span class="pill pill-muted" id="dtmf-state">Checking</span></div>
-        <p class="section-description">Allow the private radio code to request status or turn traffic recording on and off.</p>
+            <section class="card" id="dtmf-card" aria-labelledby="dtmf-title">
+        <div class="section-heading"><div><p class="eyebrow">Radio administration</p><h3 id="dtmf-title">Radio DTMF control</h3></div><span class="pill pill-muted" id="dtmf-state">Checking</span></div>
+        <p class="section-description">Use a private radio password to change recording, spoken status, or automatic identification.</p>
         <button type="button" class="wifi-visibility-switch" id="dtmf-enabled" role="switch" aria-checked="false" aria-labelledby="dtmf-switch-label" aria-describedby="dtmf-help" aria-haspopup="dialog" aria-controls="dtmf-confirm-dialog" disabled><span id="dtmf-switch-label">Enable DTMF control</span><span class="wifi-switch-value" id="dtmf-switch-value" aria-hidden="true">Off</span><span class="wifi-switch-track" aria-hidden="true"></span></button>
-        <p class="help-text" id="dtmf-help">Enter the six-character DTMF password, press # and release PTT. Follow the spoken prompts: 1 for status announcements or 2 for recording, then 0 for off or 1 for on. Press # and release PTT after each choice, then wait for the prompt. Use * to cancel. Each menu expires after 30 seconds and each completed action needs the password again. Recording commands affect the current session; the startup preference stays unchanged.</p>
-        <p class="help-text">Spoken responses use SvxLink’s transmitter. Receive-only mode (TX=NONE) cannot broadcast responses. This switch does not enable a transmitter.</p>
+        <details class="inline-details" id="dtmf-menu-help"><summary>How to use the radio menu</summary><p class="help-text" id="dtmf-help">Enter the six-character DTMF password, press # and release PTT. Choose 0 to hear current settings. To change a setting, choose 1 for status announcements, 2 for recording, or 3 for automatic station identification, then 0 for off or 1 for on. Press # and release PTT after each choice, then wait for the prompt. Use * to cancel. Each menu expires after 30 seconds and each completed action needs the password again. Recording commands affect the current session; the startup preference stays unchanged.</p>
+        <p class="help-text">Spoken responses use SvxLink’s transmitter. Receive-only mode (TX=NONE) cannot broadcast responses. This switch does not enable a transmitter.</p></details>
         <p class="help-text" id="dtmf-lock-note">Admin sign-in and a configured private code are required.</p><p class="form-message" id="dtmf-message" role="status" aria-live="polite"></p>
         <button type="button" class="wifi-visibility-switch" id="dtmf-announcements" role="switch" aria-checked="true" aria-labelledby="dtmf-announcements-label" aria-describedby="dtmf-announcements-help" aria-haspopup="dialog" aria-controls="dtmf-confirm-dialog" disabled><span id="dtmf-announcements-label">Spoken status after DTMF actions</span><span class="wifi-switch-value" id="dtmf-announcements-value" aria-hidden="true">On</span><span class="wifi-switch-track" aria-hidden="true"></span></button>
         <p class="help-text" id="dtmf-announcements-help">Add the current channel-pair number and recording state after a successful change. Menu prompts and the basic confirmation always play.</p>
+        <details class="inline-details" id="dtmf-password-tools"><summary>Change DTMF password</summary>
         <form id="dtmf-code-form">
-          <h3>Change DTMF password</h3>
           <p class="help-text" id="dtmf-code-help">Use exactly six characters: 0–9, uppercase A–D. Use # to submit and * to cancel over the radio. The new password is visible while you enter it and is cleared after submission. It is stored privately on the Pi and never returned. Changing it ends any open radio menu.</p>
           <label class="field-label" for="dtmf-new-code">New six-character DTMF password</label><input class="text-input" id="dtmf-new-code" type="text" autocomplete="off" autocapitalize="characters" autocorrect="off" spellcheck="false" minlength="6" maxlength="6" pattern="[0-9ABCD]{6}" aria-describedby="dtmf-code-help" required disabled>
           <label class="field-label" for="dtmf-admin-password">Current admin password</label><input class="text-input" id="dtmf-admin-password" type="password" autocomplete="current-password" maxlength="256" required disabled>
           <button type="submit" class="button primary" id="dtmf-change-code" disabled>Change DTMF password</button>
-        </form><p class="form-message" id="dtmf-code-message" role="status" aria-live="polite"></p>
+        </form><p class="form-message" id="dtmf-code-message" role="status" aria-live="polite"></p></details>
       </section>
-      <section class="card" aria-labelledby="settings-title"><div class="section-heading"><div><p class="eyebrow">Dashboard and receive audio</p><h2 id="settings-title">Station settings</h2></div><span class="small-text" id="settings-lock-note">Admin sign-in required to edit</span></div>
+          </div>
+        </section>
+        <section class="admin-group" id="admin-audio" aria-labelledby="admin-audio-title">
+          <div class="admin-group-heading"><h2 id="admin-audio-title">Audio and recording</h2><p>Receiver audio, recording preferences, and archive storage.</p></div>
+          <section class="card" id="settings-card" aria-labelledby="settings-title"><div class="section-heading"><div><p class="eyebrow">Dashboard and receive audio</p><h3 id="settings-title">Audio and recording settings</h3></div><span class="small-text" id="settings-lock-note">Admin sign-in required to edit</span></div>
         <form id="settings-form">
           <fieldset id="settings-fields" disabled>
             <div class="settings-grid"><div class="field"><label class="field-label" for="station-name">Station name</label><input class="text-input" id="station-name" name="station_name" type="text" maxlength="48" required><p class="field-help">Shown in this dashboard.</p></div><div class="field"><label class="field-label" for="retention-days">Keep recordings for</label><div class="number-field"><input class="text-input" id="retention-days" name="retention_days" type="number" min="1" max="90" aria-describedby="retention-days-help" required><output class="text-input retention-infinity" id="retention-infinity" aria-label="Keep recordings indefinitely" aria-describedby="retention-days-help" hidden>∞</output><span id="retention-days-unit">days</span></div><p class="field-help" id="retention-days-help">Older archived files are removed automatically.</p></div><div class="field"><label class="field-label" for="archive-limit">Archive storage limit</label><div class="number-field"><input class="text-input" id="archive-limit" name="max_archive_mb" type="number" min="64" max="16384" required><span>MB</span></div><p class="field-help">Oldest files are removed when this limit is reached.</p></div></div>
@@ -226,12 +189,70 @@
           </fieldset>
         </form><p class="form-message" id="settings-message" role="status" aria-live="polite"></p>
       </section>
+        </section>
+        <section class="admin-group" id="admin-network" aria-labelledby="admin-network-title">
+          <div class="admin-group-heading"><h2 id="admin-network-title">Network</h2><p>Dashboard access and Wi-Fi visibility.</p></div>
+          <div class="admin-card-grid">
+            <section class="card" id="access-card" aria-labelledby="access-title"><p class="eyebrow">Connect from any browser</p><h3 id="access-title">Your portable dashboard</h3><p class="help-text" id="access-setup-help" hidden>Join the box’s password-protected Wi-Fi on your phone, laptop, or iPad. Keep the connection if your device warns that there is no internet.</p><dl class="detail-list access-details"><div><dt>Wi-Fi network</dt><dd id="settings-ssid">Unavailable</dd></div><div><dt>Dashboard address</dt><dd id="settings-address">Unavailable</dd></div></dl><p class="help-text" id="hotspot-setup-help" hidden>Set up hotspot credentials on the Pi using the setup script. The Wi-Fi control below changes whether its name is broadcast.</p></section>
+            <section class="card" id="wifi-visibility-card" aria-labelledby="wifi-visibility-title">
+        <div class="section-heading"><div><p class="eyebrow">Wireless access</p><h3 id="wifi-visibility-title">Wi-Fi network visibility</h3></div><span class="pill pill-muted" id="wifi-visibility-state">Checking</span></div>
+        <p class="section-description" id="wifi-visibility-description">Choose whether the box’s network name appears in nearby Wi-Fi lists. The Wi-Fi network stays on. Hidden networks still use the same Wi-Fi password.</p>
+        <dl class="detail-list wifi-visibility-details" id="wifi-visibility-details"><div><dt>Wi-Fi network name</dt><dd id="wifi-visibility-ssid">Unavailable</dd></div><div><dt>Saved visibility</dt><dd id="wifi-visibility-current">Unknown</dd></div></dl>
+        <fieldset id="wifi-visibility-fields" disabled>
+          <button type="button" class="wifi-visibility-switch" id="wifi-broadcast" role="switch" aria-checked="false" aria-labelledby="wifi-switch-label" aria-describedby="wifi-visibility-help" aria-haspopup="dialog" aria-controls="wifi-confirm-dialog">
+            <span id="wifi-switch-label">Broadcast Wi-Fi network name</span>
+            <span class="wifi-switch-value" id="wifi-switch-value" aria-hidden="true">Off</span>
+            <span class="wifi-switch-track" aria-hidden="true"></span>
+          </button>
+          <p class="help-text" id="wifi-visibility-help">Toggle to review and confirm the change. Wi-Fi may briefly disconnect when applied. The network name and password stay the same.</p>
+        </fieldset>
+        <p class="help-text" id="wifi-visibility-lock-note">Admin sign-in required to edit</p>
+        <p class="form-message" id="wifi-visibility-message" role="status" aria-live="polite">Checking the Pi’s Wi-Fi configuration…</p>
+      </section>
+          </div>
+        </section>
+        <section class="admin-group" id="admin-maintenance" aria-labelledby="admin-maintenance-title">
+          <div class="admin-group-heading"><h2 id="admin-maintenance-title">Maintenance</h2><p>Check and install dashboard software updates.</p></div>
+          <section class="card" id="software-updates-card" aria-labelledby="software-updates-title">
+        <div class="section-heading"><div><p class="eyebrow">Dashboard maintenance</p><h3 id="software-updates-title">Software updates</h3></div><span class="pill pill-muted" id="software-updates-state">Checking</span></div>
+        <p class="section-description">Get dashboard updates from <a href="https://github.com/oliverboryszewski/repeater-box-pi" target="_blank" rel="noopener noreferrer">GitHub</a>. Connect the Pi to the internet through Ethernet before checking or installing.</p>
+        <dl class="detail-list software-update-details"><div><dt>Installed version</dt><dd id="software-current-version">Unavailable</dd></div><div><dt>Latest version</dt><dd id="software-latest-version">Not checked</dd></div><div><dt>Last checked</dt><dd id="software-checked-at">Not checked</dd></div></dl>
+        <p class="help-text">Updates the dashboard app. Wi-Fi, passwords, saved settings, archives, and radio configuration are preserved.</p>
+        <div class="software-update-actions" id="software-update-actions"><button type="button" class="button secondary" id="software-check" disabled>Check for updates</button><button type="button" class="button primary" id="software-install" aria-haspopup="dialog" aria-controls="software-confirm-dialog" disabled>Update software</button></div>
+        <p class="help-text" id="software-updates-lock-note">Admin sign-in required to manage updates</p>
+        <p class="form-message" id="software-updates-message" role="status" aria-live="polite">Checking software update status…</p>
+      </section>
+        </section>
+        <section class="admin-group" id="admin-radio-tools" aria-labelledby="admin-radio-tools-title">
+          <div class="admin-group-heading"><h2 id="admin-radio-tools-title">Radio tools</h2><p>Inspection, individual programming, and recovery when needed.</p></div>
+          <details class="admin-tools" id="radio-tools"><summary><span>Inspection and programming</span><span class="small-text" id="radio-tools-summary">Checking radio setup…</span></summary>
+            <section class="card" id="radio-programming-card" aria-labelledby="radio-programming-title">
+        <div class="section-heading"><div><p class="eyebrow">Radio setup</p><h3 id="radio-programming-title">Inspect and program radios</h3></div><span class="pill pill-muted" id="radio-programming-state">Checking</span></div>
+        <p class="section-description">Apply the default box plan to one radio on request through its assigned AIOC. These are template settings; programming runs only after confirmation.</p>
+        <div class="radio-unfinished-notice" id="radio-unfinished-notice" hidden role="status" aria-live="polite"><strong id="radio-unfinished-title">An upload still needs verification</strong><p id="radio-unfinished-detail"></p><a class="button secondary" id="radio-recovery-link">Open radio editor</a></div>
+        <div class="radio-plan-grid" id="radio-plan-grid">
+          <div class="radio-plan"><h4>RX radio</h4><p class="radio-plan-frequency" id="program-rx-frequency">Not configured</p><p class="help-text" id="program-rx-detail">Configure channel pairs locally on the Pi first.</p><p class="help-text" id="radio-rx-identity">Inspect this radio before programming.</p><div class="software-update-actions"><button type="button" class="button secondary" id="radio-inspect-rx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Inspect RX</button><button type="button" class="button primary" id="radio-program-rx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Program RX</button><button type="button" class="button secondary" id="radio-verify-rx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Verify RX</button><button type="button" class="button secondary" id="radio-repair-rx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" hidden disabled>Repair saved upload</button></div></div>
+          <div class="radio-plan"><h4>TX radio</h4><p class="radio-plan-frequency" id="program-tx-frequency">Not configured</p><p class="help-text" id="program-tx-detail">Configure channel pairs locally on the Pi first.</p><p class="help-text" id="radio-tx-identity">Inspect this radio before programming.</p><div class="software-update-actions"><button type="button" class="button secondary" id="radio-inspect-tx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Inspect TX</button><button type="button" class="button primary" id="radio-program-tx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Program TX</button><button type="button" class="button secondary" id="radio-verify-tx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" disabled>Verify TX</button><button type="button" class="button secondary" id="radio-repair-tx" aria-haspopup="dialog" aria-controls="radio-confirm-dialog" hidden disabled>Repair saved upload</button></div></div>
+        </div>
+        <p class="help-text">Each programming task downloads and backs up that radio first, then changes memory 1 and the supported operating settings. Other memories and calibration are preserved. Live receiver audio pauses during the task.</p>
+        <p class="help-text" id="radio-programming-backup" hidden></p>
+        <div class="radio-progress-panel" id="radio-progress-panel" hidden>
+          <div class="radio-progress-heading"><strong id="radio-progress-phase">Waiting</strong><span id="radio-progress-count"></span></div>
+          <progress id="radio-progress-bar" max="100" aria-labelledby="radio-progress-phase" aria-describedby="radio-progress-count"></progress>
+          <p class="help-text" id="radio-progress-note">Progress is for the current step. Keep the radio connected and powered.</p>
+          <details id="radio-progress-log"><summary>Activity log</summary><pre id="radio-progress-events" role="log" aria-live="polite" aria-relevant="text"></pre></details>
+        </div>
+        <p class="help-text" id="radio-programming-lock-note">Admin sign-in required to program radios</p>
+        <p class="form-message" id="radio-programming-message" role="status" aria-live="polite">Checking radio programming status…</p>
+      </section>
+          </details>
+        </section>
       </div>
     </section>
     <footer class="page-footer"><span>Repeater Box <span id="version-label"></span> · Local station dashboard</span><span id="updated-label">Waiting for first update</span></footer>
   </main>
   <dialog class="confirm-dialog" id="station-id-confirm-dialog" aria-labelledby="station-id-confirm-title" aria-describedby="station-id-confirm-description"><p class="eyebrow">Station identification</p><h2 id="station-id-confirm-title">Change automatic station identification?</h2><p id="station-id-confirm-description"></p><p class="help-text">Changes apply within one second. This switch does not key or release the transmitter.</p><div class="dialog-actions"><button type="button" class="button secondary" id="station-id-confirm-cancel" autofocus>Cancel</button><button type="button" class="button primary" id="station-id-confirm-apply" disabled>Confirm change</button></div></dialog>
-  <dialog class="confirm-dialog" id="dtmf-confirm-dialog" aria-labelledby="dtmf-confirm-title" aria-describedby="dtmf-confirm-description"><p class="eyebrow">Radio DTMF control</p><h2 id="dtmf-confirm-title">Change DTMF control?</h2><p id="dtmf-confirm-description"></p><p class="help-text">The private control code stays on the Pi. This changes only status and recording commands; transmitter commissioning and the recording startup preference stay unchanged.</p><p class="form-message error" id="dtmf-confirm-error" role="alert"></p><div class="dialog-actions"><button type="button" class="button secondary" id="dtmf-confirm-cancel" autofocus>Cancel</button><button type="button" class="button primary" id="dtmf-confirm-apply" disabled>Confirm change</button></div></dialog>
+  <dialog class="confirm-dialog" id="dtmf-confirm-dialog" aria-labelledby="dtmf-confirm-title" aria-describedby="dtmf-confirm-description"><p class="eyebrow">Radio DTMF control</p><h2 id="dtmf-confirm-title">Change DTMF control?</h2><p id="dtmf-confirm-description"></p><p class="help-text">The private control code stays on the Pi. This changes radio menu controls for status, recording, and automatic identification; transmitter commissioning and the recording startup preference stay unchanged.</p><p class="form-message error" id="dtmf-confirm-error" role="alert"></p><div class="dialog-actions"><button type="button" class="button secondary" id="dtmf-confirm-cancel" autofocus>Cancel</button><button type="button" class="button primary" id="dtmf-confirm-apply" disabled>Confirm change</button></div></dialog>
   <dialog class="confirm-dialog" id="wifi-confirm-dialog" aria-labelledby="wifi-confirm-title" aria-describedby="wifi-confirm-description">
     <p class="eyebrow">Wi-Fi visibility</p>
     <h2 id="wifi-confirm-title">Change network visibility?</h2>

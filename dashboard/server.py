@@ -33,7 +33,7 @@ from software_updates import SoftwareUpdates
 from radio_programming import RadioProgramming
 from radio_editor import MODELS
 
-VERSION = "0.10.1"
+VERSION = "0.10.2"
 STATIC = Path(__file__).parent / "static"
 MEDIA_TYPES = {".wav": "audio/wav", ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".flac": "audio/flac"}
 

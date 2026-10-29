@@ -206,7 +206,7 @@ class DtmfIntegrationTests(unittest.TestCase):
     def test_client_protocol_is_bounded_and_carries_command_in_socket_payload(self):
         connection = mock.MagicMock()
         connection.__enter__.return_value = connection
-        response = {"schema": 1, "result": "status", "pair_index": 2, "recording": False, "announce_status": False}
+        response = {"schema": 1, "result": "status", "pair_index": 2, "recording": False, "announce_status": False, "identification_enabled": True}
         connection.recv.return_value = (json.dumps(response) + "\n").encode("ascii")
         with mock.patch.object(client.socket, "socket", return_value=connection):
             self.assertEqual(client.request("864209"), response)
@@ -220,22 +220,33 @@ class DtmfIntegrationTests(unittest.TestCase):
             connection.recv.side_effect = [data, b""]
             with mock.patch.object(client.socket, "socket", return_value=connection), self.assertRaises(ValueError):
                 client.request("864209")
-        for change in ({"pair_index": True}, {"pair_index": 10}, {"recording": 1}, {"schema": True}, {"result": []}, {"extra": 1}):
-            response = {"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False, **change}
+        for change in ({"pair_index": True}, {"pair_index": 10}, {"recording": 1}, {"identification_enabled": 1}, {"schema": True}, {"result": []}, {"extra": 1}):
+            response = {"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False, "identification_enabled": True, **change}
             with self.assertRaises(ValueError): client.validate_response(response)
 
     def test_client_silences_unauthorized_responses_and_event_tokens_are_fixed(self):
         for result in ("denied", "disabled"):
-            response = {"schema": 1, "result": result, "pair_index": 0, "recording": False, "announce_status": False}
+            response = {"schema": 1, "result": result, "pair_index": 0, "recording": False, "announce_status": False, "identification_enabled": False}
             self.assertIsNone(client.response_event(response))
-        event = client.response_event({"schema": 1, "result": "recording_on", "pair_index": 3, "recording": True, "announce_status": False})
-        self.assertEqual(event, b"EVENT RepeaterLogic::box_control_result recording_on 3 1 0\n")
+        event = client.response_event({"schema": 1, "result": "recording_on", "pair_index": 3, "recording": True, "announce_status": False, "identification_enabled": True})
+        self.assertEqual(event, b"EVENT RepeaterLogic::box_control_result recording_on 3 1 0 1\n")
         regular = self.root / "ordinary"; regular.write_text("")
-        self.assertFalse(client.announce({"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False}, [regular]))
+        self.assertFalse(client.announce({"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False, "identification_enabled": True}, [regular]))
         self.assertEqual(regular.read_text(), "")
 
+    def test_client_identification_tokens_keep_the_exact_response_schema(self):
+        for result in ("choose_identification", "identification_on", "identification_off"):
+            response = {"schema": 1, "result": result, "pair_index": 2, "recording": False, "announce_status": True, "identification_enabled": True}
+            self.assertEqual(client.validate_response(response), response)
+            self.assertEqual(client.response_event(response),
+                             ("EVENT RepeaterLogic::box_control_result " + result + " 2 0 1 1\n").encode("ascii"))
+            with self.assertRaises(ValueError):
+                client.validate_response({**response, "automatic_station_id": False})
+        with self.assertRaises(ValueError):
+            client.validate_response({**response, "result": "identification_off;exec nope"})
+
     def test_client_never_writes_radio_or_foreign_tty(self):
-        response = {"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False}
+        response = {"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False, "identification_enabled": True}
         path = mock.Mock(); path.resolve.return_value = Path("/dev/ttyACM0")
         with mock.patch.object(client.os, "open") as opened:
             self.assertFalse(client.announce(response, [path]))
@@ -262,7 +273,7 @@ class DtmfIntegrationTests(unittest.TestCase):
         self.assertIn("repeater-box-control", (ROOT / "systemd/repeater-dashboard.service").read_text())
 
     def test_prompts_are_fixed_generic_and_installer_preserves_maintenance_guards(self):
-        self.assertEqual(set(prompts.PROMPTS), {"status", "recording_on", "recording_off", "busy", "unavailable", "pair_unknown", "authenticated", "choose_status", "choose_recording", "status_on", "status_off", "cancelled", "invalid", "expired"} | {"pair_"+str(number) for number in range(1,10)})
+        self.assertEqual(set(prompts.PROMPTS), {"status", "recording_on", "recording_off", "busy", "unavailable", "pair_unknown", "authenticated", "choose_status", "choose_recording", "choose_identification", "status_on", "status_off", "identification_on", "identification_off", "cancelled", "invalid", "expired"} | {"pair_"+str(number) for number in range(1,10)})
         self.assertTrue(all("MHz" not in text and "password" not in text for text in prompts.PROMPTS.values()))
         installer = (ROOT / "scripts/install-pi.sh").read_text()
         self.assertLess(installer.index("flock -n 9"), installer.index("module.migrate_monitor()"))
@@ -275,12 +286,30 @@ class DtmfIntegrationTests(unittest.TestCase):
         wrapper = (ROOT / "scripts/repeater-box-events.tcl").read_text()
         program = "proc source {path} {}\nproc playFile {path} {puts $path}\n" + wrapper + "\n"
         program += 'puts [RepeaterLogic::dtmf_cmd_received {9;exec nope}]\n'
-        program += 'RepeaterLogic::box_control_result status 2 1 0\n'
-        program += 'RepeaterLogic::box_control_result {status;exec nope} 2 1 0\n'
-        program += 'RepeaterLogic::box_control_result status 10 1 0\n'
+        program += 'RepeaterLogic::box_control_result status 2 1 0 1\n'
+        program += 'RepeaterLogic::box_control_result {status;exec nope} 2 1 0 1\n'
+        program += 'RepeaterLogic::box_control_result status 10 1 0 1\n'
         result = subprocess.run([shutil.which("tclsh")], input=program, text=True, capture_output=True, check=True)
         self.assertEqual(result.stderr, "")
-        self.assertEqual(result.stdout.splitlines(), ["1", "/opt/repeater-box/prompts/status.wav", "/opt/repeater-box/prompts/pair_2.wav", "/opt/repeater-box/prompts/recording_on.wav"])
+        self.assertEqual(result.stdout.splitlines(), ["1", "/opt/repeater-box/prompts/status.wav", "/opt/repeater-box/prompts/pair_2.wav", "/opt/repeater-box/prompts/recording_on.wav", "/opt/repeater-box/prompts/identification_on.wav", "/opt/repeater-box/prompts/status_off.wav"])
+
+    @unittest.skipUnless(shutil.which("tclsh"), "Tcl runtime unavailable")
+    def test_native_identification_prompts_and_optional_status_are_fixed(self):
+        wrapper = (ROOT / "scripts/repeater-box-events.tcl").read_text()
+        program = "proc source {path} {}\nproc playFile {path} {puts $path}\n" + wrapper + "\n"
+        program += 'RepeaterLogic::box_control_result choose_identification 2 0 0 1\n'
+        program += 'RepeaterLogic::box_control_result identification_off 2 0 0 0\n'
+        program += 'RepeaterLogic::box_control_result identification_on 2 0 1 1\n'
+        program += 'RepeaterLogic::box_clip {identification_on;exec nope}\n'
+        result = subprocess.run([shutil.which("tclsh")], input=program, text=True, capture_output=True, check=True)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout.splitlines(), [
+            "/opt/repeater-box/prompts/choose_identification.wav",
+            "/opt/repeater-box/prompts/identification_off.wav",
+            "/opt/repeater-box/prompts/identification_on.wav",
+            "/opt/repeater-box/prompts/status.wav",
+            "/opt/repeater-box/prompts/pair_2.wav",
+            "/opt/repeater-box/prompts/recording_off.wav"])
 
     @unittest.skipUnless(shutil.which("tclsh"), "Tcl runtime unavailable")
     def test_native_capture_requires_one_hash_and_one_release_per_stage_and_clears_buffer(self):

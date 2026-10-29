@@ -1,4 +1,4 @@
-"""Local authenticated DTMF bridge; fixed status and recording actions only.
+"""Local authenticated DTMF bridge; fixed status, recording and ID preferences.
 
 SvxLink owns radio audio and spoken responses. This process never opens ALSA,
 serial, PTT or command PTYs, and never publishes the private control-code record.
@@ -21,8 +21,8 @@ import struct
 import threading
 import time
 
-RESULTS = frozenset(("authenticated", "choose_status", "choose_recording", "status_on", "status_off",
-                     "recording_on", "recording_off", "cancelled", "invalid", "expired",
+RESULTS = frozenset(("status", "authenticated", "choose_status", "choose_recording", "choose_identification", "status_on", "status_off",
+                     "recording_on", "recording_off", "identification_on", "identification_off", "cancelled", "invalid", "expired",
                      "disabled", "denied", "busy", "unavailable"))
 CODE_RE = re.compile(r"[0-9ABCD]{6}\Z")
 CONFIG_PATH = Path("/etc/repeater-box/dtmf.json")
@@ -198,12 +198,18 @@ class DtmfControl:
             return self.status()
 
     @staticmethod
-    def response(result, pair_index=0, recording=False, announce_status=False):
+    def response(result, pair_index=0, recording=False, announce_status=False, identification_enabled=False):
         return {"schema": 1, "result": result if result in RESULTS else "unavailable",
                 "pair_index": pair_index if type(pair_index) is int and 0 <= pair_index <= 9 else 0,
-                "recording": recording is True, "announce_status": announce_status is True}
+                "recording": recording is True, "announce_status": announce_status is True,
+                "identification_enabled": identification_enabled is True}
 
     def _current_response(self, result, committed=False):
+        identification = self.server.station_identification.status()
+        identification_available = (identification.get("available") is True
+                                    and type(identification.get("enabled")) is bool)
+        if result == "status" and not identification_available:
+            return self.response("unavailable")
         recording = self.server.hub.status().get("recorder", {}).get("enabled") is True
         radio = self.server.programming.status()
         pair = radio.get("pair") or {}
@@ -212,8 +218,9 @@ class DtmfControl:
             selected = next((item for item in radio.get("pair_switching", {}).get("presets", [])
                              if item.get("id") == pair.get("pair_id")), {})
             index = selected.get("index", 0)
-        announce = committed and self.server.settings.get().get("dtmf_status_announcements") is True
-        return self.response(result, index, recording, announce)
+        announce = (committed or result == "status") and self.server.settings.get().get("dtmf_status_announcements") is True
+        return self.response(result, index, recording, announce,
+                             identification.get("enabled") is True if identification_available else False)
 
     def _authenticate(self, code, record):
         with self.security_lock:
@@ -295,10 +302,17 @@ class DtmfControl:
             if command == "*":
                 self.rf_session = None
                 return self._current_response("cancelled")
-            if session["stage"] == "option" and command in ("1", "2"):
+            if session["stage"] == "option" and command == "0":
+                # A read-only report still consumes its one authenticated menu.
+                self.rf_session = None
+                return self._current_response("status")
+            if session["stage"] == "option" and command in ("1", "2", "3"):
+                if command == "3" and self.server.station_identification.status().get("available") is not True:
+                    self.rf_session = None
+                    return self._current_response("unavailable")
                 session["stage"] = "value"
                 session["option"] = command
-                return self._current_response("choose_status" if command == "1" else "choose_recording")
+                return self._current_response({"1": "choose_status", "2": "choose_recording", "3": "choose_identification"}[command])
             if session["stage"] == "value" and command in ("0", "1"):
                 # Consume authorization before applying; a failed action or a
                 # repeated frame cannot reuse the menu to change anything.
@@ -308,11 +322,20 @@ class DtmfControl:
                     with self.server.settings_lock:
                         self.server.settings.update({"dtmf_status_announcements": enabled})
                     result = "status_on" if enabled else "status_off"
-                else:
+                elif session["option"] == "2":
                     self.server.hub.set_recording(enabled)
                     if (self.server.hub.status().get("recorder", {}).get("enabled") is True) != enabled:
                         return self.response("unavailable")
                     result = "recording_on" if enabled else "recording_off"
+                else:
+                    with self.server.settings_lock:
+                        controller = self.server.station_identification
+                        if controller.status().get("available") is not True:
+                            return self._current_response("unavailable")
+                        state = controller.set_enabled(enabled)
+                        if state.get("available") is not True or state.get("enabled") is not enabled:
+                            return self._current_response("unavailable")
+                    result = "identification_on" if enabled else "identification_off"
                 return self._current_response(result, committed=True)
             self.rf_session = None
             return self._current_response("invalid")

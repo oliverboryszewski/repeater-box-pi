@@ -11,16 +11,16 @@ import sys
 SOCKET_PATH = "/run/repeater-box-control/dtmf.sock"
 COMMAND_PATHS = (Path("/run/repeater-rx-monitor/svxlink-command"),
                  Path("/run/repeater-box/svxlink-command"))
-RESULTS = frozenset(("status", "authenticated", "choose_status", "choose_recording", "status_on", "status_off",
-                     "recording_on", "recording_off", "cancelled", "invalid", "expired", "disabled", "denied", "busy", "unavailable"))
+RESULTS = frozenset(("status", "authenticated", "choose_status", "choose_recording", "choose_identification", "status_on", "status_off",
+                     "recording_on", "recording_off", "identification_on", "identification_off", "cancelled", "invalid", "expired", "disabled", "denied", "busy", "unavailable"))
 
 
 def validate_response(value):
-    if (not isinstance(value, dict) or set(value) != {"schema", "result", "pair_index", "recording", "announce_status"}
+    if (not isinstance(value, dict) or set(value) != {"schema", "result", "pair_index", "recording", "announce_status", "identification_enabled"}
             or type(value["schema"]) is not int or value["schema"] != 1
             or not isinstance(value["result"], str) or value["result"] not in RESULTS or type(value["pair_index"]) is not int
             or not 0 <= value["pair_index"] <= 9 or type(value["recording"]) is not bool
-            or type(value["announce_status"]) is not bool):
+            or type(value["announce_status"]) is not bool or type(value["identification_enabled"]) is not bool):
         raise ValueError("Invalid local control response")
     return value
 
@@ -50,7 +50,7 @@ def response_event(response):
         return None
     return ("EVENT RepeaterLogic::box_control_result " + value["result"] + " "
             + str(value["pair_index"]) + " " + str(int(value["recording"])) + " "
-            + str(int(value["announce_status"])) + "\n").encode("ascii")
+            + str(int(value["announce_status"])) + " " + str(int(value["identification_enabled"])) + "\n").encode("ascii")
 
 
 def announce(response, command_paths=COMMAND_PATHS, owner_uid=None):

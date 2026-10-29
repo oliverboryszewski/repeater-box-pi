@@ -1,6 +1,6 @@
-# DTMF status and recording control
+# DTMF radio controls
 
-This optional RF menu controls the dashboard's traffic recorder and whether successful DTMF actions are followed by a spoken status report. It starts disabled. It cannot change channel pairs, program radios, bring the repeater online, enable transmission or run a shell command.
+This optional RF menu reads current control settings and changes traffic recording, automatic station identification, and the preference to announce status after actions. It starts disabled. It cannot change channel pairs, program radios, bring the repeater online, enable transmission or run a shell command.
 
 Commission the [receive-only audio monitor](LIVE_AUDIO.md) first. SvxLink is the sole owner of the receiver's ALSA device: its native decoder handles the tones, while the existing local audio feed supplies browser listening and dashboard recordings. The feature does not add another audio capture process.
 
@@ -32,13 +32,24 @@ Once the password and local bridge are ready, select **Enable DTMF control** and
 
 Use a handheld programmed for the station's private input channel and tone. Send each group in its own transmission and release PTT afterward. Wait for the response before sending the next group; do not send the whole interaction in one transmission.
 
-1. Hold PTT, send your six-character DTMF password followed by `#`, then release PTT. The menu prompt is **“DTMF programming, enter option.”**
-2. Send `1#` for **status announcements** or `2#` for **recording**, then release PTT. The next prompt confirms the selected option and requests off or on.
-3. Send `0#` for **off** or `1#` for **on**, then release PTT. Only this final step applies the action. A confirmation finishes the session; log in again for another action.
+1. Hold PTT, send your six-character DTMF password followed by `#`, then release PTT. Listen for **“Control menu”** and the spaced options.
+2. Send an option from the table below in a new transmission, then release PTT. Option 0 reads the settings and finishes the session. Options 1–3 ask for off or on.
+3. For options 1–3, send `0#` for **off** or `1#` for **on**, then release PTT. Only this final step applies the action. A confirmation finishes the session; log in again for another action.
+
+| Option | Function |
+|---|---|
+| `0#` | Read the configured pair number, recording state, automatic identification state and status-announcement preference |
+| `1#` | Status announcements after successful DTMF actions |
+| `2#` | Traffic recording now |
+| `3#` | Automatic station identification; saves the same preference as the Admin switch |
+
+Option 0 is read-only and reports all four states even when optional status announcements are off. Pair information is the verified stored plan, not live frequency telemetry. Changing automatic identification does not alter the selected ID interval or start a transmitter; manual identification remains the operator's responsibility when automatic identification is off.
 
 Send `*` to cancel, then release PTT. A session has a 30-second absolute lifetime; the timer is not extended by each menu step. Expired, malformed or out-of-order input does not apply a setting. More than one submitted group in a single transmission is rejected.
 
 Commands are completed after the receiver's audio squelch closes and at least 500 ms of quiet have elapsed. Native timer polling can add up to another second. The current receiver uses audio VOX rather than a direct carrier/PTT signal, so long silence while holding PTT can resemble a release. Send a complete group steadily, release PTT and wait for the prompt.
+
+Live spoken replies also wait for the preceding transmission to finish before keying a fresh reply. This gives the prompt its own transmit-timeout window; a short unkeyed gap before the voice response is normal. Queued replies take priority over automatic Morse identification.
 
 Recording on means the recorder waits for audio above its configured threshold. This changes its state now; it leaves **Record automatically after a restart**, recording thresholds and retention unchanged. Live listening remains independent.
 
@@ -50,6 +61,6 @@ The supplied monitor keeps `TX=NONE` and `NO_REPEAT=1`. The local controls can o
 
 The commissioned live service defers automatic Morse identification during a spoken menu. The Admin **Automatic station identification** switch controls automatic Morse separately; turning it off does not disable menu prompts, recording control or the spoken-status preference.
 
-The installer generates the bounded prompt clips locally with `espeak-ng`. Only fixed response tokens cross the private bridge; arbitrary messages, paths and commands are not accepted. SvxLink's restricted handler consumes the received keypad symbols before native module or macro commands can run.
+The installer generates the bounded prompt clips locally with `espeak-ng` at 120 words per minute, with explicit lead-in silence and pauses between the short opening options. It checks both individual clips and combined replies against a 12-second audio budget before replacing installed clips. Only fixed response tokens cross the private bridge; arbitrary messages, paths and commands are not accepted. SvxLink's restricted handler consumes the received keypad symbols before native module or macro commands can run.
 
 DTMF passwords are transmitted as audible tones. Anyone able to hear or record them may recover the sequence. A stored hash protects local persistence; it does not encrypt radio traffic. The raw live-audio tap and dashboard recordings can contain received control tones even though SvxLink mutes them in its downstream audio path. Application logs filter native DTMF digit and command lines rather than retaining the password.

@@ -112,7 +112,90 @@ function repairHarness(role='rx',kind='editor',options={}) {
   Object.assign(h.status.radio_programming.roles[role],{program_kind:kind,verification_required:true,verified:false,pending_id:'e'.repeat(32)});
   h.ctx.testApi.status(structuredClone(h.status));return h;
 }
+function dashboardMarkup() {
+  const html=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/index.html'),'utf8');
+  const root={tag:'#document',attrs:{},parent:null}, stack=[root], ids=new Map(), nodes=[];
+  const voidTags=new Set(['area','base','br','col','embed','hr','img','input','link','meta','param','source','track','wbr']);
+  for(const match of html.matchAll(/<!--[\s\S]*?-->|<![^>]*>|<\/?([a-z][\w-]*)\b([^>]*)>/gi)){
+    if(!match[1])continue;
+    const tag=match[1].toLowerCase();
+    if(match[0].startsWith('</')){assert.equal(stack.pop()?.tag,tag,`Balanced ${tag} element`);continue;}
+    const attrs={};for(const attr of match[2].matchAll(/([^\s=]+)(?:\s*=\s*"([^"]*)"|\s*=\s*'([^']*)'|\s*=\s*([^\s"'=<>`]+))?/g))attrs[attr[1]]=attr[2]??attr[3]??attr[4]??'';
+    if(tag==='form')assert.equal(stack.some(node=>node.tag==='form'),false,'Forms must not nest');
+    const node={tag,attrs,parent:stack.at(-1)};nodes.push(node);
+    if(attrs.id){assert.equal(ids.has(attrs.id),false,`Unique id ${attrs.id}`);ids.set(attrs.id,node);}
+    if(!voidTags.has(tag)&&!match[0].endsWith('/>'))stack.push(node);
+  }
+  assert.equal(stack.length,1,'All HTML elements close');
+  const inside=(id,ancestor)=>{let node=ids.get(id);assert.ok(node,id);while(node){if(node.attrs.id===ancestor)return true;node=node.parent;}return false;};
+  return{html,ids,nodes,inside};
+}
 (async()=>{
+  await check('Admin groups have valid ordered markup, unique IDs, complete ARIA references and no nested forms',async()=>{
+    const {html,ids,nodes,inside}=dashboardMarkup();
+    let previous=html.indexOf('id="admin-options"');
+    for(const name of['daily','audio','network','maintenance','radio-tools']){
+      const id=`admin-${name}`,position=html.indexOf(`id="${id}"`);assert.ok(position>previous,id);previous=position;
+      assert.equal(ids.get(id).tag,'section');assert.equal(ids.get(id).attrs['aria-labelledby'],`${id}-title`);assert.equal(ids.get(`${id}-title`).tag,'h2');assert.equal(inside(id,'admin-options'),true);
+    }
+    for(const node of nodes)for(const key of['aria-labelledby','aria-describedby','aria-controls'])for(const id of(node.attrs[key]||'').split(/\s+/).filter(Boolean))assert.equal(ids.has(id),true,`${node.attrs.id||node.tag} ${key}=${id}`);
+    for(const id of['radio-pair-select','radio-pair-change','station-id-enabled','dtmf-enabled','dtmf-announcements']){assert.equal(inside(id,'admin-daily'),true,id);assert.equal(inside(id,'radio-tools'),false,id);}
+    for(const id of['settings-form','station-name','retention-days','archive-limit','input-enabled','record-startup','keep-indefinitely','recording-threshold','save-settings'])assert.equal(inside(id,'admin-audio'),true,id);
+    for(const id of['settings-ssid','settings-address','wifi-broadcast'])assert.equal(inside(id,'admin-network'),true,id);
+    for(const id of['software-check','software-install'])assert.equal(inside(id,'admin-maintenance'),true,id);
+    for(const id of['radio-inspect-rx','radio-program-tx','radio-unfinished-notice','radio-progress-panel'])assert.equal(inside(id,'radio-tools'),true,id);
+    for(const node of nodes.filter(node=>node.tag==='dialog'))assert.equal(inside(node.attrs.id,'admin-options'),false,'Dialogs remain outside collapsible forms and groups');
+    assert.equal(ids.get('radio-tools').tag,'details');assert.equal(Object.hasOwn(ids.get('radio-tools').attrs,'open'),false);
+  });
+  await check('Daily controls remain visible when completed radio tools and password setup are collapsed',async()=>{
+    const h=pairHarness();assert.equal(h.el('radio-tools').open,false);assert.match(h.el('radio-tools-summary').textContent,/Both radios verified/);
+    for(const id of['radio-pair-picker','station-id-enabled','dtmf-enabled','dtmf-announcements'])assert.equal(h.el(id).hidden,false,id);
+    assert.equal(h.el('dtmf-password-tools').open,false);assert.equal(h.el('radio-pair-stages').hidden,true);assert.equal(h.el('radio-pair-progress-help').hidden,true);
+    h.el('radio-tools').open=true;h.ctx.testApi.status(h.status);assert.equal(h.el('radio-tools').open,true,'Polling preserves a manually opened tool section');assert.equal(h.posts().length,0);
+  });
+  await check('Incomplete radio setup opens its tools without starting any task',async()=>{
+    const h=harness();h.status.radio_programming.roles.tx.verified=false;h.ctx.testApi.status(h.status);
+    assert.equal(h.el('radio-tools').open,true);assert.equal(h.el('radio-plan-grid').hidden,false);assert.equal(h.posts().length,0);
+    h.status.radio_programming.roles.tx.verified=true;h.ctx.testApi.status(h.status);assert.equal(h.el('radio-tools').open,false);
+  });
+  for(const state of[
+    {pending:true,action:'inspect',role:'rx',success:null},
+    {pending:false,action:'verify',role:'tx',success:false,message:'Read-back failed.'},
+    {pair:{activation_required:true}},
+    {pair:{catalog_changed:true}}
+  ])await check(`Radio attention ${JSON.stringify(state)} keeps progress and advanced tools open`,async()=>{
+    const h=harness();Object.assign(h.status.radio_programming,state);h.ctx.testApi.status(h.status);
+    assert.equal(h.el('radio-tools').open,true);assert.equal(h.el('radio-progress-panel').hidden,false);
+    h.el('radio-tools').open=false;await h.el('radio-tools').dispatch('toggle');assert.equal(h.el('radio-tools').open,true);
+    assert.equal(h.posts().length,0);
+  });
+  await check('Recovery stays visible even while the radio helper is unavailable',async()=>{
+    const h=repairHarness('rx','editor',{radios:{available:false,configured:false}});
+    assert.equal(h.el('radio-tools').open,true);assert.equal(h.el('radio-unfinished-notice').hidden,false);assert.equal(h.el('radio-progress-panel').hidden,false);
+    assert.equal(h.el('radio-plan-grid').hidden,true);assert.match(h.el('radio-progress-note').textContent,/Review the result/);assert.match(h.el('radio-recovery-link').attrs.href,/radio-editor/);
+  });
+  await check('Unavailable capabilities hide dead controls while retaining relevant setup notes and restore when configured',async()=>{
+    const h=harness({stationIdentification:{available:false},updates:{available:false},radios:{available:false,configured:false}});
+    Object.assign(h.status.wifi_visibility,{available:false,profile_hidden:null});Object.assign(h.status.dtmf_control,{available:false,configured:false,bridge_ready:false,code_change:{available:false}});h.ctx.testApi.status(h.status);
+    for(const id of['radio-pair-picker','radio-plan-grid','station-id-enabled','wifi-visibility-fields','software-update-actions','dtmf-enabled','dtmf-announcements','dtmf-password-tools'])assert.equal(h.el(id).hidden,true,id);
+    assert.match(h.el('station-id-help').textContent,/setup on the Pi/);assert.match(h.el('radio-pair-lock-note').textContent,/Configure|qualification/);assert.equal(h.el('radio-tools').open,false);
+    Object.assign(h.status.station_identification,{available:true});Object.assign(h.status.wifi_visibility,{available:true,profile_hidden:false});h.status.software_updates.available=true;Object.assign(h.status.dtmf_control,{available:true,configured:true,bridge_ready:true,code_change:{available:true}});h.ctx.testApi.status(h.status);
+    for(const id of['station-id-enabled','wifi-visibility-fields','software-update-actions','dtmf-enabled','dtmf-announcements','dtmf-password-tools'])assert.equal(h.el(id).hidden,false,id);
+  });
+  await check('DTMF password setup opens only when needed and keeps active or failed changes visible',async()=>{
+    const h=harness();h.status.dtmf_control.configured=false;h.ctx.testApi.status(h.status);assert.equal(h.el('dtmf-password-tools').open,true);
+    h.status.dtmf_control.configured=true;h.status.dtmf_control.code_change.pending=true;h.ctx.testApi.status(h.status);assert.equal(h.el('dtmf-password-tools').open,true);
+    Object.assign(h.status.dtmf_control.code_change,{pending:false,success:false,message:'Password change failed.'});h.ctx.testApi.status(h.status);assert.equal(h.el('dtmf-password-tools').open,true);assert.equal(h.el('dtmf-password-tools').hidden,false);
+  });
+  await check('Completed bring-up checklist hides only after live control and assigned audio roles are established',async()=>{
+    const h=harness();Object.assign(h.status,{is_pi:true,svxlink:{installed:true,mode:'repeater',transmit_control:'enabled'},audio:{capture:[{id:'AIOC_RX'}],playback:[{id:'AIOC_TX'}]}});Object.assign(h.status.radio_programming,{configured_roles:['rx','tx'],preview:false});h.ctx.testApi.status(h.status);
+    for(const id of['commissioning-card','checklist-radio','transmit-setup-help'])assert.equal(h.el(id).hidden,true,id);assert.match(h.el('interfaces-description').textContent,/roles are assigned/);
+    h.status.svxlink.mode='receive_only';h.ctx.testApi.status(h.status);for(const id of['commissioning-card','checklist-radio','transmit-setup-help'])assert.equal(h.el(id).hidden,false,id);
+  });
+  await check('Compact DTMF help includes current settings and all three change options',async()=>{
+    const {html,inside}=dashboardMarkup();assert.equal(inside('dtmf-help','dtmf-menu-help'),true);assert.equal(inside('dtmf-code-form','dtmf-password-tools'),true);
+    assert.match(html,/Choose 0 to hear current settings.*1 for status announcements, 2 for recording, or 3 for automatic station identification/);
+  });
   await check('Visible network renders Broadcast On; click reviews stopping broadcast without POST',async()=>{const h=harness();await h.el('wifi-broadcast').dispatch('click');assert.equal(h.el('wifi-confirm-dialog').open,true);assert.equal(h.el('wifi-confirm-title').textContent,'Stop broadcasting the Wi-Fi name?');assert.equal(h.focused,'wifi-confirm-cancel');assert.equal(h.posts().length,0);assert.equal(h.el('wifi-broadcast').attrs['aria-checked'],'true');assert.equal(h.el('wifi-switch-value').textContent,'On');});
   await check('Cancel restores saved Broadcast On, focus, and zero POST',async()=>{const h=harness();await h.el('wifi-broadcast').dispatch('click');await h.el('wifi-confirm-cancel').dispatch('click');assert.equal(h.el('wifi-confirm-dialog').open,false);assert.equal(h.el('wifi-broadcast').attrs['aria-checked'],'true');assert.equal(h.focused,'wifi-broadcast');assert.equal(h.posts().length,0);await h.el('wifi-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);});
   await check('Hidden network renders Broadcast Off; Escape cancels and restores focus',async()=>{const h=harness({hidden:true});await h.el('wifi-broadcast').dispatch('click');assert.equal(h.el('wifi-confirm-title').textContent,'Broadcast the Wi-Fi name?');const e=await h.el('wifi-confirm-dialog').dispatch('cancel');assert.equal(e.defaultPrevented,true);assert.equal(h.el('wifi-confirm-dialog').open,false);assert.equal(h.el('wifi-broadcast').attrs['aria-checked'],'false');assert.equal(h.el('wifi-switch-value').textContent,'Off');assert.equal(h.focused,'wifi-broadcast');assert.equal(h.posts().length,0);});

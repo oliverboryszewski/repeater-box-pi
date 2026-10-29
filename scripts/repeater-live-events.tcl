@@ -51,6 +51,7 @@ namespace eval RepeaterLogic {
   variable box_live_prompt_queued 0
   variable box_live_dtmf_until -1
   variable box_live_manual_pending 0
+  variable box_live_control_results {}
 
   # Tcl 8.6 clock clicks -milliseconds aliases wall time. Linux uptime supplies
   # an elapsed clock unaffected by NTP changes; no external command is run.
@@ -115,8 +116,10 @@ namespace eval RepeaterLogic {
     variable box_live_online; variable box_live_up; variable box_live_tx_on
     variable box_live_identifying; variable box_live_prompt_queued
     variable box_live_dtmf_until; variable box_rx_open
+    variable box_live_control_results
     return [expr {$box_live_online && !$box_live_up && !$box_live_tx_on
                   && !$box_live_identifying && !$box_live_prompt_queued
+                  && [llength $box_live_control_results] == 0
                   && !$box_rx_open && [box_live_now] >= $box_live_dtmf_until}]
   }
 
@@ -151,6 +154,7 @@ namespace eval RepeaterLogic {
     variable box_live_online; variable box_live_identifying
     variable box_live_prompt_queued; variable box_live_dtmf_until
     variable box_live_manual_pending
+    variable box_live_control_results
     set box_live_online [expr {$online == 1}]
     if {!$box_live_online} {
       box_live_clear_conversation
@@ -158,6 +162,7 @@ namespace eval RepeaterLogic {
       set box_live_prompt_queued 0
       set box_live_dtmf_until -1
       set box_live_manual_pending 0
+      set box_live_control_results {}
     }
   }
 
@@ -224,14 +229,35 @@ namespace eval RepeaterLogic {
   }
 
   rename box_control_result box_live_shared_control_result
-  proc box_control_result {result pair_index recording announce_status} {
-    variable box_live_dtmf_until
-    if {$result in {authenticated choose_status choose_recording}} {
+  proc box_control_result {result pair_index recording announce_status identification_enabled} {
+    variable box_live_online; variable box_live_dtmf_until
+    variable box_live_control_results
+    if {!$box_live_online
+        || $result ni {status authenticated choose_status choose_recording choose_identification status_on status_off recording_on recording_off identification_on identification_off cancelled invalid expired busy unavailable}
+        || ![string is integer -strict $pair_index] || $pair_index < 0 || $pair_index > 9
+        || $recording ni {0 1} || $announce_status ni {0 1} || $identification_enabled ni {0 1}
+        || [llength $box_live_control_results] >= 4} { return }
+    if {$result in {authenticated choose_status choose_recording choose_identification}} {
       set box_live_dtmf_until [expr {[box_live_now] + 30000}]
-    } elseif {$result in {status status_on status_off recording_on recording_off cancelled invalid expired busy unavailable}} {
+    } elseif {$result in {status status_on status_off recording_on recording_off identification_on identification_off cancelled invalid expired busy unavailable}} {
       set box_live_dtmf_until -1
     }
-    box_live_shared_control_result $result $pair_index $recording $announce_status
+    lappend box_live_control_results [list $result $pair_index $recording $announce_status $identification_enabled]
+  }
+
+  proc box_live_flush_control_result {} {
+    variable box_live_online; variable box_live_up; variable box_live_tx_on
+    variable box_live_identifying; variable box_live_prompt_queued
+    variable box_rx_open; variable box_live_control_results
+    if {!$box_live_online || $box_live_up || $box_live_tx_on || $box_rx_open
+        || $box_live_identifying || $box_live_prompt_queued
+        || [llength $box_live_control_results] == 0} { return }
+    set response [lindex $box_live_control_results 0]
+    set box_live_control_results [lrange $box_live_control_results 1 end]
+    # Incoming DTMF may have used most of the native 15-second TX timer. Start
+    # every reply from a fresh idle transmitter; never append it to that turn.
+    set box_live_prompt_queued 1
+    box_live_shared_control_result {*}$response
   }
 
   proc box_live_id_tick {} {
@@ -266,6 +292,7 @@ namespace eval RepeaterLogic {
     box_live_refresh_auto
     Logic::every_second
     box_tick
+    box_live_flush_control_result
     box_live_id_tick
   }
 

@@ -39,6 +39,8 @@
   let radioPairProposal = null;
   let radioPairError = "";
   let radioPairAttempt = null;
+  let radioToolsMode = null;
+  let dtmfPasswordMode = null;
   let audioContext = null;
   let audioGain = null;
   let liveController = null;
@@ -348,6 +350,56 @@
     renderSoftwareUpdateControls();
     renderRadioProgrammingControls();
     renderRadioPairControls();
+    renderAdminLayout();
+  }
+
+  function radioToolsNeedAttention(state = latestStatus?.radio_programming) {
+    return radioTaskPending() || state?.success === false || !!radioProgrammingError || !!radioPairError ||
+      radioVerificationRoles(state).length > 0 || state?.pair?.verification_required === true ||
+      state?.pair?.activation_required === true || state?.pair?.catalog_changed === true;
+  }
+
+  function renderAdminLayout() {
+    const state=latestStatus?.radio_programming;
+    const radioCapability=state?.available === true && state.configured === true && state.preview !== true;
+    const attention=radioToolsNeedAttention(state);
+    const verified=["rx","tx"].every((role) => state?.roles?.[role]?.verified === true);
+    const mode=attention ? "attention" : radioCapability && verified ? "complete" : radioCapability ? "setup" : "unavailable";
+    if (mode !== radioToolsMode || attention) byId("radio-tools").open=mode === "attention" || mode === "setup";
+    radioToolsMode=mode;
+    setText("radio-tools-summary",attention ? "Radio work needs attention" : mode === "complete" ? "Both radios verified · Open for advanced tools"
+      : mode === "setup" ? "Radio setup is incomplete" : "Set up the Pi radio helper to use these tools");
+    byId("radio-plan-grid").hidden=!radioCapability;
+    const pairCapability=radioCapability && state?.catalog_configured === true && state?.pair_switching?.enabled === true && pairPresets(state).length > 0;
+    byId("radio-pair-picker").hidden=!pairCapability;
+    byId("radio-pair-help").hidden=!pairCapability;
+    byId("radio-pair-saved").hidden=!state?.pair && !pairCapability;
+    byId("radio-pair-description").hidden=!state?.pair && !pairCapability;
+    byId("radio-pair-message").hidden=!pairCapability && !attention;
+    byId("radio-pair-progress-help").hidden=state?.action !== "change-pair" || !attention;
+    const wifi=latestStatus?.wifi_visibility;
+    byId("wifi-visibility-fields").hidden=wifi?.available !== true || wifi.preview === true;
+    byId("wifi-visibility-description").hidden=wifi?.available !== true;
+    byId("wifi-visibility-lock-note").hidden=wifi?.available !== true;
+    byId("wifi-visibility-details").hidden=typeof wifi?.profile_hidden !== "boolean" && wifi?.pending !== true;
+    byId("software-update-actions").hidden=latestStatus?.software_updates?.available !== true || latestStatus?.software_updates?.preview === true;
+    byId("software-updates-lock-note").hidden=latestStatus?.software_updates?.available !== true;
+    const identification=latestStatus?.station_identification;
+    const identificationAvailable=identification?.available === true && typeof identification.enabled === "boolean";
+    byId("station-id-enabled").hidden=!identificationAvailable;
+    byId("station-id-effect").hidden=!identificationAvailable;
+    byId("station-id-lock-note").hidden=!identificationAvailable;
+    const dtmf=latestStatus?.dtmf_control;
+    const dtmfAvailable=dtmf?.available === true || dtmf?.enabled === true;
+    for (const id of ["dtmf-enabled","dtmf-announcements","dtmf-announcements-help","dtmf-menu-help"]) byId(id).hidden=!dtmfAvailable;
+    const codeAvailable=dtmf?.code_change?.available === true;
+    const codeAttention=dtmfCodePending() || !!dtmfCodeError || dtmf?.code_change?.success === false;
+    const passwordMode=codeAttention ? "attention" : codeAvailable && dtmf?.configured !== true ? "setup" : "ready";
+    byId("dtmf-password-tools").hidden=!codeAvailable && !codeAttention;
+    byId("dtmf-code-form").hidden=!codeAvailable;
+    if (!sessionKnown || !session.authenticated) byId("dtmf-password-tools").open=false;
+    else if (codeAttention || passwordMode === "setup" && dtmfPasswordMode !== passwordMode) byId("dtmf-password-tools").open=true;
+    dtmfPasswordMode=passwordMode;
   }
 
   function validCommit(value) {
@@ -484,7 +536,8 @@
     byId("station-id-enabled").disabled=!canManageStationIdentification();
     setText("station-id-switch-value",known ? enabled ? "On" : "Off" : "Unknown");
     pill("station-id-state",value?.available !== true || !known ? "Unavailable" : enabled ? "On" : "Off",value?.available === true && enabled ? "good" : "muted");
-    setText("station-id-help",!known ? "Automatic station identification status is unavailable."
+    setText("station-id-help",value?.available !== true ? "Complete live repeater setup on the Pi to manage automatic identification."
+      : !known ? "Automatic station identification status is unavailable."
       : enabled ? "Automatic station identification is on. Spoken DTMF prompts are controlled separately."
       : "Automatic station identification is off. You must provide required station identification manually. Spoken DTMF prompts are unaffected.");
     setText("station-id-lock-note",!sessionKnown || !session.authenticated ? "Admin sign-in required to change automatic identification."
@@ -747,7 +800,7 @@
         : "Inspecting or programming one radio does not establish a verified pair.");
     pill("radio-pair-state",pairPending ? "Changing pair" : verificationRequired || failed ? "Pair incomplete" : staleCatalogRecord ? "Catalog changed" : activationRequired ? "Activation needed" : stored ? "Configured" : state?.pair_switching?.enabled === true ? "Ready" : "Bench setup needed",
       pairPending || staleCatalogRecord || activationRequired ? "amber" : verificationRequired || failed ? "error" : stored ? "good" : "muted");
-    byId("radio-pair-stages").hidden=!pair || staleCatalogRecord;
+    byId("radio-pair-stages").hidden=!pair || staleCatalogRecord || stored && !pairPending && !activationRequired && !verificationRequired && !failed;
     for (const role of ["rx","tx"]) {
       const saved=pair?.roles?.[role];
       setText(`radio-pair-stage-${role}`,`${role.toUpperCase()} · ${pairRoleVerified(pair,role) ? "Saved settings verified" : saved?.written === true ? "Write started; verification pending" : pairPending ? "Waiting / in progress" : "Not verified"}`);
@@ -836,7 +889,7 @@
       && ["blocks", "steps"].includes(metric.unit);
     const events = Array.isArray(state?.events) ? state.events.slice(-20).filter((event) =>
       event && typeof event.message === "string" && event.message.length <= 1000 && typeof event.time === "string") : [];
-    byId("radio-progress-panel").hidden = state?.pending !== true && !valid && !events.length;
+    byId("radio-progress-panel").hidden = !radioToolsNeedAttention(state) && !valid && !events.length;
     const phases = { queued: "Queued", preflight: "Checking connection", reading: "Reading radio",
       "backing-up": "Saving local backup", writing: "Writing changes", verifying: "Verifying radio",
       inspected: "Inspection complete", verified: "Verification complete", "editor-ready": "Radio read complete",
@@ -854,7 +907,7 @@
       setText("radio-progress-count", state?.pending === true ? "In progress" : "");
     }
     setText("radio-progress-note", state?.pending === true ? state.action === "change-pair" ? "RX and TX are processed in sequence. Progress is for the current step; keep both radios connected and powered." : "Progress is for the current step. Keep the radio connected and powered."
-      : state?.success === false ? "Review the result above before another operation. The activity log is retained."
+      : radioToolsNeedAttention(state) ? "Review the result above before another operation. The activity log is retained."
       : "Last operation complete. Progress is for its last step.");
     const lines = events.map((event) => {
       const time = new Date(event.time);
@@ -908,6 +961,11 @@
       && Array.isArray(capture) && capture.some((card) => card?.id === "AIOC_RX")
       && Array.isArray(playback) && playback.some((card) => card?.id === "AIOC_TX");
     byId("checklist-aioc").hidden = aiocsAssigned;
+    setText("interfaces-description",aiocsAssigned ? "Stable RX capture and TX playback roles are assigned. Detected devices are listed below." : "Detected devices are listed as the operating system sees them. Input and output roles still need to be assigned.");
+    const liveCommissioned=data?.svxlink?.mode === "repeater" && data.svxlink.transmit_control === "enabled";
+    byId("checklist-radio").hidden=liveCommissioned;
+    byId("transmit-setup-help").hidden=liveCommissioned;
+    byId("commissioning-card").hidden=!!data && ["checklist-pi","checklist-wifi","checklist-aioc","checklist-radio"].every((id) => byId(id).hidden) && !radioToolsNeedAttention(radios);
     const receiveMonitorReady = ["receive_only", "repeater"].includes(data?.svxlink?.mode);
     const audioSeen = typeof data?.live_audio?.last_packet_at === "string" && data.live_audio.last_packet_at.trim() !== "";
     byId("audio-setup-help").hidden = !data || (receiveMonitorReady && audioSeen);
@@ -1239,6 +1297,9 @@
     });
   }
   window.addEventListener("hashchange", () => selectTab(location.hash.slice(1)));
+  byId("radio-tools").addEventListener("toggle",() => {
+    if (!byId("radio-tools").open && radioToolsNeedAttention()) byId("radio-tools").open=true;
+  });
   byId("recording-admin-link").addEventListener("click", () => selectTab("settings", true));
   byId("admin-login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1449,7 +1510,7 @@
     dtmfProposal={field,value,state:dtmfKey(latestStatus.dtmf_control),csrf:session.csrf_token};
     dtmfError="";message("dtmf-confirm-error","");
     setText("dtmf-confirm-title",field === "enabled" ? value ? "Enable radio DTMF control?" : "Disable radio DTMF control?" : value ? "Enable spoken status after DTMF actions?" : "Disable spoken status after DTMF actions?");
-    setText("dtmf-confirm-description",field === "enabled" ? value ? "Allow the private password to open the radio menu for spoken status preferences and current traffic recording?" : "Stop accepting radio DTMF status and recording commands? Current recording and the saved startup preference will stay as they are." : value ? "Add the current channel-pair number and recording state after each successful DTMF action?" : "Omit the additional channel-pair and recording status after DTMF actions? Menu prompts and basic confirmation will still play.");
+    setText("dtmf-confirm-description",field === "enabled" ? value ? "Allow the private password to open the radio menu for spoken status, recording, and automatic identification?" : "Stop accepting radio DTMF status, recording, and automatic identification commands? Current recording and the saved startup preference will stay as they are." : value ? "Add the current channel-pair number and recording state after each successful DTMF action?" : "Omit the additional channel-pair and recording status after DTMF actions? Menu prompts and basic confirmation will still play.");
     byId("dtmf-confirm-dialog").showModal();renderDtmf();byId("dtmf-confirm-cancel").focus();
   }
   byId("dtmf-enabled").addEventListener("click",() => reviewDtmfChange("enabled"));

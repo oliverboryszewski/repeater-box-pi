@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "dashboard"))
 from controls import SettingsStore, write_json
 from dtmf_control import DtmfControl, RESULTS
+from station_identification import StationIdentification
 import test_radio_editor_api as editor_tests
 
 CODE = "246802"
@@ -57,6 +58,7 @@ def fixture(folder):
         programming=types.SimpleNamespace(status=lambda: copy.deepcopy(radio)),
         updates=types.SimpleNamespace(status=lambda: dict(state)),
         wifi=types.SimpleNamespace(status=lambda: {"pending": False}))
+    server.station_identification = StationIdentification(server.settings, folder / "station-identification.json")
     config = folder / "dtmf.json"
     write_json(config, RECORD, mode=0o640)
     bridge = DtmfControl(server, config, folder / "dtmf.sock", owner_uid=os.getuid(),
@@ -79,7 +81,7 @@ class DtmfControlTests(unittest.TestCase):
         return self.bridge.command({"schema": 1, "command": raw}, uid)
     def action(self, option="2", value="1"):
         self.assertEqual(self.command()["result"], "authenticated")
-        self.assertEqual(self.command(option)["result"], "choose_status" if option == "1" else "choose_recording")
+        self.assertEqual(self.command(option)["result"], {"1": "choose_status", "2": "choose_recording", "3": "choose_identification"}[option])
         return self.command(value)
 
     def test_default_off_and_public_status_contains_no_credentials(self):
@@ -128,7 +130,8 @@ class DtmfControlTests(unittest.TestCase):
         self.enable()
         self.assertEqual(self.command("1")["result"], "denied")
         result = self.action()
-        self.assertEqual(result, {"schema": 1, "result": "recording_on", "pair_index": 3, "recording": True, "announce_status": True})
+        self.assertEqual(result, {"schema": 1, "result": "recording_on", "pair_index": 3, "recording": True,
+                                  "announce_status": True, "identification_enabled": True})
         self.assertEqual(self.command("0")["result"], "denied")
         self.assertEqual(self.command("1")["result"], "denied")
         self.assertEqual(self.action(value="0")["result"], "recording_off")
@@ -146,6 +149,141 @@ class DtmfControlTests(unittest.TestCase):
         self.assertTrue(self.action("1", "1")["announce_status"])
         self.assertEqual(self.calls, [True])
 
+    def test_identification_menu_requires_authentication_persists_and_cannot_replay(self):
+        self.enable()
+        before = self.server.settings.get()
+        self.assertEqual(self.command("3")["result"], "denied")
+        self.assertEqual(self.command("000000")["result"], "denied")
+        self.assertEqual(self.command("3")["result"], "denied")
+        result = self.action("3", "0")
+        self.assertEqual(result, {"schema": 1, "result": "identification_off", "pair_index": 3,
+                                  "recording": False, "announce_status": True, "identification_enabled": False})
+        self.assertFalse(self.server.station_identification.status()["enabled"])
+        self.assertFalse(SettingsStore(self.folder / "settings.json").get()["automatic_station_id"])
+        self.assertEqual(self.server.station_identification.path.read_bytes(), b'{"schema":1,"enabled":false}\n')
+        after = self.server.settings.get()
+        self.assertFalse(after.pop("automatic_station_id"))
+        before.pop("automatic_station_id")
+        self.assertEqual(after, before)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.command("1")["result"], "denied")
+        self.assertEqual(self.command("0")["result"], "denied")
+        self.assertEqual(self.action("3", "1")["result"], "identification_on")
+        self.assertTrue(self.server.station_identification.status()["enabled"])
+
+    def test_identification_menu_has_absolute_expiry_and_rejects_nonbinary_values(self):
+        self.enable(); now = [100.0]; self.bridge.clock = lambda: now[0]
+        self.command(); now[0] += 29
+        self.assertEqual(self.command("3")["result"], "choose_identification")
+        now[0] += 1
+        self.assertEqual(self.command("0")["result"], "expired")
+        self.assertTrue(self.server.station_identification.status()["enabled"])
+        self.assertEqual(self.command("0")["result"], "denied")
+        self.command(); self.command("3")
+        for value in (True, False, 0, 1, None, {"enabled": False}):
+            self.assertEqual(self.command(value)["result"], "denied")
+        self.assertEqual(self.command("2")["result"], "invalid")
+        self.assertEqual(self.command("0")["result"], "denied")
+        self.assertTrue(self.server.station_identification.status()["enabled"])
+
+    def test_identification_projection_loss_at_selection_or_commit_consumes_authorization(self):
+        self.enable()
+        self.command(); self.server.station_identification.path.unlink()
+        self.assertEqual(self.command("3")["result"], "unavailable")
+        self.assertIsNone(self.bridge.rf_session)
+        self.assertEqual(self.command("0")["result"], "denied")
+        self.server.station_identification.publish()
+        self.command(); self.command("3")
+        self.server.station_identification.path.unlink()
+        self.assertEqual(self.command("0")["result"], "unavailable")
+        self.assertIsNone(self.bridge.rf_session)
+        self.assertTrue(self.server.settings.get()["automatic_station_id"])
+
+    def test_identification_projection_failure_rolls_back_and_does_not_leak_errors(self):
+        self.enable(); self.command(); self.command("3")
+        controller = self.server.station_identification
+        with mock.patch.object(controller, "_write_projection", side_effect=OSError("private fixture detail")):
+            result = self.command("0")
+        self.assertEqual(result["result"], "unavailable")
+        self.assertNotIn("private fixture detail", json.dumps(result))
+        self.assertTrue(self.server.settings.get()["automatic_station_id"])
+        self.assertTrue(SettingsStore(self.folder / "settings.json").get()["automatic_station_id"])
+        self.assertEqual(controller.path.read_bytes(), b'{"schema":1,"enabled":true}\n')
+        self.assertEqual(self.command("0")["result"], "denied")
+
+    def test_identification_action_keeps_maintenance_and_optional_status_controls(self):
+        self.enable(); self.command(); self.command("3")
+        self.maintenance["pending"] = True
+        self.assertEqual(self.command("0")["result"], "busy")
+        self.maintenance["pending"] = False
+        self.assertEqual(self.command("0")["result"], "denied")
+        self.assertTrue(self.server.station_identification.status()["enabled"])
+        self.server.settings.update({"dtmf_status_announcements": False})
+        result = self.action("3", "0")
+        self.assertEqual(result["result"], "identification_off")
+        self.assertFalse(result["announce_status"])
+        self.assertTrue(self.server.settings.get()["dtmf_enabled"])
+        self.assertFalse(self.server.settings.get()["dtmf_status_announcements"])
+        self.assertFalse(self.server.hub.status()["recorder"]["enabled"])
+
+    def test_concurrent_identification_commit_applies_once(self):
+        self.enable(); self.command(); self.command("3"); results = []
+        controller = self.server.station_identification
+        with mock.patch.object(controller, "set_enabled", wraps=controller.set_enabled) as change:
+            threads = [threading.Thread(target=lambda: results.append(self.command("0")["result"])) for _ in range(4)]
+            for thread in threads: thread.start()
+            for thread in threads: thread.join(2)
+        self.assertEqual(results.count("identification_off"), 1)
+        change.assert_called_once_with(False)
+        self.assertFalse(controller.status()["enabled"])
+
+    def test_authenticated_zero_reports_all_current_controls_without_mutating_them(self):
+        self.enable()
+        self.assertEqual(self.command("0")["result"], "denied")
+        for enabled in (True, False):
+            self.server.station_identification.set_enabled(enabled)
+            self.server.settings.update({"dtmf_status_announcements": enabled})
+            self.server.hub.set_recording(enabled)
+            before = (self.server.settings.get(), (self.folder / "settings.json").read_bytes(),
+                      self.server.station_identification.path.read_bytes(), list(self.calls))
+            self.assertEqual(self.command()["result"], "authenticated")
+            with mock.patch.object(self.server.station_identification, "set_enabled") as mutate:
+                response = self.command("0")
+                mutate.assert_not_called()
+            self.assertEqual(response, {"schema": 1, "result": "status", "pair_index": 3,
+                "recording": enabled, "announce_status": enabled, "identification_enabled": enabled})
+            self.assertIsNone(self.bridge.rf_session)
+            self.assertEqual(self.command("0")["result"], "denied")
+            self.assertEqual(self.command("1")["result"], "denied")
+            after = (self.server.settings.get(), (self.folder / "settings.json").read_bytes(),
+                     self.server.station_identification.path.read_bytes(), list(self.calls))
+            self.assertEqual(after, before)
+
+    def test_zero_status_requires_fresh_authentication_available_state_and_clear_maintenance(self):
+        self.enable(); now = [100.0]; self.bridge.clock = lambda: now[0]
+        self.command(); now[0] += 30
+        self.assertEqual(self.command("0")["result"], "expired")
+        self.assertEqual(self.command("0")["result"], "denied")
+        self.command(); self.server.station_identification.path.unlink()
+        self.assertEqual(self.command("0")["result"], "unavailable")
+        self.assertIsNone(self.bridge.rf_session)
+        self.server.station_identification.publish()
+        self.command(); self.maintenance["pending"] = True
+        self.assertEqual(self.command("0")["result"], "busy")
+        self.maintenance["pending"] = False
+        self.assertEqual(self.command("0")["result"], "denied")
+        self.assertTrue(self.server.settings.get()["automatic_station_id"])
+        self.assertFalse(self.calls)
+
+    def test_concurrent_status_requests_consume_one_authorization(self):
+        self.enable(); self.command(); results = []
+        threads = [threading.Thread(target=lambda: results.append(self.command("0")["result"])) for _ in range(4)]
+        for thread in threads: thread.start()
+        for thread in threads: thread.join(2)
+        self.assertEqual(results.count("status"), 1)
+        self.assertTrue(all(result in ("status", "denied") for result in results))
+        self.assertFalse(self.calls)
+
     def test_absolute_timeout_does_not_extend_after_selecting_an_option(self):
         self.enable(); now = [100.0]; self.bridge.clock = lambda: now[0]
         self.command(); now[0] += 29
@@ -156,7 +294,7 @@ class DtmfControlTests(unittest.TestCase):
 
     def test_cancel_invalid_input_disable_and_record_change_invalidate_menu(self):
         self.enable()
-        for raw, result in (("*", "cancelled"), ("0", "invalid"), ("8", "invalid"), ("A", "invalid")):
+        for raw, result in (("*", "cancelled"), ("8", "invalid"), ("A", "invalid")):
             self.command(); self.assertEqual(self.command(raw)["result"], result)
             self.assertEqual(self.command("2")["result"], "denied")
         self.command(); self.command("2")
@@ -314,7 +452,7 @@ class DtmfControlTests(unittest.TestCase):
             self.assertNotIn(CODE.encode(), connection.sent)
         connection = FakeConnection(json.dumps({"schema": 1, "command": CODE}).encode() + b"\n")
         self.bridge._connection(connection); self.assertEqual(json.loads(connection.sent)["result"], "authenticated")
-        self.assertEqual(set(json.loads(connection.sent)), {"schema", "result", "pair_index", "recording", "announce_status"})
+        self.assertEqual(set(json.loads(connection.sent)), {"schema", "result", "pair_index", "recording", "announce_status", "identification_enabled"})
 
     def test_socket_permissions_cleanup_and_unexpected_file_preservation(self):
         self.bridge.socket_path.write_text("keep")
@@ -356,6 +494,27 @@ class DtmfHTTPTests(unittest.TestCase):
         self.assertTrue(json.loads(body)["dtmf_control"]["enabled"])
         for item in (CODE, RECORD["salt"], RECORD["digest"]):
             self.assertNotIn(item.encode(), body)
+
+    def test_radio_identification_change_is_immediately_shared_with_web_and_saved_settings(self):
+        self.server.station_identification = StationIdentification(self.server.settings, self.state / "station-identification.json")
+        self.server.settings.update({"dtmf_enabled": True})
+        bridge = self.server.dtmf
+        def command(value):
+            return bridge.command({"schema": 1, "command": value}, 0)["result"]
+        self.assertEqual(command(CODE), "authenticated")
+        self.assertEqual(command("3"), "choose_identification")
+        self.assertEqual(command("0"), "identification_off")
+        code, _, body = self.request("/api/status")
+        self.assertEqual(code, 200)
+        status = json.loads(body)
+        self.assertEqual(status["station_identification"], {"available": True, "enabled": False})
+        self.assertFalse(status["settings"]["automatic_station_id"])
+        self.assertFalse(SettingsStore(self.state / "settings.json").get()["automatic_station_id"])
+        self.login()
+        code, _, body = self.request("/api/station-identification", "POST", {"enabled": True}, True)
+        self.assertEqual(code, 200)
+        self.assertTrue(json.loads(body)["station_identification"]["enabled"])
+        self.assertEqual(command("0"), "denied")
 
     def test_settings_endpoint_cannot_bypass_the_dtmf_toggle(self):
         self.login()

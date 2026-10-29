@@ -84,19 +84,23 @@ namespace eval RepeaterLogic {
   }
 
   proc box_clip {name} {
-    if {![regexp {^(status|authenticated|choose_status|choose_recording|status_on|status_off|recording_on|recording_off|cancelled|invalid|expired|busy|unavailable|pair_unknown|pair_[1-9])$} $name]} { return }
+    if {![regexp {^(status|authenticated|choose_status|choose_recording|choose_identification|status_on|status_off|recording_on|recording_off|identification_on|identification_off|cancelled|invalid|expired|busy|unavailable|pair_unknown|pair_[1-9])$} $name]} { return }
     playFile "/opt/repeater-box/prompts/$name.wav"
   }
 
-  proc box_control_result {result pair_index recording announce_status} {
-    if {$result ni {status authenticated choose_status choose_recording status_on status_off recording_on recording_off cancelled invalid expired busy unavailable}
+  proc box_control_result {result pair_index recording announce_status identification_enabled} {
+    if {$result ni {status authenticated choose_status choose_recording choose_identification status_on status_off recording_on recording_off identification_on identification_off cancelled invalid expired busy unavailable}
         || ![string is integer -strict $pair_index] || $pair_index < 0 || $pair_index > 9
-        || $recording ni {0 1} || $announce_status ni {0 1}} { return }
+        || $recording ni {0 1} || $announce_status ni {0 1} || $identification_enabled ni {0 1}} { return }
     if {$result ne "status"} { box_clip $result }
-    if {$result eq "status" || ($announce_status == 1 && $result in {status_on status_off recording_on recording_off})} {
+    if {$result eq "status" || ($announce_status == 1 && $result in {status_on status_off recording_on recording_off identification_on identification_off})} {
       box_clip status
       if {$pair_index == 0} { box_clip pair_unknown } else { box_clip "pair_$pair_index" }
       if {$recording == 1} { box_clip recording_on } else { box_clip recording_off }
+      if {$result eq "status"} {
+        if {$identification_enabled == 1} { box_clip identification_on } else { box_clip identification_off }
+        if {$announce_status == 1} { box_clip status_on } else { box_clip status_off }
+      }
     }
   }
 }

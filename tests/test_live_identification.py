@@ -84,6 +84,13 @@ proc finish_id {} {
   incr ::now 3000
   RepeaterLogic::transmit 0
 }
+proc finish_reply {{duration 3000}} {
+  RepeaterLogic::every_second
+  assert {$RepeaterLogic::box_live_prompt_queued} "Reply did not wait for fresh idle"
+  RepeaterLogic::transmit 1
+  incr ::now $duration
+  RepeaterLogic::transmit 0
+}
 '''
         program += body
         # Tcl's interactive stdin mode can print an error and still exit 0.
@@ -194,12 +201,13 @@ foreach result {authenticated choose_recording recording_on} {
     assert {[RepeaterLogic::dtmf_digit_received $digit 100] == 1} "DTMF fallback exposed"
   }
   RepeaterLogic::squelch_open rx 0
-  RepeaterLogic::box_control_result $result 1 1 0
+  RepeaterLogic::box_control_result $result 1 1 0 1
   incr now 3000
   RepeaterLogic::every_second
   assert {$ids == 0} "CW played over a spoken menu prompt"
   RepeaterLogic::repeater_down IDLE
   RepeaterLogic::transmit 0
+  finish_reply
   quiet 2000
   assert {$ids == 0} "CW played between menu steps"
 }
@@ -221,18 +229,20 @@ finish_id
 set now [expr {$last_id + 540000}]
 RepeaterLogic::repeater_up PTY_DTMF_CMD
 RepeaterLogic::transmit 1
-RepeaterLogic::box_control_result authenticated 1 0 0
+RepeaterLogic::box_control_result authenticated 1 0 0 1
 RepeaterLogic::repeater_down IDLE
 RepeaterLogic::transmit 0
+finish_reply
 quiet 2000
 assert {$ids == 1} "Overdue ID interrupted authenticated menu"
 RepeaterLogic::repeater_up PTY_DTMF_CMD
 RepeaterLogic::transmit 1
-RepeaterLogic::box_control_result recording_off 1 0 0
+RepeaterLogic::box_control_result recording_off 1 0 0 1
 RepeaterLogic::every_second
 assert {$ids == 1} "Overdue ID played over final spoken prompt"
 RepeaterLogic::repeater_down IDLE
 RepeaterLogic::transmit 0
+finish_reply
 RepeaterLogic::every_second
 assert {$ids == 2} "Completed menu did not release overdue ID"
 ''')
@@ -249,6 +259,40 @@ RepeaterLogic::dtmf_digit_received 2 100
 RepeaterLogic::every_second
 assert {$ids == 1} "ID overtook the pending DTMF response"
 ''')
+
+    def test_identification_menu_holds_cw_and_completion_respects_projection(self):
+        for result, enabled, expected_ids in (("identification_on", "1", "2"),
+                                               ("identification_off", "0", "1")):
+            with self.subTest(result=result):
+                self.run_tcl(r'''
+rename playFile forbidden_file
+proc playFile {path} {}
+turn
+quiet 30000
+set last_id $now
+finish_id
+set now [expr {$last_id + 540000}]
+RepeaterLogic::repeater_up PTY_DTMF_CMD
+RepeaterLogic::transmit 1
+RepeaterLogic::box_control_result choose_identification 1 0 0 1
+RepeaterLogic::repeater_down IDLE
+RepeaterLogic::transmit 0
+finish_reply
+quiet 2000
+assert {$ids == 1} "Overdue CW interrupted identification option entry"
+RepeaterLogic::repeater_up PTY_DTMF_CMD
+RepeaterLogic::transmit 1
+RepeaterLogic::box_control_result RESULT 1 0 0 ENABLED
+set auto_value ENABLED
+RepeaterLogic::every_second
+assert {$ids == 1} "CW played over the identification confirmation prompt"
+assert {$RepeaterLogic::box_live_dtmf_until == -1} "Completed action retained menu hold"
+RepeaterLogic::repeater_down IDLE
+RepeaterLogic::transmit 0
+finish_reply
+RepeaterLogic::every_second
+assert {$ids == EXPECTED} "Completed action ignored automatic identification projection"
+'''.replace("RESULT", result).replace("ENABLED", enabled).replace("EXPECTED", expected_ids))
 
     def test_timeout_turn_never_queues_cw_until_released_and_quiet(self):
         self.run_tcl(r'''
@@ -268,6 +312,92 @@ assert {$ids == 1} "Fresh idle ID did not follow timeout turn"
 finish_id
 quiet 600000
 assert {$ids == 1} "Timeout recovery ID looped"
+''')
+
+    def test_slow_dtmf_request_and_long_menu_use_separate_transmit_budgets(self):
+        self.run_tcl(r'''
+rename playFile forbidden_file
+proc playFile {path} {
+  assert {!$RepeaterLogic::box_rx_open && !$RepeaterLogic::box_live_up
+          && !$RepeaterLogic::box_live_tx_on} "Reply appended to incoming PTT"
+  lappend ::clips $path
+}
+set clips {}
+set request_start $now
+RepeaterLogic::squelch_open rx 1
+RepeaterLogic::repeater_up SQL_OPEN
+RepeaterLogic::transmit 1
+quiet 4000
+RepeaterLogic::squelch_open rx 0
+RepeaterLogic::box_control_result authenticated 1 0 0 1
+quiet 2000
+assert {[llength $clips] == 0} "Menu started before repeater went down"
+RepeaterLogic::repeater_down IDLE
+RepeaterLogic::every_second
+assert {[llength $clips] == 0} "Menu started before logical TX OFF"
+RepeaterLogic::transmit 0
+assert {[llength $clips] == 0} "Menu started inside PTT teardown"
+RepeaterLogic::every_second
+assert {[llength $clips] == 1} "Menu did not start from fresh idle"
+set reply_start $now
+RepeaterLogic::transmit 1
+quiet 10220
+assert {$now - $request_start > 15000 && $now - $reply_start < 15000} "Regression scenario does not require a fresh TX timer"
+RepeaterLogic::transmit 0
+assert {$ids == 0} "CW interrupted the long opening menu"
+''')
+
+    def test_reply_fifo_is_bounded_validated_and_flushes_one_per_fresh_ptt(self):
+        self.run_tcl(r'''
+rename playFile forbidden_file
+proc playFile {path} {lappend ::clips [file tail $path]}
+set clips {}
+foreach request {
+  {{status;exec nope} 1 0 0 1} {status 10 0 0 1}
+  {status 1 2 0 1} {status 1 0 2 1} {status 1 0 0 false}
+} {
+  RepeaterLogic::box_control_result {*}$request
+}
+assert {[llength $RepeaterLogic::box_live_control_results] == 0} "Invalid response retained"
+foreach result {recording_on recording_off identification_on identification_off status_on} {
+  RepeaterLogic::box_control_result $result 1 0 0 1
+}
+assert {[llength $RepeaterLogic::box_live_control_results] == 4} "Reply FIFO exceeded its bound"
+foreach expected {recording_on.wav recording_off.wav identification_on.wav identification_off.wav} {
+  set count [llength $clips]
+  RepeaterLogic::every_second
+  assert {[llength $clips] == $count + 1 && [lindex $clips end] eq $expected} "Reply order changed"
+  RepeaterLogic::every_second
+  assert {[llength $clips] == $count + 1} "Multiple replies shared a transmit turn"
+  RepeaterLogic::transmit 1
+  incr now 1000
+  RepeaterLogic::transmit 0
+}
+assert {[llength $RepeaterLogic::box_live_control_results] == 0 && $ids == 0} "FIFO did not drain cleanly"
+''')
+
+    def test_offline_clears_reply_fifo_but_automatic_id_off_preserves_voice(self):
+        self.run_tcl(r'''
+rename playFile forbidden_file
+proc playFile {path} {lappend ::clips $path}
+set clips {}
+RepeaterLogic::box_control_result authenticated 1 0 0 1
+RepeaterLogic::logic_online 0
+RepeaterLogic::box_control_result recording_off 1 0 0 1
+RepeaterLogic::every_second
+assert {[llength $clips] == 0 && [llength $RepeaterLogic::box_live_control_results] == 0} "Offline reply survived"
+RepeaterLogic::logic_online 1
+RepeaterLogic::every_second
+assert {[llength $clips] == 0} "Old reply replayed on reactivation"
+RepeaterLogic::box_control_result identification_off 1 0 0 0
+set auto_value 0
+RepeaterLogic::every_second
+assert {[llength $clips] == 1} "Automatic-ID toggle discarded spoken reply"
+RepeaterLogic::transmit 1
+incr now 3000
+RepeaterLogic::transmit 0
+quiet 600000
+assert {$ids == 0} "Disabled automatic identification replayed after voice"
 ''')
 
     def test_new_receive_activity_during_id_is_identified_as_new_traffic(self):
@@ -473,9 +603,10 @@ proc playFile {path} {lappend ::clips $path}
 set clips {}
 RepeaterLogic::repeater_up PTY_DTMF_CMD
 RepeaterLogic::transmit 1
-RepeaterLogic::box_control_result recording_off 1 0 0
+RepeaterLogic::box_control_result recording_off 1 0 0 1
 RepeaterLogic::repeater_down IDLE
 RepeaterLogic::transmit 0
+finish_reply
 quiet 30000
 assert {[llength $clips] == 1 && $ids == 1} "Status preference disabled identification"
 ''')
