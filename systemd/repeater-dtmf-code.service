@@ -1,0 +1,15 @@
+[Unit]
+Description=Save a fixed Repeater Box DTMF credential record
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /opt/repeater-box/scripts/configure-dtmf.py --request
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/repeater-box /var/lib/repeater-dashboard /opt/repeater-box/.maintenance.lock
+RestrictAddressFamilies=AF_UNIX

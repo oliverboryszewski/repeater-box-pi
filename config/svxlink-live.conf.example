@@ -1,0 +1,112 @@
+# NOT INSTALLED OR STARTED AUTOMATICALLY.
+# Future two-AIOC configuration: requires real device identities, audio/PTT
+# calibration, a real station callsign, and the commissioning steps in this folder.
+# This is a source-checked example for SvxLink 24.02, not hardware-tested settings.
+# The RADIO transmitter's own VOX must be OFF. The RX software VOX below is
+# only an incoming-audio activity detector and does not key the radio by itself.
+
+[GLOBAL]
+LOGICS=RepeaterLogic
+TIMESTAMP_FORMAT="%Y-%m-%d %H:%M:%S"
+CARD_SAMPLE_RATE=48000
+CARD_CHANNELS=1
+
+[RepeaterLogic]
+TYPE=Repeater
+RX=RxAIOC
+TX=TxAIOC
+MODULES=
+CALLSIGN=REPLACE_WITH_YOUR_CALLSIGN
+ONLINE=0
+NO_REPEAT=1
+EVENT_HANDLER=/opt/repeater-box/scripts/repeater-box-events.tcl
+DEFAULT_LANG=en_US
+SHORT_IDENT_INTERVAL=0
+LONG_IDENT_INTERVAL=0
+RGR_SOUND_DELAY=-1
+IDLE_SOUND_INTERVAL=0
+IDLE_TIMEOUT=2
+OPEN_ON_SQL=100
+OPEN_SQL_FLANK=OPEN
+STATE_PTY=/run/repeater-box/svxlink-state
+COMMAND_PTY=/run/repeater-box/svxlink-command
+EXEC_CMD_ON_SQL_CLOSE=500
+
+# AFTER commissioning: configure compliant identification for the station,
+# enable repeating (NO_REPEAT=0), and deliberately bring the logic online.
+# Install the matching official English language pack before voice features.
+# A possible ID interval is SHORT_IDENT_INTERVAL=10; review and test the actual
+# ID events, including the end-of-transmission behavior, before on-air use.
+# No default over-the-air administration code is supplied.
+# The restricted event wrapper supports only authenticated status and recording
+# controls; it consumes all other DTMF commands. The local code must be set
+# with configure-dtmf.py and the Admin toggle explicitly enabled. This example
+# remains offline and must never be activated before TX commissioning.
+
+[RxAIOC]
+TYPE=Local
+# Replace with a verified persistent ALSA identity for the RX AIOC.
+# Do not assume two devices named AIOC have unique or stable ALSA card names.
+AUDIO_DEV=alsa:plughw:CARD=REPLACE_RX_ALSA_ID,DEV=0
+AUDIO_CHANNEL=0
+SQL_DET=VOX
+SQL_START_DELAY=0
+SQL_DELAY=0
+SQL_HANGTIME=1000
+VOX_FILTER_DEPTH=20
+VOX_THRESH=1000
+SIGLEV_DET=NONE
+DEEMPHASIS=0
+PEAK_METER=1
+DTMF_DEC_TYPE=INTERNAL
+DTMF_MUTING=1
+DTMF_HANGTIME=40
+
+# The values above are starting points for calibration, not measured thresholds.
+# Let the RX RADIO's squelch/CTCSS mute its speaker output. Do not add software
+# CTCSS decoding to this speaker-audio path without measuring tone availability.
+# Set the radio's own VOX OFF and disable battery saving for dependable RX audio.
+
+[TxAIOC]
+TYPE=Local
+# Replace with the OTHER AIOC's verified persistent ALSA identity.
+AUDIO_DEV=alsa:plughw:CARD=REPLACE_TX_ALSA_ID,DEV=0
+AUDIO_CHANNEL=0
+LIMITER_THRESH=-9
+PREEMPHASIS=0
+PTT_TYPE=SerialPin
+PTT_PORT=/dev/serial/by-id/REPLACE_TX_AIOC_DEVICE
+PTT_PIN=DTR
+SERIAL_SET_PINS=!RTS
+TIMEOUT=60
+TX_DELAY=300
+DTMF_TONE_LENGTH=100
+DTMF_TONE_SPACING=50
+DTMF_DIGIT_PWR=-15
+
+# DTR asserted with RTS clear matches upstream AIOC default serial PTT behavior
+# for firmware >= 1.2.0. Confirm this unit's firmware/settings with the radio
+# disconnected. Do not assume custom firmware or presets preserve that mapping.
+# No software CTCSS is generated here: use the TX radio's tone encoder.
+# The radio's own VOX MUST remain OFF, and AIOC auto/audio PTT must be disabled.
+# Keep an independent radio TX timeout configured as well.
+
+# OPTIONAL RECORDING: uncomment only after audio commissioning and after making
+# /var/lib/svxlink/recordings writable by the svxlink service account.
+# Add the following entry to [RepeaterLogic], not to [TxAIOC]:
+# QSO_RECORDER=:QsoRecorder
+# With an empty command before the colon, RF DTMF cannot toggle this recorder.
+# To choose an RF DTMF command later, explicitly configure and document it.
+#
+# [QsoRecorder]
+# REC_DIR=/var/lib/svxlink/recordings
+# MIN_TIME=1000
+# MAX_TIME=900
+# SOFT_TIME=30
+# MAX_DIRSIZE=4096
+# DEFAULT_ACTIVE=1
+# QSO_TIMEOUT=60
+#
+# MIN_TIME is milliseconds. MAX_TIME, SOFT_TIME, QSO_TIMEOUT are seconds.
+# MAX_DIRSIZE is MB, enforced at file close for names starting with qsorec_.
+# The directory may exceed its cap temporarily by up to one recording file.

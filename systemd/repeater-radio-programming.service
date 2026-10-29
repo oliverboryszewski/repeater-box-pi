@@ -1,0 +1,17 @@
+[Unit]
+Description=Inspect, back up or program a locally assigned Baofeng radio
+
+[Service]
+Type=oneshot
+User=root
+Group=repeaterdash
+ExecStart=/usr/bin/python3 /opt/repeater-box/scripts/program-radio.py
+TimeoutStartSec=300
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/repeater-dashboard /var/lib/repeater-radio-backups /opt/repeater-box/.maintenance.lock
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+UMask=0027
+

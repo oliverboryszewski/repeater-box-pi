@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a Repeater Box on-demand radio programming request
+
+[Path]
+PathChanged=/var/lib/repeater-dashboard/radio-programming-request.json
+Unit=repeater-radio-programming.service
+
+[Install]
+WantedBy=multi-user.target

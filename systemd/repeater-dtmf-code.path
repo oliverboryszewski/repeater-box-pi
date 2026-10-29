@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a Repeater Box DTMF credential request
+
+[Path]
+PathExists=/var/lib/repeater-dashboard/dtmf-code-request.json
+Unit=repeater-dtmf-code.service
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a Repeater Box dashboard update request
+
+[Path]
+PathChanged=/var/lib/repeater-dashboard/software-update-request.json
+Unit=repeater-software-update.service
+
+[Install]
+WantedBy=multi-user.target

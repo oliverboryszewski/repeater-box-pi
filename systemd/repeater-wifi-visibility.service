@@ -1,0 +1,19 @@
+[Unit]
+Description=Apply the Repeater Box hotspot visibility request
+After=NetworkManager.service
+Requires=NetworkManager.service
+
+[Service]
+Type=oneshot
+User=root
+Group=repeaterdash
+ExecStartPre=/bin/sleep 2
+ExecStart=/usr/bin/python3 /opt/repeater-box/scripts/apply-wifi-visibility.py
+TimeoutStartSec=180
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/repeater-dashboard
+ProtectHome=true
+PrivateTmp=true
+RestrictSUIDSGID=true
+UMask=0027
