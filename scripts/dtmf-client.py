@@ -13,15 +13,21 @@ COMMAND_PATHS = (Path("/run/repeater-rx-monitor/svxlink-command"),
                  Path("/run/repeater-box/svxlink-command"))
 RESULTS = frozenset(("status", "authenticated", "choose_status", "choose_recording", "choose_identification", "status_on", "status_off",
                      "recording_on", "recording_off", "identification_on", "identification_off", "cancelled", "invalid", "expired", "disabled", "denied", "busy", "unavailable"))
+DATA_RESULTS = RESULTS | frozenset(("choose_aprs", "choose_sstv", "aprs_on", "aprs_off", "sstv_on", "sstv_off"))
 PROMPT_RE = re.compile(r"[0-9a-f]{32}\Z")
 
 
 def validate_response(value):
-    if (not isinstance(value, dict) or set(value) != {"schema", "result", "pair_index", "recording", "announce_status", "identification_enabled", "prompt_id"}
-            or type(value["schema"]) is not int or value["schema"] != 1
-            or not isinstance(value["result"], str) or value["result"] not in RESULTS or type(value["pair_index"]) is not int
+    schema = value.get("schema") if isinstance(value, dict) else None
+    fields = {"schema", "result", "pair_index", "recording", "announce_status", "identification_enabled", "prompt_id"}
+    if schema == 2:
+        fields.update(("aprs_enabled", "sstv_enabled"))
+    if (not isinstance(value, dict) or set(value) != fields
+            or type(schema) is not int or schema not in (1, 2)
+            or not isinstance(value["result"], str) or value["result"] not in (DATA_RESULTS if schema == 2 else RESULTS) or type(value["pair_index"]) is not int
             or not 0 <= value["pair_index"] <= 9 or type(value["recording"]) is not bool
             or type(value["announce_status"]) is not bool or type(value["identification_enabled"]) is not bool
+            or schema == 2 and (type(value["aprs_enabled"]) is not bool or type(value["sstv_enabled"]) is not bool)
             or not isinstance(value["prompt_id"], str)
             or value["prompt_id"] != "" and PROMPT_RE.fullmatch(value["prompt_id"]) is None):
         raise ValueError("Invalid local control response")
@@ -34,12 +40,12 @@ def _exchange(payload, socket_path, validator):
         connection.connect(socket_path)
         connection.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode("ascii"))
         data = bytearray()
-        while b"\n" not in data and len(data) <= 256:
-            chunk = connection.recv(257 - len(data))
+        while b"\n" not in data and len(data) <= 512:
+            chunk = connection.recv(513 - len(data))
             if not chunk:
                 break
             data.extend(chunk)
-        if len(data) > 256 or not data.endswith(b"\n") or data.count(b"\n") != 1:
+        if len(data) > 512 or not data.endswith(b"\n") or data.count(b"\n") != 1:
             raise ValueError("Invalid local response length")
     return validator(json.loads(data))
 
@@ -47,7 +53,12 @@ def _exchange(payload, socket_path, validator):
 def request(command, socket_path=SOCKET_PATH):
     if not isinstance(command, str) or re.fullmatch(r"(?:[0-9ABCD]{6}|[0-9ABCD]|\*)", command) is None:
         raise ValueError("Invalid radio command")
-    return _exchange({"schema": 1, "command": command}, socket_path, validate_response)
+    value = _exchange({"schema": 2, "command": command}, socket_path, validate_response)
+    # An older dashboard rejects the unknown schema before authentication or
+    # mutation. Retry only that fixed rejection; never repeat an accepted job.
+    if value["schema"] == 1 and value["result"] == "denied":
+        return _exchange({"schema": 1, "command": command}, socket_path, validate_response)
+    return value
 
 
 def validate_prompt_ack(value):
@@ -69,9 +80,11 @@ def response_event(response):
     # Failed authentication and a disabled feature produce no RF response.
     if value["result"] in ("disabled", "denied"):
         return None
-    return ("EVENT RepeaterLogic::box_control_result " + value["result"] + " "
+    extended = value["schema"] == 2
+    return ("EVENT RepeaterLogic::" + ("box_control_result_data " if extended else "box_control_result ") + value["result"] + " "
             + str(value["pair_index"]) + " " + str(int(value["recording"])) + " "
             + str(int(value["announce_status"])) + " " + str(int(value["identification_enabled"])) + " "
+            + (str(int(value["aprs_enabled"])) + " " + str(int(value["sstv_enabled"])) + " " if extended else "")
             + (value["prompt_id"] or "-") + "\n").encode("ascii")
 
 

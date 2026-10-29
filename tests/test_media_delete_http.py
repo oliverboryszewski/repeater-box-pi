@@ -28,6 +28,9 @@ class MediaDeleteHTTPTest(unittest.TestCase):
         with patch.object(dashboard.AudioHub, 'start'), patch.object(dashboard.DataDecoder, 'start'), \
              patch.object(dashboard.SstvDecoder, 'start'), patch.object(dashboard.DtmfControl, 'start', return_value=False):
             self.server = dashboard.make_server('127.0.0.1', 0, self.recordings, self.state, self.admin)
+        # Media requests may refresh the hub's cached source. Keep the native
+        # state reader outside this HTTP/storage fixture, regardless of timing.
+        self.server.hub._live_mode_probe = lambda: False
         self.server.hub.update_settings({'input_enabled': True})
         self.server.hub.set_recording(True)
         self.server.sstv_decoder.set_enabled(True)
@@ -226,6 +229,71 @@ class MediaDeleteHTTPTest(unittest.TestCase):
                 code, _, body = self.request(route, 'POST', payload, auth=True)
             self.assertEqual(code, 503); self.assertNotIn(b'private detail', body)
         self.assertTrue(path.exists()); self.assertEqual(len(self.server.sstv_decoder.list_images()), 1)
+
+    def test_bulk_routes_require_auth_csrf_and_origin(self):
+        audio_path = self.recording(); picture = self.picture()
+        for route, item in (('/api/recordings/delete-many', self.audio_payload(audio_path)),
+                            ('/api/sstv/delete-many', picture)):
+            for headers in ({}, {'Cookie': self.cookie},
+                            {'Cookie': self.cookie, 'X-CSRF-Token': 'wrong'},
+                            {'Cookie': self.cookie, 'X-CSRF-Token': self.auth['csrf_token'], 'Origin': 'http://outside.invalid'}):
+                self.assertEqual(self.request(route, 'POST', {'items': [item]}, headers=headers)[0], 403)
+        self.assertTrue(audio_path.exists()); self.assertEqual(len(self.server.sstv_decoder.list_images()), 1)
+        self.assert_no_hardware_probes()
+
+    def test_bulk_success_reports_exact_ids_and_fresh_inventory(self):
+        audio = [self.audio_payload(self.recording(name)) for name in ('first.wav', 'second.wav')]
+        images = [self.picture(), self.picture()]
+        before = self.server.settings.get()
+        for route, items in (('/api/recordings/delete-many', audio), ('/api/sstv/delete-many', images)):
+            code, headers, body = self.request(route, 'POST', {'items': items}, auth=True)
+            self.assertEqual(code, 200, body); self.assertIn('no-store', headers['Cache-Control'])
+            value = json.loads(body)
+            self.assertEqual(value['deletion'], {'deleted': [i['id'] for i in items], 'failed': []})
+            self.assertEqual(value['recordings']['count'] if 'recordings' in value else value['sstv']['image_count'], 0)
+        self.assertEqual(before, self.server.settings.get()); self.assertTrue(self.server.hub.status()['recorder']['enabled'])
+        self.assert_no_hardware_probes()
+
+    def test_bulk_preflight_stale_or_missing_last_item_preserves_every_other_item(self):
+        paths = [self.recording(name) for name in ('first.wav', 'last.wav')]
+        audio = [self.audio_payload(p) for p in paths]
+        pictures = [self.picture(), self.picture()]
+        for route, items in (('/api/recordings/delete-many', audio), ('/api/sstv/delete-many', pictures)):
+            stale = [items[0], {**items[1], 'revision': '0' * 64}]
+            self.assertEqual(self.request(route, 'POST', {'items': stale}, auth=True)[0], 409)
+            missing = [items[0], {**items[1], 'id': 'missing.wav' if 'recordings' in route else 'f' * 32}]
+            self.assertEqual(self.request(route, 'POST', {'items': missing}, auth=True)[0], 404)
+        self.assertTrue(all(p.exists() for p in paths)); self.assertEqual(len(self.server.sstv_decoder.list_images()), 2)
+
+    def test_bulk_exact_fields_bounds_unique_ids_and_nested_duplicate_json(self):
+        audio = self.audio_payload(self.recording()); image = self.picture()
+        for route, item, limit in (('/api/recordings/delete-many', audio, 100), ('/api/sstv/delete-many', image, 50)):
+            for bad in ({}, {'items': []}, {'items': 'bad'}, {'items': [item], 'extra': True},
+                        {'items': [item, item]}, {'items': [item] * (limit + 1)},
+                        {'items': [None]}, {'items': [{**item, 'extra': True}]},
+                        {'items': [{**item, 'revision': 'x' * 64}]}, {'items': [{**item, 'id': []}]}):
+                self.assertEqual(self.request(route, 'POST', bad, auth=True)[0], 400, (route, bad))
+            raw = ('{"items":[{"id":' + json.dumps(item['id']) + ',"id":"other","revision":"' + item['revision'] + '"}]}').encode()
+            self.assertEqual(self.request(route, 'POST', raw=raw, auth=True)[0], 400)
+        self.assertEqual(self.request('/api/recordings/delete-many', 'POST', raw=b' ' * 131073, auth=True)[0], 400)
+
+    def test_full_audio_batch_body_exceeds_old_four_kib_limit(self):
+        items = [self.audio_payload(self.recording('recording-' + str(i).zfill(3) + '.wav')) for i in range(100)]
+        self.assertGreater(len(json.dumps({'items': items})), 4096)
+        code, _, body = self.request('/api/recordings/delete-many', 'POST', {'items': items}, auth=True)
+        self.assertEqual(code, 200, body); self.assertEqual(len(json.loads(body)['deletion']['deleted']), 100)
+        self.assert_no_hardware_probes()
+
+    def test_partial_bulk_action_returns_200_with_truthful_report_without_retry(self):
+        audio = self.audio_payload(self.recording()); image = self.picture()
+        for route, item, owner, method in (('/api/recordings/delete-many', audio, self.server.hub, 'delete_recordings'),
+                                          ('/api/sstv/delete-many', image, self.server.sstv_decoder, 'delete_images')):
+            report = {'deleted': [], 'failed': [{'id': item['id'], 'reason': 'storage_error'}]}
+            with patch.object(owner, method, return_value=report) as delete:
+                code, _, body = self.request(route, 'POST', {'items': [item]}, auth=True)
+            self.assertEqual(code, 200, body); self.assertEqual(json.loads(body)['deletion'], report)
+            delete.assert_called_once_with([item])
+        self.assert_no_hardware_probes()
 
     def test_second_confirm_cannot_repeat_a_successful_permanent_delete(self):
         path = self.recording(); audio = self.audio_payload(path); image = self.picture()

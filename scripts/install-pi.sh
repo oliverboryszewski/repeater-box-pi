@@ -56,6 +56,9 @@ if systemctl is-active --quiet repeater-live.service || systemctl is-enabled --q
   # leaves live RF stopped while retaining the operator's boot startup choice.
   systemctl stop repeater-live.service
 fi
+# All native handlers must be unloaded before replacement and registration.
+# Captured receive/live selections above are restored by the existing policy.
+systemctl stop repeater-engine.service repeater-rx-monitor.service
 # Prevent package installation from starting the distributor's example RF setup.
 # It remains masked: our separate service uses only the hardware-free bench file.
 systemctl mask svxlink.service
@@ -81,6 +84,7 @@ install -m 644 "$bundle_dir/scripts/"{configure-live.py,check-live-config.py,rep
 # helper does not build a decoder or change an existing radio service.
 install -m 644 "$bundle_dir/scripts/"{install-data-decoder.sh,multimon-ax25-hex.patch} /opt/repeater-box/scripts/
 install -m 644 "$bundle_dir/scripts/"{install-sstv-decoder.sh,sstv-robot36.rs,sstv-rust185.patch} /opt/repeater-box/scripts/
+install -m 644 "$bundle_dir/scripts/install-dtmf-controls.py" /opt/repeater-box/scripts/install-dtmf-controls.py
 # The existing maintenance lock covers this private, offline profile migration.
 # It never opens a radio or starts live operation; authorization is revoked first.
 /usr/bin/python3 - <<'LIVE_PROFILE_PY'
@@ -167,6 +171,7 @@ install -m 644 "$bundle_dir/systemd/"{repeater-dtmf-code.service,repeater-dtmf-c
 install -m 644 "$bundle_dir/systemd/"{repeater-message-broadcast.service,repeater-message-broadcast.path} /etc/systemd/system/
 # Detect incomplete copies and flush their filesystems before activating them.
 /usr/bin/python3 "$integrity_checker" --bundle "$bundle_dir" --verify-installed
+/usr/bin/python3 /opt/repeater-box/scripts/install-dtmf-controls.py --register-only --lock-fd 9
 sync -f /opt/repeater-box /etc/systemd/system
 systemctl daemon-reload
 systemctl enable --now avahi-daemon.service

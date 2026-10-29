@@ -765,6 +765,107 @@ class AudioHubTest(unittest.TestCase):
             self.hub.delete_recording(selected.name,revision)
         self.assertEqual(events,['unlink','sync']);self.assertFalse(selected.exists())
 
+    def selected_recordings(self, *names):
+        values = []
+        for name in names:
+            path = self.root / name
+            path.write_bytes(b'saved audio')
+            values.append({'id': name, 'revision': self.hub.recording_revision(name, path.stat())})
+        return values
+
+    def test_bulk_recordings_delete_only_reviewed_files_and_preserve_active_audio(self):
+        selection = self.selected_recordings('first.wav', 'second.ogg', 'keep.wav')
+        self.hub.set_recording(True); self.hub.feed_packet(packet(0.5))
+        part = self.hub._part_path
+        before = self.hub.status(); settings = dict(self.hub._settings)
+        _, listener = self.hub.subscribe()
+        events = []; real_unlink = module.os.unlink
+        def unlink(name, **kwargs):
+            events.append(name); return real_unlink(name, **kwargs)
+        with mock.patch.object(module.os, 'unlink', side_effect=unlink), mock.patch.object(module.os, 'fsync', side_effect=lambda fd: events.append('sync')):
+            result = self.hub.delete_recordings(selection[:2])
+        self.assertEqual(result, {'deleted': ['first.wav', 'second.ogg'], 'failed': []})
+        self.assertEqual(events, ['first.wav', 'second.ogg', 'sync'])
+        self.assertFalse((self.root/'first.wav').exists()); self.assertTrue((self.root/'keep.wav').exists())
+        self.assertTrue(part.exists()); self.assertTrue(self.hub.status()['recorder']['active'])
+        self.assertEqual(self.hub._settings, settings)
+        self.assertEqual(self.hub.status()['recorder']['enabled'], before['recorder']['enabled'])
+        self.hub.feed_packet(packet(0.2)); self.assertEqual(listener.get_nowait(), packet(0.2))
+
+    def test_bulk_recording_preflight_checks_entire_selection_before_any_unlink(self):
+        first, second = self.selected_recordings('first.wav', 'second.wav')
+        self.hub.set_recording(True); self.hub.feed_packet(packet(0.5))
+        current = self.hub._final_path; current.write_bytes(b'reserved')
+        active = {'id': current.name, 'revision': self.hub.recording_revision(current.name, current.stat())}
+        linked = self.root/'linked.wav'; linked.symlink_to(self.root/'second.wav')
+        cases = [(dict(second, revision='0'*64), ValueError),
+                 ({'id': 'missing.wav', 'revision': second['revision']}, FileNotFoundError),
+                 (active, ValueError), ({'id': linked.name, 'revision': second['revision']}, OSError)]
+        try:
+            for last, error in cases:
+                with self.subTest(last=last['id']), mock.patch.object(module.os, 'unlink') as unlink:
+                    with self.assertRaises(error): self.hub.delete_recordings([first, last])
+                    unlink.assert_not_called()
+                self.assertTrue((self.root/'first.wav').exists())
+                self.assertTrue((self.root/'second.wav').exists())
+        finally:
+            current.unlink()
+
+    def test_bulk_recording_request_shape_bounds_and_duplicates_fail_without_actions(self):
+        selected = self.selected_recordings('first.wav')[0]
+        cases = [None, [], (), [selected]*101, [selected, selected],
+                 [dict(selected, extra=True)], [{'id': selected['id']}], [None],
+                 [dict(selected, id=1)], [dict(selected, revision='bad')],
+                 [dict(selected, id='../first.wav')]]
+        for selection in cases:
+            with self.subTest(selection=selection), mock.patch.object(module.os, 'unlink') as unlink:
+                with self.assertRaises(ValueError): self.hub.delete_recordings(selection)
+                unlink.assert_not_called()
+        self.assertTrue((self.root/'first.wav').exists())
+
+    def test_bulk_recording_limit_accepts_exactly_one_hundred_explicit_files(self):
+        selected = self.selected_recordings(*(f'clip-{number}.wav' for number in range(100)))
+        result = self.hub.delete_recordings(selected)
+        self.assertEqual(result, {'deleted': [value['id'] for value in selected], 'failed': []})
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_bulk_recording_partial_io_failure_reports_removed_and_unattempted_files(self):
+        selected = self.selected_recordings('first.wav', 'second.wav', 'third.wav')
+        real_unlink = module.os.unlink
+        def unlink(name, **kwargs):
+            if name == 'second.wav': raise OSError('synthetic disk fault')
+            return real_unlink(name, **kwargs)
+        with mock.patch.object(module.os, 'unlink', side_effect=unlink), mock.patch.object(module.os, 'fsync') as sync:
+            result = self.hub.delete_recordings(selected)
+        self.assertEqual(result, {'deleted': ['first.wav'], 'failed': [
+            {'id': 'second.wav', 'reason': 'storage_error'}, {'id': 'third.wav', 'reason': 'not_attempted'}]})
+        sync.assert_called_once()
+        self.assertFalse((self.root/'first.wav').exists())
+        self.assertTrue((self.root/'second.wav').exists()); self.assertTrue((self.root/'third.wav').exists())
+
+    def test_bulk_recordings_revalidate_each_file_after_preflight_and_stop_on_race(self):
+        selected = self.selected_recordings('first.wav', 'second.wav', 'third.wav')
+        remove = self.hub._delete_recording_locked
+        def changed(name, revision, directory):
+            if name == 'second.wav': (self.root/name).write_bytes(b'manually replaced after preflight')
+            return remove(name, revision, directory)
+        with mock.patch.object(self.hub, '_delete_recording_locked', side_effect=changed):
+            result = self.hub.delete_recordings(selected)
+        self.assertEqual(result['deleted'], ['first.wav'])
+        self.assertEqual(result['failed'], [{'id': 'second.wav', 'reason': 'changed'},
+                                           {'id': 'third.wav', 'reason': 'not_attempted'}])
+        self.assertEqual((self.root/'second.wav').read_bytes(), b'manually replaced after preflight')
+        self.assertTrue((self.root/'third.wav').exists())
+
+    def test_bulk_recording_sync_failure_truthfully_reports_already_removed_files(self):
+        selected = self.selected_recordings('first.wav', 'second.wav')
+        with mock.patch.object(module.os, 'fsync', side_effect=OSError('synthetic sync failure')):
+            result = self.hub.delete_recordings(selected)
+        self.assertEqual(result, {'deleted': ['first.wav', 'second.wav'], 'failed': [
+            {'id': 'first.wav', 'reason': 'durability_unconfirmed'},
+            {'id': 'second.wav', 'reason': 'durability_unconfirmed'}]})
+        self.assertEqual(list(self.root.iterdir()), [])
+
 
 if __name__ == "__main__":
     unittest.main()

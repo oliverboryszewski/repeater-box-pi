@@ -93,7 +93,9 @@ class InstallIntegrityTest(unittest.TestCase):
         verify = source.index('--bundle "$bundle_dir" --verify-installed')
         flush = source.index("sync -f /opt/repeater-box /etc/systemd/system")
         self.assertLess(source.index('"$bundle_dir/systemd/"{repeater-dtmf-code.service'), verify)
-        self.assertLess(verify, flush)
+        register = source.index("install-dtmf-controls.py --register-only --lock-fd 9")
+        self.assertLess(verify, register)
+        self.assertLess(register, flush)
         self.assertLess(flush, source.index("systemctl daemon-reload"))
         self.assertTrue(source.startswith("#!/bin/bash\n"))
         self.assertIn("set -euo pipefail\n", source)
@@ -102,6 +104,8 @@ class InstallIntegrityTest(unittest.TestCase):
         source = (ROOT / "scripts/install-pi.sh").read_text()
         commands = source.split("# Detect incomplete copies and flush their filesystems before activating them.\n", 1)[1]
         commands = commands.split("systemctl enable --now avahi-daemon.service", 1)[0]
+        # The native registration helper has separate end-to-end tests.
+        commands = commands.replace("/usr/bin/python3 /opt/repeater-box/scripts/install-dtmf-controls.py --register-only --lock-fd 9", ":")
         tools = self.root / "tools"
         tools.mkdir()
         checker_script = self.root / "passing-checker.py"

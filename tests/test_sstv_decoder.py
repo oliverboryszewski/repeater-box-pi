@@ -327,5 +327,122 @@ class SstvDecoderTest(unittest.TestCase):
             self.decoder._recover_image_deletions();sync.assert_called_once()
         self.assertIsNone(self.decoder.status()['last_error'])
 
+    @staticmethod
+    def selected_images(*pictures):
+        return [{'id': value['id'], 'revision': value['revision']} for value in pictures]
+
+    def test_bulk_images_delete_exact_selection_keep_current_reception_and_free_quota(self):
+        first, second, keep = [self.picture(2) for _ in range(3)]
+        current = self.begin(); self.row(0)
+        before = self.decoder.status(); recorder = self.hub.status()['recorder']
+        result = self.decoder.delete_images(self.selected_images(first, second))
+        self.assertEqual(result, {'deleted': [first['id'], second['id']], 'failed': []})
+        self.assertEqual(self.decoder.list_images(), [keep])
+        self.assertEqual(self.decoder.status()['stored_bytes'], keep['size_bytes'])
+        self.assertEqual(self.decoder.status()['current']['id'], current['id'])
+        self.assertEqual(self.decoder.status()['phase'], 'receiving')
+        self.assertEqual(self.decoder.status()['enabled'], before['enabled'])
+        self.assertEqual(self.hub.status()['recorder'], recorder)
+        self.assertEqual({path.name for path in self.decoder.directory.iterdir()},
+                         {keep['id']+'.png', keep['id']+'.json'})
+
+    def test_bulk_image_preflight_checks_later_stale_missing_active_and_unsafe_targets(self):
+        first, second = self.picture(2), self.picture(2)
+        selected = self.selected_images(first, second)
+        current = self.begin(); self.row(0)
+        cases = [(dict(selected[1], revision='0'*64), ValueError),
+                 ({'id': 'f'*32, 'revision': '0'*64}, FileNotFoundError),
+                 ({'id': current['id'], 'revision': '0'*64}, ValueError)]
+        for last, error in cases:
+            with self.subTest(last=last['id']), patch.object(Path, 'rename') as rename:
+                with self.assertRaises(error): self.decoder.delete_images([selected[0], last])
+                rename.assert_not_called()
+            self.assertEqual(self.decoder.list_images(), [second, first])
+        path = self.decoder.directory/(second['id']+'.png'); raw = path.read_bytes()
+        outside = self.root/'outside.png'; outside.write_bytes(raw)
+        path.unlink(); path.symlink_to(outside)
+        with patch.object(Path, 'rename') as rename:
+            with self.assertRaises(OSError): self.decoder.delete_images(selected)
+            rename.assert_not_called()
+        self.assertEqual(outside.read_bytes(), raw)
+        self.assertTrue((self.decoder.directory/(first['id']+'.png')).exists())
+        self.assertEqual(self.decoder.list_images(), [second, first])
+        path.unlink(); path.write_bytes(raw); path.chmod(0o600)
+
+    def test_bulk_image_request_shape_bounds_and_duplicates_fail_without_commits(self):
+        saved = self.picture(2); selected = self.selected_images(saved)[0]
+        cases = [None, [], (), [selected]*51, [selected, selected],
+                 [dict(selected, extra=True)], [{'id': selected['id']}], [None],
+                 [dict(selected, id=1)], [dict(selected, revision='bad')],
+                 [dict(selected, id='../outside')]]
+        for selection in cases:
+            with self.subTest(selection=selection), patch.object(Path, 'rename') as rename:
+                with self.assertRaises(ValueError): self.decoder.delete_images(selection)
+                rename.assert_not_called()
+        self.assertEqual(self.decoder.list_images(), [saved])
+
+    def test_bulk_image_limit_accepts_fifty_explicit_images_and_does_not_resurrect(self):
+        saved = [self.picture(1) for _ in range(50)]
+        result = self.decoder.delete_images(self.selected_images(*saved))
+        self.assertEqual(result, {'deleted': [value['id'] for value in saved], 'failed': []})
+        self.assertEqual(self.decoder.list_images(), [])
+        self.assertIsNone(self.decoder.status()['current']); self.assertEqual(self.decoder._previews, {})
+        self.assertEqual(self.decoder.status()['stored_bytes'], 0)
+        self.decoder._end_pipeline(); self.assertEqual(list(self.decoder.directory.iterdir()), [])
+        reloaded = self.make_decoder()
+        try: self.assertEqual(reloaded.list_images(), [])
+        finally: reloaded.close()
+
+    def test_bulk_image_partial_commit_failure_reports_success_and_unattempted_selection(self):
+        first, second, third = [self.picture(2) for _ in range(3)]
+        real_rename = Path.rename
+        def rename(target, *args, **kwargs):
+            if target.name == second['id']+'.json': raise OSError('synthetic commit fault')
+            return real_rename(target, *args, **kwargs)
+        with patch.object(Path, 'rename', autospec=True, side_effect=rename):
+            result = self.decoder.delete_images(self.selected_images(first, second, third))
+        self.assertEqual(result, {'deleted': [first['id']], 'failed': [
+            {'id': second['id'], 'reason': 'storage_error'}, {'id': third['id'], 'reason': 'not_attempted'}]})
+        self.assertEqual(self.decoder.list_images(), [third, second])
+        self.assertEqual(self.decoder.status()['stored_bytes'], second['size_bytes']+third['size_bytes'])
+        self.assertFalse((self.decoder.directory/(first['id']+'.png')).exists())
+
+    def test_bulk_images_revalidate_each_target_and_stop_when_later_metadata_changes(self):
+        first, second, third = [self.picture(2) for _ in range(3)]
+        remove = self.decoder._delete_image_locked
+        def changed(identifier, revision):
+            if identifier == second['id']:
+                path = self.decoder.directory/(identifier+'.json'); value = json.loads(path.read_text())
+                value['created_at'] = '2026-10-29T14:00:00+00:00'; path.write_text(json.dumps(value))
+            return remove(identifier, revision)
+        with patch.object(self.decoder, '_delete_image_locked', side_effect=changed):
+            result = self.decoder.delete_images(self.selected_images(first, second, third))
+        self.assertEqual(result, {'deleted': [first['id']], 'failed': [
+            {'id': second['id'], 'reason': 'changed'}, {'id': third['id'], 'reason': 'not_attempted'}]})
+        self.assertTrue((self.decoder.directory/(second['id']+'.png')).exists())
+        self.assertTrue((self.decoder.directory/(third['id']+'.png')).exists())
+
+    def test_bulk_image_committed_cleanup_failure_stops_batch_and_restart_finishes_deletion(self):
+        first, second, current = [self.picture(2) for _ in range(3)]
+        path = self.decoder.directory/(current['id']+'.png'); real_unlink = Path.unlink
+        def unlink(target, *args, **kwargs):
+            if target == path: raise OSError('synthetic cleanup failure')
+            return real_unlink(target, *args, **kwargs)
+        with patch.object(Path, 'unlink', autospec=True, side_effect=unlink):
+            result = self.decoder.delete_images(self.selected_images(current, first, second))
+        self.assertEqual(result, {'deleted': [current['id']], 'failed': [
+            {'id': current['id'], 'reason': 'cleanup_pending'},
+            {'id': first['id'], 'reason': 'not_attempted'}, {'id': second['id'], 'reason': 'not_attempted'}]})
+        self.assertEqual(self.decoder.list_images(), [second, first])
+        self.assertIsNone(self.decoder.status()['current']); self.assertEqual(self.decoder._previews, {})
+        self.assertEqual(self.decoder.status()['stored_bytes'], first['size_bytes']+second['size_bytes'])
+        self.assertTrue(path.exists()); self.assertEqual(len(list(self.decoder.directory.glob('.deleted-image-*.json'))), 1)
+        self.decoder._end_pipeline()
+        reloaded = self.make_decoder()
+        try:
+            self.assertEqual(reloaded.list_images(), [second, first]); self.assertFalse(path.exists())
+            self.assertEqual(list(self.decoder.directory.glob('.deleted-image-*.json')), [])
+        finally: reloaded.close()
+
 
 if __name__=='__main__':unittest.main()

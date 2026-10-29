@@ -76,6 +76,18 @@ class PromptAudioTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "current-settings"):
             prompts.validate_durations(durations)
 
+    def test_extended_menu_and_all_decoder_settings_have_a_separate_twenty_second_bound(self):
+        durations = dict.fromkeys(prompts.PROMPTS, 1.0)
+        durations["authenticated_data"] = 20
+        prompts.validate_durations(durations)
+        durations["authenticated_data"] = 20.01
+        with self.assertRaises(ValueError):
+            prompts.validate_durations(durations)
+        durations = dict.fromkeys(prompts.PROMPTS, 1.0)
+        durations["aprs_on"] = durations["sstv_off"] = 8
+        with self.assertRaisesRegex(ValueError, "extended current-settings"):
+            prompts.validate_durations(durations)
+
     def test_build_rejects_an_overlong_menu_before_replacing_installed_clips(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

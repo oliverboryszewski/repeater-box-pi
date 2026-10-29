@@ -80,6 +80,9 @@
   let mediaDeleteUncertain = false;
   let mediaRevision = 0;
   const mediaDeleteMessages = { recording: "", image: "" };
+  const mediaSelections = {recording:new Map(),image:new Map()};
+  let mediaSelectionCsrf = null;
+  let recordingBulkKey = "";
   let audioContext = null;
   let audioGain = null;
   let liveController = null;
@@ -256,7 +259,7 @@
         /\.(wav|ogg|flac|mp3)$/i.test(entry.id) && finite(entry.bytes) && entry.bytes >= 0 &&
         latestStatus?.recorder?.current_file !== entry.id && latestStatus?.recorder?.current_file !== `${entry.id}.part`;
     }
-    return sstvId(entry.id) && !(latestStatus?.sstv?.phase === "receiving" && latestStatus.sstv.current?.id === entry.id);
+    return sstvId(entry.id) && finite(entry.size_bytes) && entry.size_bytes >= 0 && !(latestStatus?.sstv?.phase === "receiving" && latestStatus.sstv.current?.id === entry.id);
   }
 
   function mediaPanelVisible(kind) {
@@ -275,47 +278,152 @@
       mediaEntryDeletable(kind,mediaEntry(kind));
   }
 
+  function mediaInventory(kind) {
+    return kind === "recording" ? [...files.values()] : sstvImages(latestStatus?.sstv);
+  }
+
+  function mediaBulkLimit(kind) { return kind === "recording" ? 100 : 50; }
+  function mediaPrefix(kind) { return kind === "recording" ? "recording" : "sstv"; }
+  function mediaMutationAllowed(kind) {
+    return mediaAdmin() && mediaPanelVisible(kind) && !mutationBusy && !mediaDeleteBusy && !mediaDeleteUncertain;
+  }
+
   function mediaProposalCurrent(proposal) {
-    return mediaAdmin() && session.csrf_token === proposal.csrf && mediaPanelVisible(proposal.kind) &&
-      mediaSnapshot(proposal.kind,mediaEntry(proposal.kind)) === proposal.snapshot;
+    if (!mediaAdmin() || session.csrf_token !== proposal.csrf || !mediaPanelVisible(proposal.kind)) return false;
+    if (!proposal.bulk) return mediaSnapshot(proposal.kind,mediaEntry(proposal.kind)) === proposal.snapshot;
+    const inventory = new Map(mediaInventory(proposal.kind).map(entry => [entry.id,entry]));
+    return mediaSelections[proposal.kind].size === proposal.items.length && proposal.items.every(item =>
+      mediaSelections[proposal.kind].get(item.id) === item.snapshot &&
+      mediaSnapshot(proposal.kind,inventory.get(item.id)) === item.snapshot);
+  }
+
+  function setMediaSelected(kind,id,checked) {
+    if (!mediaMutationAllowed(kind)) {
+      if (mediaDeleteProposal?.bulk && mediaDeleteProposal.kind === kind) closeMediaDeleteConfirmation(false);
+      renderMediaDeleteControls();return;
+    }
+    const entry = mediaInventory(kind).find(item => item.id === id), snapshot = mediaSnapshot(kind,entry);
+    if (checked && snapshot && mediaSelections[kind].size < mediaBulkLimit(kind)) mediaSelections[kind].set(id,snapshot);
+    else if (!checked) mediaSelections[kind].delete(id);
+    if (mediaDeleteProposal?.bulk && mediaDeleteProposal.kind === kind) closeMediaDeleteConfirmation(false);
+    renderMediaDeleteControls();
+  }
+
+  function selectAllMedia(kind,checked) {
+    if (!mediaMutationAllowed(kind)) {
+      if (mediaDeleteProposal?.bulk && mediaDeleteProposal.kind === kind) closeMediaDeleteConfirmation(false);
+      renderMediaDeleteControls();return;
+    }
+    mediaSelections[kind].clear();
+    if (checked) for (const entry of mediaInventory(kind).filter(item => mediaEntryDeletable(kind,item)).slice(0,mediaBulkLimit(kind))) {
+      mediaSelections[kind].set(entry.id,mediaSnapshot(kind,entry));
+    }
+    if (mediaDeleteProposal?.bulk && mediaDeleteProposal.kind === kind) closeMediaDeleteConfirmation(false);
+    renderMediaDeleteControls();
+  }
+
+  function mediaCheckbox(kind,entry) {
+    const label = document.createElement("label"); label.className = "media-select-label";
+    const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.dataset.mediaId = entry.id;
+    checkbox.setAttribute("aria-label",`Select ${kind === "recording" ? entry.id : "picture " + entry.id + ".png"} for deletion`);
+    checkbox.addEventListener("change",event => setMediaSelected(kind,entry.id,event.target.checked));
+    const caption = document.createElement("span");
+    if (kind === "recording") {
+      caption.textContent = entry.id;
+      const detail = document.createElement("small");detail.textContent = `${localTime(entry.modified_at,true)} · ${formatBytes(entry.bytes)}`;
+      caption.append(detail);label.classList.add("media-selection-item");
+    } else caption.textContent = "Select picture";
+    label.append(checkbox,caption); return label;
+  }
+
+  function renderMediaSelections(kind,signedIn) {
+    const prefix = mediaPrefix(kind), inventory = mediaInventory(kind), selected = mediaSelections[kind];
+    const current = new Map(inventory.map(entry => [entry.id,entry]));
+    for (const [id,snapshot] of selected) if (mediaSnapshot(kind,current.get(id)) !== snapshot) selected.delete(id);
+    const eligible = inventory.filter(entry => mediaEntryDeletable(kind,entry)), limit = mediaBulkLimit(kind);
+    byId(`${prefix}-bulk-controls`).hidden = !signedIn;
+    if (kind === "recording") {
+      const key = JSON.stringify([signedIn,inventory]);
+      if (key !== recordingBulkKey) {
+        const list = byId("recording-bulk-list");list.replaceChildren();
+        if (signedIn) for (const entry of inventory) list.append(mediaCheckbox(kind,entry));
+        recordingBulkKey = key;
+      }
+    }
+    const checkboxes = kind === "recording" ? [...byId("recording-bulk-list").children].map(row => row.children[0])
+      : [...byId("sstv-gallery").children].map(row => row.children[1]?.children[0]).filter(Boolean);
+    for (const checkbox of checkboxes) {
+      const checked = selected.has(checkbox.dataset.mediaId);
+      checkbox.checked = signedIn && checked;
+      checkbox.disabled = !mediaMutationAllowed(kind) || !mediaEntryDeletable(kind,current.get(checkbox.dataset.mediaId)) || (!checked && selected.size >= limit);
+    }
+    const all = byId(`${prefix}-select-all`), targetCount = Math.min(eligible.length,limit);
+    all.checked = signedIn && targetCount > 0 && selected.size === targetCount;
+    all.indeterminate = signedIn && selected.size > 0 && selected.size < targetCount;
+    all.disabled = !mediaMutationAllowed(kind) || !targetCount;
+    setText(`${prefix}-selected-count`,`${selected.size} selected`);
+    byId(`${prefix}-delete-selected`).disabled = !mediaMutationAllowed(kind) || !selected.size;
+    setText(`${prefix}-selection-help`,eligible.length > limit
+      ? `Select all chooses the first ${limit} eligible ${kind === "recording" ? "recordings" : "pictures"}. Delete up to ${limit} per batch; review another batch afterward.`
+      : `${kind === "recording" ? "Playback" : "Viewing"} selection is separate. ${eligible.length} saved ${kind === "recording" ? eligible.length === 1 ? "recording" : "recordings" : eligible.length === 1 ? "picture" : "pictures"} can be selected; active or unavailable files cannot be deleted.`);
   }
 
   function renderMediaDeleteControls() {
     const signedIn = mediaAdmin();
+    if (!signedIn || mediaSelectionCsrf !== session.csrf_token) {
+      mediaSelections.recording.clear();mediaSelections.image.clear();
+      mediaSelectionCsrf = signedIn ? session.csrf_token : null;
+    }
     for (const [kind,buttonId,messageId] of [["recording","recording-delete","recording-delete-message"],["image","sstv-delete","sstv-delete-message"]]) {
       byId(buttonId).hidden = !signedIn;
       byId(buttonId).disabled = !canDeleteMedia(kind);
       byId(messageId).hidden = !signedIn;
       message(messageId,signedIn ? mediaDeleteMessages[kind] : "",/deleted\.$/.test(mediaDeleteMessages[kind]) ? "success" : "error");
+      renderMediaSelections(kind,signedIn);
     }
     if (mediaDeleteProposal && (!signedIn || session.csrf_token !== mediaDeleteProposal.csrf || !mediaPanelVisible(mediaDeleteProposal.kind))) closeMediaDeleteConfirmation(false);
     byId("media-delete-apply").disabled = !mediaDeleteProposal || mediaDeleteBusy || mutationBusy || !mediaProposalCurrent(mediaDeleteProposal);
   }
 
   function closeMediaDeleteConfirmation(restoreFocus = true) {
-    const kind = mediaDeleteProposal?.kind;
+    const kind = mediaDeleteProposal?.kind, bulk = mediaDeleteProposal?.bulk;
     mediaDeleteProposal = null;
     const dialog = byId("media-delete-dialog");
     if (dialog.open) dialog.close();
     setText("media-delete-title","Delete this saved file?");
-    setText("media-delete-description",""); message("media-delete-error","");
+    setText("media-delete-description","");byId("media-delete-items").replaceChildren();byId("media-delete-items").hidden=true;message("media-delete-error","");
     byId("media-delete-apply").disabled = true;
     if (restoreFocus && kind) {
-      const button = byId(kind === "recording" ? "recording-delete" : "sstv-delete");
+      const button = byId(`${mediaPrefix(kind)}-${bulk ? "delete-selected" : "delete"}`);
       if (!button.hidden && !button.disabled) button.focus();
     }
   }
 
-  function showMediaDeleteConfirmation(kind) {
-    if (!canDeleteMedia(kind)) return;
-    const entry = mediaEntry(kind);
-    const proposal = {kind,id:entry.id,revision:mediaEntryRevision(kind,entry),snapshot:mediaSnapshot(kind,entry),csrf:session.csrf_token};
+  function showMediaDeleteConfirmation(kind,bulk=false) {
+    if (bulk ? !mediaMutationAllowed(kind) || !mediaSelections[kind].size : !canDeleteMedia(kind)) return;
+    const entries = bulk ? mediaInventory(kind).filter(entry => mediaSelections[kind].has(entry.id)) : [mediaEntry(kind)];
+    if (!entries.length || entries.length > mediaBulkLimit(kind) || entries.some(entry => !mediaEntryDeletable(kind,entry))) return;
+    const entry = entries[0];
+    const proposal = {kind,bulk,id:entry.id,revision:mediaEntryRevision(kind,entry),snapshot:mediaSnapshot(kind,entry),csrf:session.csrf_token,
+      items:entries.map(item => ({id:item.id,revision:mediaEntryRevision(kind,item),snapshot:mediaSnapshot(kind,item)}))};
     mediaDeleteProposal = proposal; mediaDeleteMessages[kind] = "";
     setText("media-delete-title",kind === "recording" ? "Delete this recording?" : "Delete this picture?");
     const name = kind === "recording" ? entry.id : `${typeof entry.mode === "string" ? entry.mode : "SSTV"} · ${entry.id}.png`;
     const details = `${localTime(kind === "recording" ? entry.modified_at : entry.created_at,true)} · ${formatBytes(kind === "recording" ? entry.bytes : entry.size_bytes)}`;
     setText("media-delete-description",`${name}\n${details}${kind === "image" && !entry.complete ? ` · Partial (${entry.lines_received}/${entry.height} lines)` : ""}`);
-    setText("media-delete-effect",kind === "recording"
+    const reviewList = byId("media-delete-items");reviewList.replaceChildren();reviewList.hidden = !bulk;
+    if (bulk) {
+      setText("media-delete-title",`Delete ${entries.length} ${kind === "recording" ? entries.length === 1 ? "recording" : "recordings" : entries.length === 1 ? "picture" : "pictures"}?`);
+      const total = entries.reduce((sum,item) => sum + (kind === "recording" ? item.bytes : item.size_bytes),0);
+      setText("media-delete-description",`${entries.length} selected · ${formatBytes(total)} total. Review every file below.`);
+      for (const item of entries) {
+        const row = document.createElement("li");row.textContent = `${kind === "recording" ? item.id : item.id + ".png"}\n${localTime(kind === "recording" ? item.modified_at : item.created_at,true)} · ${formatBytes(kind === "recording" ? item.bytes : item.size_bytes)}`;
+        reviewList.append(row);
+      }
+    }
+    setText("media-delete-effect",bulk
+      ? "This permanently deletes every listed file from the Pi. Download copies first if you want to keep them. Current reception, recording and live radio operation continue."
+      : kind === "recording"
       ? "This permanently deletes this saved recording from the Pi. Download a copy first if you want to keep it. Current recording and live radio operation continue."
       : "This permanently deletes this picture and its gallery information from the Pi. Download a copy first if you want to keep it. SSTV reception and live radio operation continue.");
     message("media-delete-error","");
@@ -363,7 +471,7 @@
 
   async function applyMediaDeletion() {
     const proposal = mediaDeleteProposal;
-    if (!proposal || !byId("media-delete-dialog").open || !canDeleteMedia(proposal.kind) || !mediaProposalCurrent(proposal)) return;
+    if (!proposal || !byId("media-delete-dialog").open || !(proposal.bulk ? mediaMutationAllowed(proposal.kind) : canDeleteMedia(proposal.kind)) || !mediaProposalCurrent(proposal)) return;
     mediaDeleteBusy = true;mutationBusy = true;stopDataPolling();renderAdmin();
     let issued = false;
     try {
@@ -378,12 +486,30 @@
       closeMediaDeleteConfirmation(false);
       mediaRevision += 1;if (proposal.kind === "image") dataRevision += 1;
       issued = true;
-      mediaDeleteMessages[proposal.kind]=proposal.kind === "recording" ? "Deleting recording…" : "Deleting picture…";renderMediaDeleteControls();
-      const result = await mediaJson(proposal.kind === "recording" ? "/api/recordings/delete" : "/api/sstv/delete",proposal.csrf,{id:proposal.id,revision:proposal.revision});
+      mediaDeleteMessages[proposal.kind]=proposal.bulk ? `Deleting ${proposal.items.length} selected files…` : proposal.kind === "recording" ? "Deleting recording…" : "Deleting picture…";renderMediaDeleteControls();
+      const endpoint = proposal.kind === "recording" ? "/api/recordings/delete" : "/api/sstv/delete";
+      const result = await mediaJson(endpoint + (proposal.bulk ? "-many" : ""),proposal.csrf,proposal.bulk
+        ? {items:proposal.items.map(item => ({id:item.id,revision:item.revision}))} : {id:proposal.id,revision:proposal.revision});
       if (!mediaAdmin() || session.csrf_token !== proposal.csrf) return;
       updateMediaInventory(proposal.kind,result);
       mediaDeleteUncertain=false;
-      mediaDeleteMessages[proposal.kind]=proposal.kind === "recording" ? "Recording deleted." : "Picture deleted.";
+      if (proposal.bulk) {
+        const report = result.deletion, requested = new Set(proposal.items.map(item => item.id));
+        if (!report || !Array.isArray(report.deleted) || !Array.isArray(report.failed) ||
+            report.deleted.some(id => !requested.has(id)) || report.failed.some(item => !requested.has(item?.id)) ||
+            proposal.items.some(item => !report.deleted.includes(item.id) && !report.failed.some(failure => failure.id === item.id))) throw new Error("The Pi returned an unreadable deletion report.");
+        for (const id of report.deleted) mediaSelections[proposal.kind].delete(id);
+        const inventory = new Map(mediaInventory(proposal.kind).map(entry => [entry.id,entry]));
+        for (const failure of report.failed) {
+          const snapshot = mediaSnapshot(proposal.kind,inventory.get(failure.id));
+          if (snapshot && !report.deleted.includes(failure.id)) mediaSelections[proposal.kind].set(failure.id,snapshot);
+        }
+        const reasons = {changed:"a file changed",missing:"a file was already missing",storage_error:"a storage error occurred",durability_unconfirmed:"storage confirmation is pending",cleanup_pending:"picture metadata cleanup is pending",not_attempted:"some files were not attempted"};
+        const warnings = [...new Set(report.failed.map(item => reasons[item.reason] || "a file could not be confirmed"))];
+        mediaDeleteMessages[proposal.kind] = report.failed.length
+          ? `${report.deleted.length} of ${proposal.items.length} files deleted; ${warnings.join("; ")}. Review any remaining selection before trying again.`
+          : `${report.deleted.length} ${proposal.kind === "recording" ? report.deleted.length === 1 ? "recording" : "recordings" : report.deleted.length === 1 ? "picture" : "pictures"} deleted.`;
+      } else mediaDeleteMessages[proposal.kind]=proposal.kind === "recording" ? "Recording deleted." : "Picture deleted.";
     } catch (error) {
       closeMediaDeleteConfirmation(false);
       if (mediaAdmin() && session.csrf_token === proposal.csrf) {
@@ -397,6 +523,11 @@
 
   byId("recording-delete").addEventListener("click",() => showMediaDeleteConfirmation("recording"));
   byId("sstv-delete").addEventListener("click",() => showMediaDeleteConfirmation("image"));
+  for (const kind of ["recording","image"]) {
+    const prefix = mediaPrefix(kind);
+    byId(`${prefix}-select-all`).addEventListener("change",event => selectAllMedia(kind,event.target.checked));
+    byId(`${prefix}-delete-selected`).addEventListener("click",() => showMediaDeleteConfirmation(kind,true));
+  }
   byId("media-delete-cancel").addEventListener("click",() => closeMediaDeleteConfirmation());
   byId("media-delete-dialog").addEventListener("cancel",event => {event.preventDefault();closeMediaDeleteConfirmation();});
   byId("media-delete-dialog").addEventListener("close",() => {if (!byId("media-delete-dialog").open) closeMediaDeleteConfirmation(false);});
@@ -955,7 +1086,7 @@
   }
 
   function dtmfKey(value) {
-    return value && typeof value === "object" ? JSON.stringify({available:value.available,configured:value.configured,bridge_ready:value.bridge_ready,enabled:value.enabled,status_announcements:value.status_announcements,code_pending:value.code_change?.pending,code_request:value.code_change?.request_id}) : "null";
+    return value && typeof value === "object" ? JSON.stringify({available:value.available,configured:value.configured,bridge_ready:value.bridge_ready,enabled:value.enabled,status_announcements:value.status_announcements,data_controls:value.data_controls?.available === true,code_pending:value.code_change?.pending,code_request:value.code_change?.request_id}) : "null";
   }
 
   function dtmfMaintenanceClear(ignoreBusy = false) {
@@ -1024,7 +1155,13 @@
 
   function renderDtmf() {
     const value = latestStatus?.dtmf_control;
-    const enabled = value?.enabled === true;
+    const enabled = value?.enabled === true, dataControls = value?.data_controls?.available === true;
+    setText("dtmf-description",dataControls
+      ? "Use a private radio password to change recording, spoken status, automatic identification, APRS decoding, or SSTV decoding."
+      : "Use a private radio password to change recording, spoken status, or automatic identification.");
+    setText("dtmf-help",`Enter the six-character DTMF password, press # and release PTT. Choose 0 to hear current settings. To change a setting, choose 1 for status announcements, 2 for recording, ${dataControls ? "3 for automatic station identification, 4 for APRS decoding, or 5 for SSTV decoding" : "or 3 for automatic station identification"}, then 0 for off or 1 for on. Press # and release PTT after each choice, then wait for the prompt. Use * to cancel. Each prompt gives you 30 seconds of idle time after it finishes. A valid option starts a fresh window; a completed action needs the password again. Recording commands affect the current session; the startup preference stays unchanged.`);
+    byId("dtmf-data-help").hidden = dataControls || value?.available !== true;
+    setText("dtmf-data-help",dataControls ? "" : "Install the radio-control update on the Pi to add APRS and SSTV menu options.");
     byId("dtmf-enabled").setAttribute("aria-checked",String(enabled));
     byId("dtmf-enabled").disabled = !canManageDtmf();
     setText("dtmf-switch-value",enabled ? "On" : "Off");
@@ -2094,7 +2231,7 @@
       setText("sstv-current-title","Receiving picture"); setText("sstv-current-detail",""); setText("sstv-progress-note","Waiting for image data.");
     }
     const images = sstvImages(value);
-    const galleryKey = JSON.stringify([visible,images]);
+    const galleryKey = JSON.stringify([visible,signedIn,images]);
     if (galleryKey !== sstvGalleryKey) {
       const gallery = byId("sstv-gallery"); gallery.replaceChildren();
       for (const image of images) {
@@ -2110,7 +2247,7 @@
           if (!dataAdmin() || !dataPanelVisible() || !sstvImages(latestStatus?.sstv).some(item => item.id === image.id)) return;
           sstvSelectedId = image.id; renderSstv();
         });
-        item.append(button); gallery.append(item);
+        item.append(button);if (signedIn) item.append(mediaCheckbox("image",image));gallery.append(item);
       }
       sstvGalleryKey = galleryKey;
     }
@@ -2517,7 +2654,8 @@
     dtmfProposal={field,value,state:dtmfKey(latestStatus.dtmf_control),csrf:session.csrf_token};
     dtmfError="";message("dtmf-confirm-error","");
     setText("dtmf-confirm-title",field === "enabled" ? value ? "Enable radio DTMF control?" : "Disable radio DTMF control?" : value ? "Enable spoken status after DTMF actions?" : "Disable spoken status after DTMF actions?");
-    setText("dtmf-confirm-description",field === "enabled" ? value ? "Allow the private password to open the radio menu for spoken status, recording, and automatic identification?" : "Stop accepting radio DTMF status, recording, and automatic identification commands? Current recording and the saved startup preference will stay as they are." : value ? "Add the current channel-pair number and recording state after each successful DTMF action?" : "Omit the additional channel-pair and recording status after DTMF actions? Menu prompts and basic confirmation will still play.");
+    const controls = latestStatus.dtmf_control.data_controls?.available === true ? "spoken status, recording, automatic identification, APRS decoding, and SSTV decoding" : "spoken status, recording, and automatic identification";
+    setText("dtmf-confirm-description",field === "enabled" ? value ? `Allow the private password to open the radio menu for ${controls}?` : `Stop accepting radio DTMF commands for ${controls}? Current recording and the saved startup preference will stay as they are.` : value ? "Add the current channel-pair number and recording state after each successful DTMF action?" : "Omit the additional channel-pair and recording status after DTMF actions? Menu prompts and basic confirmation will still play.");
     byId("dtmf-confirm-dialog").showModal();renderDtmf();byId("dtmf-confirm-cancel").focus();
   }
   byId("dtmf-enabled").addEventListener("click",() => reviewDtmfChange("enabled"));

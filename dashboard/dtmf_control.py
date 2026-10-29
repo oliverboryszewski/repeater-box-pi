@@ -1,4 +1,4 @@
-"""Local authenticated DTMF bridge; fixed status, recording and ID preferences.
+"""Local authenticated DTMF bridge; fixed status and receiver preferences.
 
 SvxLink owns radio audio and spoken responses. This process never opens ALSA,
 serial, PTT or command PTYs, and never publishes the private control-code record.
@@ -24,10 +24,19 @@ import time
 RESULTS = frozenset(("status", "authenticated", "choose_status", "choose_recording", "choose_identification", "status_on", "status_off",
                      "recording_on", "recording_off", "identification_on", "identification_off", "cancelled", "invalid", "expired",
                      "disabled", "denied", "busy", "unavailable"))
+DATA_RESULTS = RESULTS | frozenset(("choose_aprs", "choose_sstv", "aprs_on", "aprs_off", "sstv_on", "sstv_off"))
 CODE_RE = re.compile(r"[0-9ABCD]{6}\Z")
 PROMPT_RE = re.compile(r"[0-9a-f]{32}\Z")
 CONFIG_PATH = Path("/etc/repeater-box/dtmf.json")
 SOCKET_PATH = Path("/run/repeater-box-control/dtmf.sock")
+NATIVE_MANIFEST = Path("/opt/repeater-box/dtmf-controls.json")
+NATIVE_SCRIPTS = ("scripts/dtmf-client.py", "scripts/repeater-box-events.tcl", "scripts/repeater-live-events.tcl")
+NATIVE_PROMPTS = ("status", "recording_on", "recording_off", "busy", "unavailable", "pair_unknown",
+                  "authenticated", "authenticated_data", "choose_status", "choose_recording", "choose_identification",
+                  "choose_aprs", "choose_sstv", "status_on", "status_off", "identification_on", "identification_off",
+                  "aprs_on", "aprs_off", "sstv_on", "sstv_off", "cancelled", "invalid", "expired",
+                  *("pair_" + str(number) for number in range(1, 10)))
+NATIVE_FILES = frozenset(NATIVE_SCRIPTS) | frozenset("prompts/" + name + ".wav" for name in NATIVE_PROMPTS)
 
 
 def unique_object(pairs):
@@ -43,7 +52,7 @@ class DtmfControl:
     def __init__(self, server, config_file=CONFIG_PATH, socket_path=SOCKET_PATH,
                  owner_uid=0, group_id=None, allowed_uids=None, clock=time.monotonic,
                  state_dir="/var/lib/repeater-dashboard", code_supported=None, runner=None,
-                 prompt_feedback=False):
+                 prompt_feedback=False, native_manifest=NATIVE_MANIFEST):
         self.server = server
         self.config_file, self.socket_path = Path(config_file), Path(socket_path)
         self.owner_uid, self.clock = owner_uid, clock
@@ -51,6 +60,8 @@ class DtmfControl:
         self.code_supported = is_pi() if code_supported is None else code_supported
         self.run = runner or system_command
         self.prompt_feedback = prompt_feedback
+        self.native_manifest = Path(native_manifest)
+        self.native_cache = None
         self.rf_session = None
         self.group_id = group_id
         if self.group_id is None:
@@ -146,7 +157,63 @@ class DtmfControl:
                 "enabled": settings.get("dtmf_enabled") is True,
                 "status_announcements": settings.get("dtmf_status_announcements") is True,
                 "code_change": self.code_status(),
+                "data_controls": self.native_data_status(),
                 "message": "Spoken responses use SvxLink’s transmitter. Receive-only mode (TX=NONE) cannot broadcast responses."}
+
+    def native_data_status(self):
+        """Advertise the extended menu only after its native files are installed.
+
+        App updates cannot install SvxLink handlers or spoken prompts. A protected
+        manifest binds every required file, so either update order retains the
+        original menu until the native installation is complete.
+        """
+        available = False
+        try:
+            root = self.native_manifest.parent
+            paths = (self.native_manifest, *(root / name for name in sorted(NATIVE_FILES)))
+            signatures = []
+            directories = {root, *(path.parent for path in paths)}
+            for directory in directories:
+                info = directory.lstat()
+                if (not stat.S_ISDIR(info.st_mode) or info.st_uid != self.owner_uid
+                        or info.st_mode & 0o022):
+                    raise ValueError("Unprotected native directory")
+            for path in paths:
+                info = path.lstat()
+                limit = 16384 if path == self.native_manifest else (65536 if path.suffix != ".wav" else 2 * 1024 * 1024)
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != self.owner_uid
+                        or info.st_mode & 0o022 or not 0 < info.st_size <= limit):
+                    raise ValueError("Unprotected native file")
+                signatures.append((str(path), info.st_dev, info.st_ino, info.st_size,
+                                   info.st_mtime_ns, info.st_ctime_ns, info.st_mode, info.st_uid))
+            signature = tuple(signatures)
+            if self.native_cache is not None and self.native_cache[0] == signature:
+                available = self.native_cache[1]
+            else:
+                def content(path, limit):
+                    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+                    with os.fdopen(descriptor, "rb") as stream:
+                        data = stream.read(limit + 1)
+                    if len(data) > limit:
+                        raise ValueError("Oversized native file")
+                    return data
+                value = json.loads(content(self.native_manifest, 16384), object_pairs_hook=unique_object)
+                if (not isinstance(value, dict) or set(value) != {"schema", "protocol", "files"}
+                        or type(value.get("schema")) is not int or value["schema"] != 1
+                        or type(value.get("protocol")) is not int or value["protocol"] != 2
+                        or not isinstance(value.get("files"), dict) or set(value["files"]) != NATIVE_FILES
+                        or any(not isinstance(digest, str) or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                               for digest in value["files"].values())):
+                    raise ValueError("Invalid native manifest")
+                available = all(hmac.compare_digest(hashlib.sha256(content(root / name,
+                    2 * 1024 * 1024 if name.endswith(".wav") else 65536)).hexdigest(), digest)
+                    for name, digest in value["files"].items())
+                self.native_cache = (signature, available)
+        except (OSError, ValueError, TypeError):
+            self.native_cache = None
+        return {"available": available, "protocol": 2 if available else 1,
+                "message": ("DTMF options 4 and 5 control APRS and SSTV decoding." if available else
+                            "Install the native DTMF menu update on the Pi to enable APRS and SSTV radio controls.")}
 
     def request_code(self, code):
         if not isinstance(code, str) or not CODE_RE.fullmatch(code):
@@ -203,19 +270,24 @@ class DtmfControl:
 
     @staticmethod
     def response(result, pair_index=0, recording=False, announce_status=False,
-                 identification_enabled=False, prompt_id=""):
-        return {"schema": 1, "result": result if result in RESULTS else "unavailable",
+                 identification_enabled=False, prompt_id="", *, schema=1,
+                 aprs_enabled=False, sstv_enabled=False):
+        schema = 2 if schema == 2 else 1
+        value = {"schema": schema, "result": result if result in (DATA_RESULTS if schema == 2 else RESULTS) else "unavailable",
                 "pair_index": pair_index if type(pair_index) is int and 0 <= pair_index <= 9 else 0,
                 "recording": recording is True, "announce_status": announce_status is True,
                 "identification_enabled": identification_enabled is True,
                 "prompt_id": prompt_id if isinstance(prompt_id, str) and PROMPT_RE.fullmatch(prompt_id) else ""}
+        if schema == 2:
+            value.update(aprs_enabled=aprs_enabled is True, sstv_enabled=sstv_enabled is True)
+        return value
 
-    def _current_response(self, result, committed=False, prompt_id=""):
+    def _current_response(self, result, committed=False, prompt_id="", schema=1):
         identification = self.server.station_identification.status()
         identification_available = (identification.get("available") is True
                                     and type(identification.get("enabled")) is bool)
         if result == "status" and not identification_available:
-            return self.response("unavailable")
+            return self.response("unavailable", schema=schema)
         recording = self.server.hub.status().get("recorder", {}).get("enabled") is True
         radio = self.server.programming.status()
         pair = radio.get("pair") or {}
@@ -225,9 +297,14 @@ class DtmfControl:
                              if item.get("id") == pair.get("pair_id")), {})
             index = selected.get("index", 0)
         announce = (committed or result == "status") and self.server.settings.get().get("dtmf_status_announcements") is True
+        decoder_flags = {}
+        if schema == 2:
+            for name, attribute in (("aprs_enabled", "data_decoder"), ("sstv_enabled", "sstv_decoder")):
+                controller = getattr(self.server, attribute, None)
+                decoder_flags[name] = controller is not None and controller.status().get("enabled") is True
         return self.response(result, index, recording, announce,
                              identification.get("enabled") is True if identification_available else False,
-                             prompt_id)
+                             prompt_id, schema=schema, **decoder_flags)
 
     def _prepare_prompt(self, session, now):
         """Grant the idle window after playback when a live engine can report it."""
@@ -303,17 +380,22 @@ class DtmfControl:
         if peer_uid not in self.allowed_uids:
             return self.response("denied")
         if (not isinstance(request, dict) or set(request) != {"schema", "command"}
-                or type(request.get("schema")) is not int or request["schema"] != 1
+                or type(request.get("schema")) is not int or request["schema"] not in (1, 2)
                 or not isinstance(request.get("command"), str)
                 or not (CODE_RE.fullmatch(request["command"]) or re.fullmatch(r"[0-9ABCD*]", request["command"]))):
             return self.response("denied")
+        # A dashboard-only update must remain compatible with the installed
+        # legacy client, Tcl handlers and spoken menu in either update order.
+        schema = 2 if request["schema"] == 2 and self.native_data_status()["available"] else 1
+        reply = lambda result: self.response(result, schema=schema)
+        current = lambda result, **kwargs: self._current_response(result, schema=schema, **kwargs)
         if not self.server.settings.get().get("dtmf_enabled") or self.code_status(probe=False)["pending"]:
             self.rf_session = None
-            return self.response("disabled")
+            return reply("disabled")
         record = self._record()
         if record is None:
             self.rf_session = None
-            return self.response("disabled")
+            return reply("disabled")
         command = request["command"]
         password = len(command) == 6
         if password:
@@ -321,53 +403,53 @@ class DtmfControl:
             # including when the replacement password is wrong or throttled.
             self.rf_session = None
         if password and not self._authenticate(command, record):
-            return self.response("denied")
+            return reply("denied")
         if not self.server.mutation_lock.acquire(blocking=False):
             # Do not consume or grant RF authorization while another action
             # owns the mutation lock. The next attempt needs its full password.
             self.rf_session = None
-            return self.response("busy") if password else self.response("denied")
+            return reply("busy") if password else reply("denied")
         try:
             if not self.server.settings.get().get("dtmf_enabled") or self.code_status(probe=False)["pending"]:
                 self.rf_session = None
-                return self.response("disabled")
+                return reply("disabled")
             if self._record() != record:
                 self.rf_session = None
-                return self.response("denied")
+                return reply("denied")
             if self._busy():
                 authorized = password or self.rf_session is not None
                 self.rf_session = None
-                return self.response("busy" if authorized else "denied")
+                return reply("busy" if authorized else "denied")
             now = self.clock()
             if password:
-                self.rf_session = {"stage": "option", "record": record, "peer_uid": peer_uid}
+                self.rf_session = {"stage": "option", "record": record, "peer_uid": peer_uid, "schema": schema}
                 prompt_id = self._prepare_prompt(self.rf_session, now)
-                return self._current_response("authenticated", prompt_id=prompt_id)
+                return current("authenticated", prompt_id=prompt_id)
             session = self.rf_session
             if not session or session["peer_uid"] != peer_uid:
-                return self.response("denied")
-            if session["record"] != record:
+                return reply("denied")
+            if session["record"] != record or session.get("schema", 1) != schema:
                 self.rf_session = None
-                return self.response("denied")
+                return reply("denied")
             if now >= session["expires"]:
                 self.rf_session = None
-                return self._current_response("expired")
+                return current("expired")
             if command == "*":
                 self.rf_session = None
-                return self._current_response("cancelled")
+                return current("cancelled")
             if session["stage"] == "option" and command == "0":
                 # A read-only report still consumes its one authenticated menu.
                 self.rf_session = None
-                return self._current_response("status")
-            if session["stage"] == "option" and command in ("1", "2", "3"):
+                return current("status")
+            if session["stage"] == "option" and command in (("1", "2", "3", "4", "5") if schema == 2 else ("1", "2", "3")):
                 if command == "3" and self.server.station_identification.status().get("available") is not True:
                     self.rf_session = None
-                    return self._current_response("unavailable")
+                    return current("unavailable")
                 session["stage"] = "value"
                 session["option"] = command
                 prompt_id = self._prepare_prompt(session, now)
-                return self._current_response({"1": "choose_status", "2": "choose_recording", "3": "choose_identification"}[command],
-                                              prompt_id=prompt_id)
+                return current({"1": "choose_status", "2": "choose_recording", "3": "choose_identification",
+                                "4": "choose_aprs", "5": "choose_sstv"}[command], prompt_id=prompt_id)
             if session["stage"] == "value" and command in ("0", "1"):
                 # Consume authorization before applying; a failed action or a
                 # repeated frame cannot reuse the menu to change anything.
@@ -380,23 +462,45 @@ class DtmfControl:
                 elif session["option"] == "2":
                     self.server.hub.set_recording(enabled)
                     if (self.server.hub.status().get("recorder", {}).get("enabled") is True) != enabled:
-                        return self.response("unavailable")
+                        return reply("unavailable")
                     result = "recording_on" if enabled else "recording_off"
-                else:
+                elif session["option"] == "3":
                     with self.server.settings_lock:
                         controller = self.server.station_identification
                         if controller.status().get("available") is not True:
-                            return self._current_response("unavailable")
+                            return current("unavailable")
                         state = controller.set_enabled(enabled)
                         if state.get("available") is not True or state.get("enabled") is not enabled:
-                            return self._current_response("unavailable")
+                            return current("unavailable")
                     result = "identification_on" if enabled else "identification_off"
-                return self._current_response(result, committed=True)
+                else:
+                    option = session["option"]
+                    attribute, setting, name = (("data_decoder", "data_decode_enabled", "aprs") if option == "4" else
+                                                ("sstv_decoder", "sstv_decode_enabled", "sstv"))
+                    with self.server.settings_lock:
+                        controller = getattr(self.server, attribute, None)
+                        if controller is None or enabled and controller.status().get("available") is not True:
+                            return current("unavailable")
+                        previous = controller.status().get("enabled")
+                        if type(previous) is not bool:
+                            return current("unavailable")
+                        try:
+                            controller.set_enabled(enabled)
+                            if controller.status().get("enabled") is not enabled:
+                                raise ValueError("Receiver preference was not applied")
+                            self.server.settings.update({setting: enabled})
+                        except Exception:
+                            # A failed durable save must not silently leave a
+                            # different running preference from the saved one.
+                            controller.set_enabled(previous)
+                            raise
+                    result = name + ("_on" if enabled else "_off")
+                return current(result, committed=True)
             self.rf_session = None
-            return self._current_response("invalid")
+            return current("invalid")
         except Exception:
             self.rf_session = None
-            return self.response("unavailable")
+            return reply("unavailable")
         finally:
             self.server.mutation_lock.release()
 

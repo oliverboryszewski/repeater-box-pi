@@ -658,39 +658,121 @@ class AudioHub:
                   info.st_mtime_ns, info.st_ctime_ns]
         return hashlib.sha256(json.dumps(fields, separators=(",", ":")).encode()).hexdigest()
 
-    def delete_recording(self, name, revision):
-        """Remove one reviewed closed media file without changing recording."""
+    @staticmethod
+    def _delete_batch_items(items, maximum):
+        """Freeze one bounded explicit selection; filenames never mean a glob."""
+        if not isinstance(items, list) or not 1 <= len(items) <= maximum:
+            raise ValueError("Choose a bounded list of saved media to delete")
+        reviewed, identifiers = [], set()
+        for item in items:
+            if (not isinstance(item, dict) or set(item) != {"id", "revision"}
+                    or not isinstance(item["id"], str) or not isinstance(item["revision"], str)
+                    or item["id"] in identifiers):
+                raise ValueError("Review each selected saved item exactly once")
+            identifiers.add(item["id"])
+            reviewed.append((item["id"], item["revision"]))
+        return tuple(reviewed)
+
+    @staticmethod
+    def _batch_failure(result, reviewed, index, reason):
+        result["failed"].append({"id": reviewed[index][0], "reason": reason})
+        result["failed"].extend({"id": identifier, "reason": "not_attempted"}
+                                for identifier, _revision in reviewed[index + 1:])
+
+    @staticmethod
+    def _recording_delete_arguments(name, revision):
         if (not isinstance(name, str) or not 1 <= len(name.encode("utf-8")) <= 255
                 or name.startswith(".") or any(value in name for value in ("/", "\\", "\0"))
-                or Path(name).suffix.lower() not in self.RECORDING_EXTENSIONS
+                or Path(name).suffix.lower() not in AudioHub.RECORDING_EXTENSIONS
                 or not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision)):
             raise ValueError("Choose a saved recording and review it again")
+
+    def _review_recording_delete_locked(self, name, revision, directory):
+        """Return an open reviewed regular file, closing it on every failure."""
+        self._recording_delete_arguments(name, revision)
+        if self._closed:
+            raise ValueError("The audio archive is not available")
+        if any(path is not None and path.name == name for path in (self._part_path, self._final_path)):
+            raise ValueError("The current recording cannot be deleted")
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=directory)
+        try:
+            info = os.fstat(descriptor)
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise ValueError("Only an ordinary saved recording can be deleted")
+            if self.recording_revision(name, info) != revision:
+                raise ValueError("The recording changed. Review it again before deleting")
+            # The same lock serializes our writer, finalization and retention.
+            # A directory descriptor binds both this entry check and unlink.
+            current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if (not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
+                    or self.recording_revision(name, current) != revision):
+                raise ValueError("The recording changed. Review it again before deleting")
+            return descriptor
+        except BaseException:
+            os.close(descriptor)
+            raise
+
+    def _delete_recording_locked(self, name, revision, directory):
+        descriptor = self._review_recording_delete_locked(name, revision, directory)
+        try:
+            os.unlink(name, dir_fd=directory)
+        finally:
+            os.close(descriptor)
+
+    def delete_recording(self, name, revision):
+        """Remove one reviewed closed media file without changing recording."""
+        self._recording_delete_arguments(name, revision)
         with self._lock:
             if self._closed:
                 raise ValueError("The audio archive is not available")
-            if any(path is not None and path.name == name for path in (self._part_path, self._final_path)):
-                raise ValueError("The current recording cannot be deleted")
             directory = os.open(self.recordings_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-            descriptor = None
             try:
-                descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
-                                     dir_fd=directory)
-                info = os.fstat(descriptor)
-                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                    raise ValueError("Only an ordinary saved recording can be deleted")
-                if self.recording_revision(name, info) != revision:
-                    raise ValueError("The recording changed. Review it again before deleting")
-                # The same lock serializes our writer, finalization and retention.
-                # A directory descriptor prevents a renamed parent/symlink from
-                # redirecting this final entry check and unlink to another folder.
-                current = os.stat(name, dir_fd=directory, follow_symlinks=False)
-                if not stat.S_ISREG(current.st_mode) or current.st_nlink != 1 or self.recording_revision(name, current) != revision:
-                    raise ValueError("The recording changed. Review it again before deleting")
-                os.unlink(name, dir_fd=directory)
+                self._delete_recording_locked(name, revision, directory)
                 os.fsync(directory)
             finally:
-                if descriptor is not None:
+                os.close(directory)
+
+    def delete_recordings(self, items):
+        """Preflight all selected clips before removing any; report IO failures.
+
+        A single final directory sync makes the acknowledged batch durable
+        without doing up to 100 syncs while the audio writer's lock is held.
+        The native radio service is never opened or modified here.
+        """
+        reviewed = self._delete_batch_items(items, 100)
+        for name, revision in reviewed:
+            self._recording_delete_arguments(name, revision)
+        with self._lock:
+            if self._closed:
+                raise ValueError("The audio archive is not available")
+            directory = os.open(self.recordings_path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+            try:
+                for name, revision in reviewed:
+                    descriptor = self._review_recording_delete_locked(name, revision, directory)
                     os.close(descriptor)
+                result = {"deleted": [], "failed": []}
+                for index, (name, revision) in enumerate(reviewed):
+                    try:
+                        self._delete_recording_locked(name, revision, directory)
+                    except FileNotFoundError:
+                        self._batch_failure(result, reviewed, index, "missing")
+                        break
+                    except ValueError:
+                        self._batch_failure(result, reviewed, index, "changed")
+                        break
+                    except OSError:
+                        self._batch_failure(result, reviewed, index, "storage_error")
+                        break
+                    result["deleted"].append(name)
+                if result["deleted"]:
+                    try:
+                        os.fsync(directory)
+                    except OSError:
+                        result["failed"].extend({"id": name, "reason": "durability_unconfirmed"}
+                                                for name in result["deleted"])
+                return result
+            finally:
                 os.close(directory)
 
     def _prune_locked(self):
@@ -1645,47 +1727,95 @@ class SstvDecoder(DataDecoder):
                 self._sync_image_directory()
             self._error = None
 
-    def delete_image(self, identifier, revision):
-        """Delete one reviewed saved PNG and its metadata without stopping RX."""
-        if (not isinstance(identifier, str) or not self.ID.fullmatch(identifier)
+    @staticmethod
+    def _image_delete_arguments(identifier, revision):
+        if (not isinstance(identifier, str) or not SstvDecoder.ID.fullmatch(identifier)
                 or not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{64}", revision)):
             raise ValueError("Choose a saved picture and review it again")
+
+    def _review_image_delete_locked(self, identifier, revision):
+        self._image_delete_arguments(identifier, revision)
+        if self._current is not None and self._current["id"] == identifier and self._phase == "receiving":
+            raise ValueError("The picture currently being received cannot be deleted")
+        value = next((image for image in self._images if image["id"] == identifier), None)
+        if value is None:
+            raise FileNotFoundError("The picture is no longer in the gallery")
+        if value["sha256"] != revision:
+            raise ValueError("The picture changed. Review it again before deleting")
+        metadata = self.directory / (identifier + ".json")
+        metadata_revision = AudioHub.recording_revision(metadata.name, metadata.lstat())
+        raw = self._read_owned(metadata, owner=os.getuid(), maximum=4096)
+        if json.loads(raw) != value:
+            raise ValueError("The picture metadata changed. Review it again")
+        png, _ = self.image(identifier)
+        if hashlib.sha256(png).hexdigest() != revision:
+            raise ValueError("The picture changed. Review it again before deleting")
+        if AudioHub.recording_revision(metadata.name, metadata.lstat()) != metadata_revision:
+            raise ValueError("The picture metadata changed during review")
+        return value, metadata
+
+    def _delete_image_locked(self, identifier, revision):
+        value, metadata = self._review_image_delete_locked(identifier, revision)
+        tombstone = self.directory / (".deleted-image-" + identifier + "-" + uuid.uuid4().hex + ".json")
+        metadata.rename(tombstone)
+        self._images.remove(value)
+        self._total_bytes -= value["size_bytes"]
+        if self._current is not None and self._current["id"] == identifier:
+            self._current = self._pixels = None
+            self._previews.clear()
+            self._phase = "idle"
+        try:
+            self._sync_image_directory()
+            self._recover_image_deletions(commit_synced=True)
+        except (OSError, ValueError):
+            # The visible deletion is already committed. Preserve its
+            # tombstone so the exact files can be cleaned up on retry or
+            # restart, rather than recreating a half-deleted gallery item.
+            self._error = self.DELETE_CLEANUP_MESSAGE
+            return False
+        return True
+
+    def delete_image(self, identifier, revision):
+        """Delete one reviewed saved PNG and its metadata without stopping RX."""
+        self._image_delete_arguments(identifier, revision)
         with self._lock:
             self._check_directory()
             self._recover_image_deletions()
-            if self._current is not None and self._current["id"] == identifier and self._phase == "receiving":
-                raise ValueError("The picture currently being received cannot be deleted")
-            value = next((image for image in self._images if image["id"] == identifier), None)
-            if value is None:
-                raise FileNotFoundError("The picture is no longer in the gallery")
-            if value["sha256"] != revision:
-                raise ValueError("The picture changed. Review it again before deleting")
-            metadata = self.directory / (identifier + ".json")
-            metadata_revision = AudioHub.recording_revision(metadata.name, metadata.lstat())
-            raw = self._read_owned(metadata, owner=os.getuid(), maximum=4096)
-            if json.loads(raw) != value:
-                raise ValueError("The picture metadata changed. Review it again")
-            png, _ = self.image(identifier)
-            if hashlib.sha256(png).hexdigest() != revision:
-                raise ValueError("The picture changed. Review it again before deleting")
-            if AudioHub.recording_revision(metadata.name, metadata.lstat()) != metadata_revision:
-                raise ValueError("The picture metadata changed during review")
-            tombstone = self.directory / (".deleted-image-" + identifier + "-" + uuid.uuid4().hex + ".json")
-            metadata.rename(tombstone)
-            self._images.remove(value)
-            self._total_bytes -= value["size_bytes"]
-            if self._current is not None and self._current["id"] == identifier:
-                self._current = self._pixels = None
-                self._previews.clear()
-                self._phase = "idle"
-            try:
-                self._sync_image_directory()
-                self._recover_image_deletions(commit_synced=True)
-            except (OSError, ValueError):
-                # The visible deletion is already committed. Preserve its
-                # tombstone so the exact files can be cleaned up on retry or
-                # restart, rather than recreating a half-deleted gallery item.
-                self._error = self.DELETE_CLEANUP_MESSAGE
+            self._delete_image_locked(identifier, revision)
+
+    def delete_images(self, items):
+        """Delete an explicit reviewed gallery selection after all preflight.
+
+        A committed metadata tombstone hides an image even when its cleanup
+        needs retrying. Such an ID appears in both deleted and cleanup_pending;
+        later selected images are left untouched rather than retried blindly.
+        """
+        reviewed = AudioHub._delete_batch_items(items, 50)
+        for identifier, revision in reviewed:
+            self._image_delete_arguments(identifier, revision)
+        with self._lock:
+            self._check_directory()
+            self._recover_image_deletions()
+            for identifier, revision in reviewed:
+                self._review_image_delete_locked(identifier, revision)
+            result = {"deleted": [], "failed": []}
+            for index, (identifier, revision) in enumerate(reviewed):
+                try:
+                    cleaned = self._delete_image_locked(identifier, revision)
+                except FileNotFoundError:
+                    AudioHub._batch_failure(result, reviewed, index, "missing")
+                    break
+                except ValueError:
+                    AudioHub._batch_failure(result, reviewed, index, "changed")
+                    break
+                except OSError:
+                    AudioHub._batch_failure(result, reviewed, index, "storage_error")
+                    break
+                result["deleted"].append(identifier)
+                if not cleaned:
+                    AudioHub._batch_failure(result, reviewed, index, "cleanup_pending")
+                    break
+            return result
 
     def image(self, identifier=None, revision=None, current_id=None):
         with self._lock:

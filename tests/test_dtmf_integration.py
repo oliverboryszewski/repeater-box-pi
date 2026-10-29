@@ -210,7 +210,7 @@ class DtmfIntegrationTests(unittest.TestCase):
         connection.recv.return_value = (json.dumps(response) + "\n").encode("ascii")
         with mock.patch.object(client.socket, "socket", return_value=connection):
             self.assertEqual(client.request("864209"), response)
-        self.assertEqual(json.loads(connection.sendall.call_args.args[0]), {"schema": 1, "command": "864209"})
+        self.assertEqual(json.loads(connection.sendall.call_args.args[0]), {"schema": 2, "command": "864209"})
         for invalid in ("864209#", "864209\n", "8642090", "１２３４５６０"):
             with self.assertRaises(ValueError): client.request(invalid)
 
@@ -273,7 +273,7 @@ class DtmfIntegrationTests(unittest.TestCase):
         self.assertIn("repeater-box-control", (ROOT / "systemd/repeater-dashboard.service").read_text())
 
     def test_prompts_are_fixed_generic_and_installer_preserves_maintenance_guards(self):
-        self.assertEqual(set(prompts.PROMPTS), {"status", "recording_on", "recording_off", "busy", "unavailable", "pair_unknown", "authenticated", "choose_status", "choose_recording", "choose_identification", "status_on", "status_off", "identification_on", "identification_off", "cancelled", "invalid", "expired"} | {"pair_"+str(number) for number in range(1,10)})
+        self.assertEqual(set(prompts.PROMPTS), {"status", "recording_on", "recording_off", "busy", "unavailable", "pair_unknown", "authenticated", "choose_status", "choose_recording", "choose_identification", "status_on", "status_off", "identification_on", "identification_off", "cancelled", "invalid", "expired"} | {"pair_"+str(number) for number in range(1,10)} | prompts.DATA_PROMPTS)
         self.assertTrue(all("MHz" not in text and "password" not in text for text in prompts.PROMPTS.values()))
         installer = (ROOT / "scripts/install-pi.sh").read_text()
         self.assertLess(installer.index("flock -n 9"), installer.index("module.migrate_monitor()"))

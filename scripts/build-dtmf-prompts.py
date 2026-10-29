@@ -12,19 +12,27 @@ LEAD_SECONDS = 0.25
 MENU_GAP_SECONDS = 0.30
 TAIL_SECONDS = 0.15
 MAX_RESPONSE_SECONDS = 12
+MAX_DATA_RESPONSE_SECONDS = 20
 MENU_PARTS = ("Control menu.", "Zero, settings.", "One, status.",
               "Two, recording.", "Three, identification.")
+DATA_MENU_PARTS = MENU_PARTS + ("Four, A P R S.", "Five, S S T V.")
+DATA_PROMPTS = frozenset(("authenticated_data", "choose_aprs", "choose_sstv", "aprs_on", "aprs_off", "sstv_on", "sstv_off"))
 
 PROMPTS = {"status": "Current settings.", "recording_on": "Recording on.",
            "recording_off": "Recording off.", "busy": "Radio maintenance in progress. Please wait.",
            "unavailable": "Control unavailable.", "pair_unknown": "Channel pair not confirmed.",
            "authenticated": " ".join(MENU_PARTS),
+           "authenticated_data": " ".join(DATA_MENU_PARTS),
            "choose_status": "Status announcements. Zero off. One on.",
            "choose_recording": "Recording. Zero off. One on.",
            "choose_identification": "Automatic identification. Zero off. One on.",
+           "choose_aprs": "A P R S decoding. Zero off. One on.",
+           "choose_sstv": "S S T V decoding. Zero off. One on.",
            "status_on": "Announcements on.", "status_off": "Announcements off.",
            "identification_on": "Identification on.",
            "identification_off": "Identification off.",
+           "aprs_on": "A P R S on.", "aprs_off": "A P R S off.",
+           "sstv_on": "S S T V on.", "sstv_off": "S S T V off.",
            "cancelled": "DTMF programming cancelled.", "invalid": "Invalid option. DTMF programming cancelled.",
            "expired": "DTMF programming timed out. Enter the control code again."}
 PROMPTS.update({"pair_" + str(number): "Pair " + str(number) + "." for number in range(1, 10)})
@@ -63,7 +71,9 @@ def write_prompt(path, parts):
 
 
 def validate_durations(durations):
-    if any(not 0 < seconds <= MAX_RESPONSE_SECONDS for seconds in durations.values()):
+    if (set(durations) != set(PROMPTS) or any(not 0 < seconds <=
+            (MAX_DATA_RESPONSE_SECONDS if name in DATA_PROMPTS else MAX_RESPONSE_SECONDS)
+            for name, seconds in durations.items())):
         raise ValueError("A spoken prompt exceeds the short transmit budget")
     pair_duration = max([durations["pair_unknown"]] + [durations["pair_" + str(n)] for n in range(1, 10)])
     summary = durations["status"] + pair_duration
@@ -76,20 +86,29 @@ def validate_durations(durations):
     explicit_settings += max(durations["status_on"], durations["status_off"])
     if explicit_settings > MAX_RESPONSE_SECONDS:
         raise ValueError("The combined current-settings response exceeds the short transmit budget")
+    extended_settings = explicit_settings + max(durations["aprs_on"], durations["aprs_off"])
+    extended_settings += max(durations["sstv_on"], durations["sstv_off"])
+    if extended_settings > MAX_DATA_RESPONSE_SECONDS:
+        raise ValueError("The extended current-settings response exceeds the transmit budget")
+    if summary + max(durations[name] for name in ("aprs_on", "aprs_off", "sstv_on", "sstv_off")) > MAX_DATA_RESPONSE_SECONDS:
+        raise ValueError("The extended spoken status exceeds the transmit budget")
 
 
 def build(directory=Path("/opt/repeater-box/prompts")):
     directory = Path(directory)
     directory.mkdir(mode=0o755, parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix=".repeater-prompts-", dir=directory) as temporary:
-        pending, durations = {}, {}
+        pending, durations, phrases = {}, {}, {}
         for name, text in PROMPTS.items():
-            texts = MENU_PARTS if name == "authenticated" else (text,)
+            texts = (MENU_PARTS if name == "authenticated" else
+                     DATA_MENU_PARTS if name == "authenticated_data" else (text,))
             parts = []
             for index, phrase in enumerate(texts):
                 source = Path(temporary) / f"{name}-{index}-source.wav"
                 converted = Path(temporary) / f"{name}-{index}-16k.wav"
-                parts.append(render_phrase(phrase, source, converted))
+                if phrase not in phrases:
+                    phrases[phrase] = render_phrase(phrase, source, converted)
+                parts.append(phrases[phrase])
             output = Path(temporary) / (name + ".wav")
             durations[name] = write_prompt(output, parts)
             os.chmod(output, 0o644)
@@ -106,4 +125,5 @@ if __name__ == "__main__":
     if os.geteuid() != 0:
         raise SystemExit("Run this installer helper as root.")
     durations = build()
-    print(f"Generated {len(durations)} radio prompts; opening menu {durations['authenticated']:.1f} seconds.")
+    print(f"Generated {len(durations)} radio prompts; opening menus "
+          f"{durations['authenticated']:.1f} / {durations['authenticated_data']:.1f} seconds.")

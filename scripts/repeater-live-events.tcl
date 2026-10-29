@@ -337,20 +337,32 @@ namespace eval RepeaterLogic {
 
   rename box_control_result box_live_shared_control_result
   proc box_control_result {result pair_index recording announce_status identification_enabled {prompt_id -}} {
+    box_live_queue_control_result 0 $result $pair_index $recording $announce_status $identification_enabled 0 0 $prompt_id
+  }
+
+  rename box_control_result_data box_live_shared_control_result_data
+  proc box_control_result_data {result pair_index recording announce_status identification_enabled aprs_enabled sstv_enabled {prompt_id -}} {
+    box_live_queue_control_result 1 $result $pair_index $recording $announce_status $identification_enabled $aprs_enabled $sstv_enabled $prompt_id
+  }
+
+  proc box_live_queue_control_result {extended result pair_index recording announce_status identification_enabled aprs_enabled sstv_enabled prompt_id} {
     variable box_live_online; variable box_live_dtmf_until
     variable box_live_control_results
     if {!$box_live_online
-        || $result ni {status authenticated choose_status choose_recording choose_identification status_on status_off recording_on recording_off identification_on identification_off cancelled invalid expired busy unavailable}
+        || $extended ni {0 1}
+        || $result ni {status authenticated choose_status choose_recording choose_identification choose_aprs choose_sstv status_on status_off recording_on recording_off identification_on identification_off aprs_on aprs_off sstv_on sstv_off cancelled invalid expired busy unavailable}
+        || (!$extended && $result in {choose_aprs choose_sstv aprs_on aprs_off sstv_on sstv_off})
         || ![string is integer -strict $pair_index] || $pair_index < 0 || $pair_index > 9
         || $recording ni {0 1} || $announce_status ni {0 1} || $identification_enabled ni {0 1}
+        || $aprs_enabled ni {0 1} || $sstv_enabled ni {0 1}
         || ![regexp {^(-|[0-9a-f]{32})$} $prompt_id]
         || [llength $box_live_control_results] >= 4} { return }
-    if {$result in {authenticated choose_status choose_recording choose_identification}} {
+    if {$result in {authenticated choose_status choose_recording choose_identification choose_aprs choose_sstv}} {
       set box_live_dtmf_until [expr {[box_live_now] + ($prompt_id eq "-" ? 30000 : 45000)}]
-    } elseif {$result in {status status_on status_off recording_on recording_off identification_on identification_off cancelled invalid expired busy unavailable}} {
+    } elseif {$result in {status status_on status_off recording_on recording_off identification_on identification_off aprs_on aprs_off sstv_on sstv_off cancelled invalid expired busy unavailable}} {
       set box_live_dtmf_until -1
     }
-    lappend box_live_control_results [list $result $pair_index $recording $announce_status $identification_enabled $prompt_id]
+    lappend box_live_control_results [list $extended $result $pair_index $recording $announce_status $identification_enabled $aprs_enabled $sstv_enabled $prompt_id]
     box_live_publish
   }
 
@@ -370,8 +382,12 @@ namespace eval RepeaterLogic {
     # every reply from a fresh idle transmitter; never append it to that turn.
     set box_live_prompt_queued 1
     set box_live_prompt_started 0
-    set box_live_active_prompt_id [lindex $response 5]
-    box_live_shared_control_result {*}$response
+    set box_live_active_prompt_id [lindex $response 8]
+    if {[lindex $response 0]} {
+      box_live_shared_control_result_data {*}[lrange $response 1 end]
+    } else {
+      box_live_shared_control_result {*}[lrange $response 1 5] [lindex $response 8]
+    }
   }
 
   proc box_live_id_tick {} {

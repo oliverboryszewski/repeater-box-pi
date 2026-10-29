@@ -37,7 +37,7 @@ from radio_editor import MODELS
 from native_state import NativeState
 from radio_messages import RadioMessages, MessageError, MAX_UPLOAD_BYTES, upload_name
 
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 STATIC = Path(__file__).parent / "static"
 STATIC_ROUTES = {
     "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
@@ -464,7 +464,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         try:
             size = int(self.headers.get("Content-Length", "0"))
-            maximum = 65536 if path == "/api/radio-editor/write" else 4096
+            maximum = (131072 if path in ("/api/recordings/delete-many", "/api/sstv/delete-many")
+                       else 65536 if path == "/api/radio-editor/write" else 4096)
             if size < 0 or size > maximum:
                 raise ValueError("Request body too large")
             if self.headers.get_content_type() != "application/json":
@@ -485,24 +486,43 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, PermissionError) as error:
                 self.json_response(401, {"error": str(error)})
             return
-        if path not in ("/api/admin/logout", "/api/recording", "/api/settings", "/api/wifi-visibility", "/api/software-updates/check", "/api/software-updates/install", "/api/radio-programming", "/api/radio-pair", "/api/radio-editor/read", "/api/radio-editor/write", "/api/dtmf-control", "/api/dtmf-password", "/api/station-identification", "/api/messages/delete", "/api/messages/broadcast", "/api/data/decoding", "/api/sstv/decoding", "/api/recordings/delete", "/api/sstv/delete"):
+        if path not in ("/api/admin/logout", "/api/recording", "/api/settings", "/api/wifi-visibility", "/api/software-updates/check", "/api/software-updates/install", "/api/radio-programming", "/api/radio-pair", "/api/radio-editor/read", "/api/radio-editor/write", "/api/dtmf-control", "/api/dtmf-password", "/api/station-identification", "/api/messages/delete", "/api/messages/broadcast", "/api/data/decoding", "/api/sstv/decoding", "/api/recordings/delete", "/api/sstv/delete", "/api/recordings/delete-many", "/api/sstv/delete-many"):
             self.json_response(404, {"error": "Unknown endpoint"})
             return
         if not self.server.auth.authorize(token, self.headers.get("X-CSRF-Token")):
             self.json_response(403, {"error": "Sign in as admin before changing settings or recording"})
             return
-        if path in ("/api/recordings/delete", "/api/sstv/delete"):
+        if path in ("/api/recordings/delete", "/api/sstv/delete", "/api/recordings/delete-many", "/api/sstv/delete-many"):
             # Delete saved media only. Native audio, PTT and radio maintenance
             # are independent; the storage objects serialize against writers.
             with self.server.mutation_lock:
-                if (set(data) != {"id", "revision"} or not isinstance(data.get("revision"), str)
-                        or not re.fullmatch(r"[0-9a-f]{64}", data["revision"])
-                        or (not valid_recording_id(data.get("id")) if path == "/api/recordings/delete"
-                            else not isinstance(data.get("id"), str) or not re.fullmatch(r"[0-9a-f]{32}", data["id"]))):
-                    self.json_response(400, {"error": "Send only the reviewed saved item and its revision"})
+                audio = path.startswith("/api/recordings/")
+                bulk = path.endswith("/delete-many")
+                items = data.get("items") if bulk else [data]
+                limit = 100 if audio else 50
+                if (bulk and set(data) != {"items"} or not isinstance(items, list)
+                        or not 1 <= len(items) <= limit
+                        or any(not isinstance(item, dict) or set(item) != {"id", "revision"}
+                               or not isinstance(item.get("revision"), str)
+                               or not re.fullmatch(r"[0-9a-f]{64}", item["revision"])
+                               or (not valid_recording_id(item.get("id")) if audio else
+                                   not isinstance(item.get("id"), str)
+                                   or not re.fullmatch(r"[0-9a-f]{32}", item["id"]))
+                               for item in items)
+                        or len({item["id"] for item in items}) != len(items)):
+                    self.json_response(400, {"error": "Send only the reviewed saved items and their revisions"})
                     return
                 try:
-                    if path == "/api/recordings/delete":
+                    if bulk:
+                        # Storage preflights the entire bounded list before any
+                        # removal. Action-time I/O failures are reported with a
+                        # fresh inventory; a partial batch is never retried here.
+                        report = (self.server.hub.delete_recordings(items) if audio
+                                  else self.server.sstv_decoder.delete_images(items))
+                        value = recording_status(self.server) if audio else {"sstv": sstv_status(self.server)}
+                        value["deletion"] = report
+                        self.json_response(200, value)
+                    elif audio:
                         self.server.hub.delete_recording(data["id"], data["revision"])
                         self.json_response(200, recording_status(self.server))
                     else:

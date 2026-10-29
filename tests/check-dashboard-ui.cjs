@@ -58,17 +58,18 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
       if(onMediaStatus){const response=await onMediaStatus(path);if(response)return response;}
       return{ok:true,json:async()=>path==='/api/recordings/status'?({recordings:structuredClone(status.recordings),recorder:structuredClone(status.recorder)}):({sstv:structuredClone(status.sstv)})};
     }
-    if(path==='/api/recordings/delete'||path==='/api/sstv/delete'){
+    if(['/api/recordings/delete','/api/sstv/delete','/api/recordings/delete-many','/api/sstv/delete-many'].includes(path)){
       if(onMediaDelete){const response=await onMediaDelete(path,options);if(response)return response;}
-      const body=JSON.parse(options.body);
-      if(path==='/api/recordings/delete'){
-        status.recordings.files=status.recordings.files.filter(item=>item.id!==body.id);
+      const body=JSON.parse(options.body), ids=path.endsWith('-many')?body.items.map(item=>item.id):[body.id];
+      const deletion=path.endsWith('-many')?{deletion:{deleted:ids,failed:[]}}:{};
+      if(path.startsWith('/api/recordings/')){
+        status.recordings.files=status.recordings.files.filter(item=>!ids.includes(item.id));
         status.recordings.count=status.recordings.files.length;status.recordings.total_bytes=status.recordings.files.reduce((total,item)=>total+item.bytes,0);
-        return{ok:true,json:async()=>({recordings:structuredClone(status.recordings),recorder:structuredClone(status.recorder)})};
+        return{ok:true,json:async()=>({recordings:structuredClone(status.recordings),recorder:structuredClone(status.recorder),...deletion})};
       }
-      status.sstv.images=status.sstv.images.filter(item=>item.id!==body.id);status.sstv.image_count=status.sstv.images.length;
-      if(status.sstv.current?.id===body.id){status.sstv.current=null;status.sstv.phase='idle';}
-      return{ok:true,json:async()=>({sstv:structuredClone(status.sstv)})};
+      status.sstv.images=status.sstv.images.filter(item=>!ids.includes(item.id));status.sstv.image_count=status.sstv.images.length;
+      if(ids.includes(status.sstv.current?.id)){status.sstv.current=null;status.sstv.phase='idle';}
+      return{ok:true,json:async()=>({sstv:structuredClone(status.sstv),...deletion})};
     }
     if(path==='/api/data/status'){
       if(onDataStatus){const response=await onDataStatus();if(response)return response;}
@@ -212,6 +213,27 @@ async function mediaHarness(kind,options={}) {
  else await showData(h);
  h.calls.length=0;return h;
 }
+
+function mediaCheckboxes(h,kind) {
+ return kind==='recording'?h.el('recording-bulk-list').children.map(row=>row.children[0])
+  :h.el('sstv-gallery').children.map(row=>row.children[1]?.children[0]).filter(Boolean);
+}
+async function mediaBulkHarness(kind,count=3,options={}) {
+ const h=await mediaHarness(kind,options);
+ if(kind==='recording') {
+  h.status.recordings.files=Array.from({length:count},(_,i)=>recordingEntry(`clip-${i}.wav`,{delete_revision:String(i%10).repeat(64)}));
+  h.status.recordings.count=count;h.status.recordings.total_bytes=count*4096;
+  h.ctx.testApi.recordings(structuredClone(h.status.recordings));h.ctx.testApi.selectRecording('clip-0.wav');
+ } else {
+  setSstv(h,{images:Array.from({length:count},(_,i)=>sstvImage(i.toString(16).padStart(32,'0'),{revision:String(i%10).repeat(64),can_delete:true}))});
+ }
+ h.calls.length=0;return h;
+}
+async function selectMediaAll(h,kind,value=true) {
+ const checkbox=h.el(`${kind==='recording'?'recording':'sstv'}-select-all`);checkbox.checked=value;await checkbox.dispatch('change');
+}
+async function reviewBulkMedia(h,kind) { await h.el(`${kind==='recording'?'recording':'sstv'}-delete-selected`).dispatch('click'); }
+
 function messageHarness(options={}) {
  return pairHarness({...options,messages:{messages:[messageEntry()],...options.messages}});
 }
@@ -237,6 +259,130 @@ function dashboardMarkup() {
   return{html,ids,nodes,inside};
 }
 (async()=>{
+  await check('Bulk media controls start hidden, use native checkboxes, and share the permanent-delete dialog',async()=>{
+    const {ids}=dashboardMarkup();
+    for(const prefix of['recording','sstv']) {
+      assert.ok(Object.hasOwn(ids.get(`${prefix}-bulk-controls`).attrs,'hidden'));
+      assert.equal(ids.get(`${prefix}-select-all`).attrs.type,'checkbox');
+      assert.equal(ids.get(`${prefix}-delete-selected`).attrs['aria-controls'],'media-delete-dialog');
+    }
+    assert.equal(ids.get('media-delete-items').tag,'ul');
+  });
+  for(const kind of['recording','image']) {
+    const prefix=kind==='recording'?'recording':'sstv';
+    await check(`${kind} bulk selection is admin-only and cannot be forced while signed out`,async()=>{
+      const h=await mediaBulkHarness(kind,3,{preview:true});
+      assert.equal(h.el(`${prefix}-bulk-controls`).hidden,true);await selectMediaAll(h,kind);await reviewBulkMedia(h,kind);await h.el('media-delete-apply').dispatch('click');
+      assert.equal(h.el(`${prefix}-selected-count`).textContent,'0 selected');assert.equal(h.posts().length,0);assert.equal(h.el('media-delete-dialog').open,false);
+    });
+    await check(`${kind} checkbox selection is separate from playback or the image viewer`,async()=>{
+      const h=await mediaBulkHarness(kind);const source=kind==='recording'?h.el('recording-audio').src:h.el('sstv-selected-image').attrs.src;
+      const checkbox=mediaCheckboxes(h,kind)[1];checkbox.checked=true;await checkbox.dispatch('change');
+      assert.equal(h.el(`${prefix}-selected-count`).textContent,'1 selected');assert.equal(h.el(`${prefix}-select-all`).indeterminate,true);
+      assert.equal(kind==='recording'?h.el('recording-audio').src:h.el('sstv-selected-image').attrs.src,source);assert.equal(h.posts().length,0);
+    });
+    await check(`${kind} Select all reviews every filename with total size and Cancel sends no request`,async()=>{
+      const h=await mediaBulkHarness(kind);await selectMediaAll(h,kind);await reviewBulkMedia(h,kind);
+      assert.match(h.el('media-delete-title').textContent,/Delete 3/);assert.match(h.el('media-delete-description').textContent,/3 selected.*total/);
+      assert.equal(h.el('media-delete-items').children.length,3);assert.equal(h.el('media-delete-items').hidden,false);
+      for(const row of h.el('media-delete-items').children)assert.match(row.textContent,kind==='recording'?/clip-[0-2]\.wav/:/[0-9a-f]{32}\.png/);
+      await h.el('media-delete-cancel').dispatch('click');assert.equal(h.el('media-delete-items').children.length,0);assert.equal(h.posts().length,0);
+    });
+    await check(`${kind} confirmed bulk deletion posts one bounded ID/revision list after fresh inventory`,async()=>{
+      const h=await mediaBulkHarness(kind);await selectMediaAll(h,kind);const entries=kind==='recording'?h.status.recordings.files:h.status.sstv.images;
+      const expected=entries.map(item=>({id:item.id,revision:kind==='recording'?item.delete_revision:item.revision}));await reviewBulkMedia(h,kind);await h.el('media-delete-apply').dispatch('click');
+      assert.deepEqual(h.calls.map(call=>call.path),[`/api/${kind==='recording'?'recordings':'sstv'}/status`,`/api/${kind==='recording'?'recordings':'sstv'}/delete-many`]);
+      assert.equal(h.posts().length,1);assert.deepEqual(JSON.parse(h.posts()[0].options.body),{items:expected});assert.equal(h.posts()[0].options.headers['X-CSRF-Token'],'token-1');
+      assert.equal(h.el(`${prefix}-selected-count`).textContent,'0 selected');assert.match(h.el(`${prefix}-delete-message`).textContent,/3 .* deleted\.$/);
+    });
+    await check(`${kind} any changed revision invalidates the entire reviewed batch before POST`,async()=>{
+      const h=await mediaBulkHarness(kind);await selectMediaAll(h,kind);await reviewBulkMedia(h,kind);
+      h.onMediaStatus=()=>{if(kind==='recording')h.status.recordings.files[2].delete_revision='f'.repeat(64);else h.status.sstv.images[2].revision='f'.repeat(64);};
+      await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('media-delete-dialog').open,false);assert.match(h.el(`${prefix}-delete-message`).textContent,/changed or is no longer available/);
+    });
+    await check(`${kind} changing checkbox selection invalidates an open bulk confirmation`,async()=>{
+      const h=await mediaBulkHarness(kind);await selectMediaAll(h,kind);await reviewBulkMedia(h,kind);const checkbox=mediaCheckboxes(h,kind)[1];checkbox.checked=false;await checkbox.dispatch('change');
+      assert.equal(h.el('media-delete-dialog').open,false);await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el(`${prefix}-selected-count`).textContent,'2 selected');
+    });
+    await check(`${kind} selecting no files disables bulk deletion and cannot open a forced dialog`,async()=>{
+      const h=await mediaBulkHarness(kind);await selectMediaAll(h,kind);await selectMediaAll(h,kind,false);await reviewBulkMedia(h,kind);
+      assert.equal(h.el(`${prefix}-delete-selected`).disabled,true);assert.equal(h.el('media-delete-dialog').open,false);assert.equal(h.posts().length,0);
+    });
+    for(const [name,interrupt]of[
+      ['Cancel',h=>h.el('media-delete-cancel').dispatch('click')],
+      ['Escape',h=>h.el('media-delete-dialog').dispatch('cancel')],
+      ['sign out',h=>h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null})],
+      ['session replacement',h=>h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'new-session'})],
+      ['another tab',h=>h.ctx.testApi.tab('overview')],
+      ['selection event',h=>selectMediaAll(h,kind,false)],
+    ])await check(`${kind} bulk preflight interrupted by ${name} cannot send a late POST`,async()=>{
+      const h=await mediaBulkHarness(kind);await selectMediaAll(h,kind);await reviewBulkMedia(h,kind);let release;
+      h.onMediaStatus=()=>new Promise(resolve=>{release=resolve;});const pending=h.el('media-delete-apply').dispatch('click');await interrupt(h);
+      release({ok:true,json:async()=>kind==='recording'?({recordings:structuredClone(h.status.recordings),recorder:h.status.recorder}):({sstv:structuredClone(h.status.sstv)})});await pending;
+      assert.equal(h.posts().length,0);if(name==='sign out'||name==='session replacement')assert.equal(h.el(`${prefix}-selected-count`).textContent,'0 selected');
+    });
+    await check(`${kind} partial bulk results retain eligible failed files and require another review`,async()=>{
+      const h=await mediaBulkHarness(kind);await selectMediaAll(h,kind);await reviewBulkMedia(h,kind);
+      const entries=kind==='recording'?h.status.recordings.files:h.status.sstv.images, removed=entries[0].id, failed=entries.slice(1).map(item=>({id:item.id,reason:'storage_error'}));
+      h.onMediaDelete=()=>{
+        if(kind==='recording')h.status.recordings.files=h.status.recordings.files.filter(item=>item.id!==removed);else h.status.sstv.images=h.status.sstv.images.filter(item=>item.id!==removed);
+        return{ok:true,json:async()=>({...kind==='recording'?{recordings:structuredClone(h.status.recordings),recorder:h.status.recorder}:{sstv:structuredClone(h.status.sstv)},deletion:{deleted:[removed],failed}})};
+      };
+      await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,1);assert.equal(h.el(`${prefix}-selected-count`).textContent,'2 selected');
+      assert.match(h.el(`${prefix}-delete-message`).textContent,/1 of 3 files deleted.*storage error.*Review/);assert.equal(h.el('media-delete-dialog').open,false);assert.equal(h.el(`${prefix}-delete-selected`).disabled,false);
+      await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,1);
+    });
+    await check(`${kind} deleted files with durability warnings stay removed and unselected`,async()=>{
+      const h=await mediaBulkHarness(kind);await selectMediaAll(h,kind);await reviewBulkMedia(h,kind);const ids=(kind==='recording'?h.status.recordings.files:h.status.sstv.images).map(item=>item.id);
+      h.onMediaDelete=()=>{
+        if(kind==='recording')h.status.recordings.files=[];else h.status.sstv.images=[];
+        return{ok:true,json:async()=>({...kind==='recording'?{recordings:structuredClone(h.status.recordings),recorder:h.status.recorder}:{sstv:structuredClone(h.status.sstv)},deletion:{deleted:ids,failed:[{id:ids[0],reason:'durability_unconfirmed'}]}})};
+      };
+      await h.el('media-delete-apply').dispatch('click');assert.equal(h.el(`${prefix}-selected-count`).textContent,'0 selected');assert.match(h.el(`${prefix}-delete-message`).textContent,/storage confirmation is pending/);assert.equal(h.posts().length,1);
+    });
+  }
+  for(const kind of['recording','image'])await check(`${kind} bulk deletion cannot be resurrected by an older full status response`,async()=>{
+    const h=await mediaBulkHarness(kind);await selectMediaAll(h,kind);let release;
+    h.onStatus=()=>new Promise(resolve=>{release=resolve;});const snapshot=h.ctx.testApi.refresh();const old=structuredClone(kind==='recording'?h.status.recordings:h.status.sstv);
+    await reviewBulkMedia(h,kind);await h.el('media-delete-apply').dispatch('click');if(kind==='recording')h.status.recordings=old;else h.status.sstv=old;release();await snapshot;
+    assert.equal(h.posts().length,1);assert.equal(h.el(`${kind==='recording'?'recording':'sstv'}-selected-count`).textContent,'0 selected');
+    if(kind==='recording'){assert.equal(h.el('recordings-empty').hidden,false);assert.equal(h.el('recording-player').hidden,true);}else{assert.equal(h.el('sstv-gallery').children.length,0);assert.equal(h.el('sstv-selected-image').attrs.src,undefined);}
+  });
+  await check('Checkbox focus targets survive unchanged inventory refreshes',async()=>{
+    const h=await mediaBulkHarness('recording');const checkbox=mediaCheckboxes(h,'recording')[1];checkbox.checked=true;await checkbox.dispatch('change');h.ctx.testApi.recordings(structuredClone(h.status.recordings));
+    assert.equal(mediaCheckboxes(h,'recording')[1],checkbox);assert.equal(checkbox.checked,true);
+  });
+  await check('A bulk deletion with an unreadable outcome blocks duplicate POSTs until refresh',async()=>{
+    const h=await mediaBulkHarness('recording');await selectMediaAll(h,'recording');await reviewBulkMedia(h,'recording');h.onMediaDelete=()=>{throw new TypeError('connection lost');};
+    await h.el('media-delete-apply').dispatch('click');await reviewBulkMedia(h,'recording');await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,1);assert.equal(h.el('recording-delete-selected').disabled,true);
+    assert.match(h.el('recording-delete-message').textContent,/Refresh to check/);await h.ctx.testApi.refresh();assert.equal(h.el('recording-delete-selected').disabled,false);
+  });
+  for(const kind of['recording','image'])await check(`${kind} single-item bulk selection uses singular review and success labels`,async()=>{
+    const h=await mediaBulkHarness(kind,1),prefix=kind==='recording'?'recording':'sstv',noun=kind==='recording'?'recording':'picture';
+    assert.match(h.el(`${prefix}-selection-help`).textContent,new RegExp(`1 saved ${noun} can be selected`));
+    await selectMediaAll(h,kind);await reviewBulkMedia(h,kind);assert.equal(h.el('media-delete-title').textContent,`Delete 1 ${noun}?`);
+    await h.el('media-delete-apply').dispatch('click');assert.equal(h.el(`${prefix}-delete-message`).textContent,`1 ${noun} deleted.`);
+  });
+  await check('Recording Select all excludes active, unsafe, refused and revisionless files',async()=>{
+    const h=await mediaBulkHarness('recording',5);h.status.recorder.current_file='clip-1.wav.part';h.status.recordings.files[2].delete_revision=null;h.status.recordings.files[3].can_delete=false;h.status.recordings.files[4]=recordingEntry('../unsafe.wav');
+    h.ctx.testApi.status(structuredClone(h.status));h.ctx.testApi.recordings(structuredClone(h.status.recordings));await selectMediaAll(h,'recording');assert.equal(h.el('recording-selected-count').textContent,'1 selected');assert.equal(mediaCheckboxes(h,'recording').filter(input=>input.disabled).length,4);
+    await reviewBulkMedia(h,'recording');assert.equal(h.el('media-delete-items').children.length,1);
+  });
+  await check('SSTV Select all excludes a picture still being received or missing a valid revision',async()=>{
+    const h=await mediaBulkHarness('image');h.status.sstv.phase='receiving';h.status.sstv.current=sstvCurrent({id:h.status.sstv.images[0].id});h.status.sstv.images[1].revision=null;h.ctx.testApi.status(structuredClone(h.status));h.ctx.testApi.dataState();
+    await selectMediaAll(h,'image');assert.equal(h.el('sstv-selected-count').textContent,'1 selected');assert.equal(mediaCheckboxes(h,'image').filter(input=>input.disabled).length,2);
+  });
+  await check('Recording bulk selection caps at 100, explains the limit and leaves later files unselected',async()=>{
+    const h=await mediaBulkHarness('recording',102);await selectMediaAll(h,'recording');assert.equal(h.el('recording-selected-count').textContent,'100 selected');assert.match(h.el('recording-selection-help').textContent,/first 100.*100 per batch/);
+    assert.equal(mediaCheckboxes(h,'recording').filter(input=>input.checked).length,100);assert.equal(mediaCheckboxes(h,'recording')[100].disabled,true);
+    mediaCheckboxes(h,'recording')[100].checked=true;await mediaCheckboxes(h,'recording')[100].dispatch('change');assert.equal(h.el('recording-selected-count').textContent,'100 selected');
+    await reviewBulkMedia(h,'recording');assert.equal(h.el('media-delete-items').children.length,100);await h.el('media-delete-apply').dispatch('click');assert.equal(JSON.parse(h.posts()[0].options.body).items.length,100);
+  });
+  await check('Bulk deleting other audio clips preserves the currently playing recording',async()=>{
+    const h=await mediaBulkHarness('recording');h.ctx.testApi.selectRecording('clip-2.wav');const source=h.el('recording-audio').src,pauses=h.el('recording-audio').pauseCount;
+    for(const checkbox of mediaCheckboxes(h,'recording').slice(0,2)){checkbox.checked=true;await checkbox.dispatch('change');}
+    await reviewBulkMedia(h,'recording');await h.el('media-delete-apply').dispatch('click');assert.equal(h.el('recording-audio').src,source);assert.equal(h.el('recording-audio').pauseCount,pauses);assert.equal(h.el('recording-player').hidden,false);
+  });
   await check('Saved-media delete controls are admin-only and use a permanent-delete confirmation dialog',async()=>{
     const {ids}=dashboardMarkup();
     for(const id of['recording-delete','sstv-delete']){assert.equal(ids.get(id).tag,'button');assert.equal(ids.get(id).attrs['aria-controls'],'media-delete-dialog');assert.equal(ids.get(id).attrs['aria-haspopup'],'dialog');assert.ok(Object.hasOwn(ids.get(id).attrs,'hidden'));}
@@ -781,6 +927,16 @@ function dashboardMarkup() {
   await check('A first installation still shows actionable station and radio setup rather than claiming live operation',async()=>{
     const h=harness();const status={version:'0.13.1',is_pi:true,svxlink:{installed:true,mode:'bench',state:'active',transmit_control:'disabled'},setup:{rf_enabled:false},audio:{capture:[],playback:[]},network:{hotspot_active:false},wifi_visibility:{profile_hidden:null},live_audio:{configured:false,last_packet_at:null}};
     h.ctx.testApi.setup(status,{configured:false,authenticated:false,csrf_token:null});h.ctx.testApi.operation(status);assert.equal(h.el('phase-badge').textContent,'Station setup');assert.equal(h.el('commissioning-title').textContent,'Complete station setup');assert.equal(h.el('checklist-aioc').hidden,false);assert.equal(h.el('checklist-radio').hidden,false);assert.equal(h.el('audio-setup-help').hidden,false);assert.equal(h.el('admin-setup-help').hidden,false);
+  });
+  await check('DTMF help advertises decoding options only when the native bridge supports them',async()=>{
+    const h=harness();assert.doesNotMatch(h.el('dtmf-help').textContent,/4 for|5 for/);assert.equal(h.el('dtmf-data-help').hidden,false);
+    h.status.dtmf_control.data_controls={available:true,protocol:2,message:''};h.ctx.testApi.status(structuredClone(h.status));
+    assert.match(h.el('dtmf-help').textContent,/0 to hear current settings.*4 for APRS decoding, or 5 for SSTV decoding/);assert.equal(h.el('dtmf-data-help').hidden,true);
+    await h.el('dtmf-enabled').dispatch('click');assert.match(h.el('dtmf-confirm-description').textContent,/APRS decoding, and SSTV decoding/);assert.equal(h.posts().length,0);
+  });
+  await check('Changed native DTMF decoding capability invalidates a reviewed menu enable',async()=>{
+    const h=harness();h.status.dtmf_control.data_controls={available:true,protocol:2};h.ctx.testApi.status(structuredClone(h.status));await h.el('dtmf-enabled').dispatch('click');
+    h.status.dtmf_control.data_controls={available:false,protocol:1};await h.el('dtmf-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);assert.doesNotMatch(h.el('dtmf-help').textContent,/4 for|5 for/);
   });
   await check('Compact DTMF help includes current settings and all three change options',async()=>{
     const {html,inside}=dashboardMarkup();assert.equal(inside('dtmf-help','dtmf-menu-help'),true);assert.equal(inside('dtmf-code-form','dtmf-password-tools'),true);
