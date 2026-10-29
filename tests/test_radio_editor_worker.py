@@ -371,6 +371,107 @@ class EditorDriverTests(unittest.TestCase):
     def request(self, number, action, **extra):
         return {"request_id": f"{number:032x}", "role": "rx", "action": action, **({"catalog_digest": DIGEST} if action == "program" else {}), **extra}
 
+    def test_live_service_read_only_work_pauses_then_restores_only_prior_live_service(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state, backups = Path(temporary) / "state", Path(temporary) / "backups"
+            state.mkdir(); backups.mkdir()
+            instance, hardware, active, enabled = self.make_worker(state, backups)
+            active.clear(); active.add("repeater-live.service")
+            enabled.clear(); enabled.add("repeater-live.service")
+            download = hardware.download
+
+            def read_while_paused(*args):
+                self.assertFalse(active)
+                return download(*args)
+
+            with mock.patch.object(hardware, "download", side_effect=read_while_paused):
+                result = instance.run(self.request(1, "inspect"), CONFIG)
+            self.assertTrue(result["success"], result)
+            self.assertEqual(active, {"repeater-live.service"})
+            self.assertEqual(enabled, active)
+
+    def test_live_service_failed_read_only_release_is_durable_and_recovers_by_exact_saved_read(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state, backups = Path(temporary) / "state", Path(temporary) / "backups"
+            state.mkdir(); backups.mkdir()
+            instance, hardware, active, enabled = self.make_worker(state, backups)
+            active.clear(); active.add("repeater-live.service")
+            enabled.clear(); enabled.add("repeater-live.service")
+            with mock.patch.object(hardware, "release", side_effect=OSError("private port error")):
+                result = instance.run(self.request(1, "inspect"), CONFIG)
+            self.assertFalse(result["success"], result)
+            self.assertTrue(result["verification_required"])
+            self.assertNotIn("private port error", result["message"])
+            self.assertFalse(active); self.assertFalse(enabled)
+            saved = json.loads((backups / "state.json").read_text())["rx"]
+            self.assertTrue(saved["verification_required"])
+            self.assertFalse(saved["verified"])
+            self.assertEqual(saved["release_backup_id"], f"{1:032x}")
+            self.assertEqual(saved["resume_services"], ["repeater-live.service"])
+            self.assertEqual(saved["resume_enabled"], ["repeater-live.service"])
+
+            recovered = worker.Worker(hardware, state, backups, service=instance.service, owner_uid=os.getuid())
+            recovered.catalog = CATALOG
+            with mock.patch.object(hardware, "download", wraps=hardware.download) as download:
+                self.assertFalse(recovered.run(self.request(2, "inspect"), CONFIG)["success"])
+                download.assert_not_called()
+            for number in range(3, 9):
+                self.assertTrue(recovered.run(self.request(number, "editor-read"), CONFIG)["success"])
+            self.assertEqual(recovered.private["rx"]["release_backup_id"], f"{1:032x}")
+            self.assertTrue((backups / f"{1:032x}" / "original.img").is_file())
+            self.assertLessEqual(len(list(backups.glob("*/manifest.json"))), 5)
+            self.assertFalse(active); self.assertFalse(enabled)
+            result = recovered.run(self.request(9, "verify"), CONFIG)
+            self.assertTrue(result["success"], result)
+            self.assertFalse(recovered.private["rx"]["verification_required"])
+            self.assertNotIn("release_verification_required", recovered.private["rx"])
+            self.assertEqual(active, {"repeater-live.service"})
+            self.assertEqual(enabled, active)
+
+    def test_verified_upload_with_failed_release_preserves_candidate_and_keeps_live_disabled(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state, backups = Path(temporary) / "state", Path(temporary) / "backups"
+            state.mkdir(); backups.mkdir()
+            instance, hardware, active, enabled = self.make_worker(state, backups)
+            active.clear(); active.add("repeater-live.service")
+            enabled.clear(); enabled.add("repeater-live.service")
+            self.assertTrue(instance.run(self.request(1, "editor-read"), CONFIG)["success"])
+            with mock.patch.object(hardware, "release", side_effect=OSError):
+                result = instance.run(self.request(2, "editor-write", base_id=f"{1:032x}",
+                                                   changes=[self.row()], settings={}), CONFIG)
+            self.assertFalse(result["success"], result)
+            self.assertTrue(result["verification_required"])
+            self.assertFalse(active); self.assertFalse(enabled)
+            saved = json.loads((backups / "state.json").read_text())["rx"]
+            self.assertEqual(saved["program_id"], f"{2:032x}")
+            self.assertTrue((backups / saved["program_id"] / "candidate.img").is_file())
+            recovered = worker.Worker(hardware, state, backups, service=instance.service, owner_uid=os.getuid())
+            recovered.catalog = CATALOG
+            result = recovered.run(self.request(3, "verify"), CONFIG)
+            self.assertTrue(result["success"], result)
+            self.assertEqual(active, {"repeater-live.service"})
+            self.assertEqual(enabled, active)
+
+    def test_recovery_read_cannot_replace_failed_release_comparison_or_restart_live_on_drift(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state, backups = Path(temporary) / "state", Path(temporary) / "backups"
+            state.mkdir(); backups.mkdir()
+            instance, hardware, active, enabled = self.make_worker(state, backups)
+            active.clear(); active.add("repeater-live.service")
+            enabled.clear(); enabled.add("repeater-live.service")
+            with mock.patch.object(hardware, "release", side_effect=OSError):
+                instance.run(self.request(1, "inspect"), CONFIG)
+            changed = bytearray(hardware.current); changed[0x1F80] ^= 1
+            hardware.current = bytes(changed)
+            self.assertTrue(instance.run(self.request(2, "editor-read"), CONFIG)["success"])
+            result = instance.run(self.request(3, "verify"), CONFIG)
+            self.assertFalse(result["success"], result)
+            self.assertTrue(result["verification_required"])
+            self.assertFalse(active); self.assertFalse(enabled)
+            saved = json.loads((backups / "state.json").read_text())["rx"]
+            self.assertTrue(saved["verification_required"])
+            self.assertEqual(saved["release_backup_id"], f"{1:032x}")
+
     def test_read_write_transaction_private_base_verified_export_and_progress(self):
         with tempfile.TemporaryDirectory() as temporary:
             state, backups = Path(temporary) / "state", Path(temporary) / "backups"

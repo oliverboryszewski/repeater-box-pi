@@ -1,11 +1,12 @@
 #!/usr/bin/python3
-"""Run fixed receive-only/bench SvxLink config without retaining RF digits."""
+"""Run fixed installed SvxLink configurations without retaining RF digits."""
 import re
 import signal
 import subprocess
 import sys
 
-CONFIGS = frozenset(("/etc/repeater-box/svxlink-bench.conf", "/etc/repeater-box/svxlink-rx-monitor.conf"))
+CONFIGS = frozenset(("/etc/repeater-box/svxlink-bench.conf", "/etc/repeater-box/svxlink-rx-monitor.conf",
+                     "/etc/repeater-box/svxlink-live.conf"))
 SENSITIVE = re.compile(r"(?:\bdigit=[0-9A-F*#]|dtmf_(?:cmd|digit)_received|Processing macro command:|Macro command found:|DTMF command|DTMF digit)")
 
 
@@ -37,5 +38,5 @@ def run(config):
 
 if __name__ == "__main__":
     if len(sys.argv) != 2 or sys.argv[1] not in CONFIGS:
-        sys.exit("Use one installed bench or receive-monitor configuration.")
+        sys.exit("Use one fixed installed bench, receive-monitor, or live configuration.")
     sys.exit(run(sys.argv[1]))

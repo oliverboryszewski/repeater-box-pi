@@ -131,7 +131,7 @@ CATALOG_PATH = Path("/etc/repeater-box/channel-pairs.json")
 LOCK_PATH = Path("/opt/repeater-box/.maintenance.lock")
 VENDOR_PATH = Path("/opt/repeater-box/vendor/chirp")
 CHIRP_COMMIT = "0b4076d9b19a2a133d11f31546cff8153b39eb89"
-SERVICES = ("repeater-engine.service", "repeater-rx-monitor.service")
+SERVICES = ("repeater-engine.service", "repeater-rx-monitor.service", "repeater-live.service")
 KNOWN_IDENT = bytes.fromhex("aa307604000520dd")
 KNOWN_FIRMWARE_PREFIX = b"HN5RV011"
 GLOBAL_SETTINGS = {
@@ -1270,6 +1270,8 @@ class Worker:
         protected.update(item.get("editor_base_id") for item in self.private.values() if isinstance(item, dict))
         protected.update(item.get("superseded_program_id") for item in self.private.values()
                          if isinstance(item, dict) and item.get("verification_required"))
+        protected.update(item.get("release_backup_id") for item in self.private.values()
+                         if isinstance(item, dict) and item.get("release_verification_required"))
         protected.update(item.get("repair_source_id") for item in self.private.values()
                          if isinstance(item, dict) and (item.get("programmed") or item.get("verification_required")))
         pair = self.private.get("_pair")
@@ -1653,7 +1655,7 @@ class Worker:
         progress.radio_metrics = True
 
         active, enabled, write_started, verified, radio = [], [], False, False, None
-        verify_attempted, recovery_write, replacement_ready = False, False, False
+        verify_attempted, recovery_write, replacement_ready, release_failed = False, False, False, False
         saved_repair, repair_metadata = None, {}
         try:
             progress(message=result["message"], force=True)
@@ -1753,15 +1755,27 @@ class Worker:
                 verified = True  # Read-only work may safely restore previous services.
             elif action == "verify":
                 program_id = previous.get("program_id")
-                if not isinstance(program_id, str) or len(program_id) != 32 or any(c not in "0123456789abcdef" for c in program_id):
+                if previous.get("release_verification_required") and not program_id:
+                    # A read-only session can fail to close without creating an
+                    # upload candidate. Reconnect against that exact saved read;
+                    # subsequent editor reads must not replace this comparison.
+                    program_id = previous.get("release_backup_id")
+                    if not isinstance(program_id, str) or not REQUEST_RE.fullmatch(program_id):
+                        raise ProgrammingError("The unclosed radio session needs local review; no saved comparison is available.")
+                    original = self.hardware.load(self.backup_dir / program_id / "original.img")
+                    candidate = original
+                elif isinstance(program_id, str) and REQUEST_RE.fullmatch(program_id):
+                    original = self.hardware.load(self.backup_dir / program_id / "original.img")
+                    candidate = self.hardware.load(self.backup_dir / program_id / "candidate.img")
+                else:
                     raise ProgrammingError("No saved candidate exists for this radio. Inspect it locally before continuing.")
-                original = self.hardware.load(self.backup_dir / program_id / "original.img")
-                candidate = self.hardware.load(self.backup_dir / program_id / "candidate.img")
                 self.save_observed(radio, self.backup_dir / program_id)
                 verify_attempted = True
                 verify_images(original, candidate, radio)
                 self.private[role] = {**previous, "verification_required": False, "verified": True,
                                       "verification_message": ""}
+                self.private[role].pop("release_verification_required", None)
+                self.private[role].pop("release_backup_id", None)
                 if previous.get("program_kind") == "editor":
                     verified_path = self.backup_dir / program_id / "verified.img"
                     radio.save_mmap(str(verified_path))
@@ -1911,9 +1925,28 @@ class Worker:
             try:
                 self.hardware.release(radio)
             except Exception:
-                result["message"] += " Disconnect and power-cycle the radio to release its programming connection."
+                release_failed, verified = True, False
+                message = "A radio programming connection did not close. Disconnect and power-cycle the radio, then verify its saved comparison. Radio services remain paused."
+                still_enabled = [name for name in SERVICES if self.service("is-enabled", name)]
+                state = self.private.get(role, previous)
+                state.update(device=device, verified=False, verification_required=True,
+                             release_verification_required=True,
+                             release_backup_id=state.get("release_backup_id") or state.get("backup_id"),
+                             verification_message=message,
+                             resume_services=list(dict.fromkeys([*state.get("resume_services", []), *active])),
+                             resume_enabled=list(dict.fromkeys([*state.get("resume_enabled", []), *enabled, *still_enabled])))
+                self.private[role] = state
+                # Disable boot-time starts even when publishing the durable
+                # interlock itself fails; never resume on this error path.
+                try:
+                    self.publish()
+                finally:
+                    for name in still_enabled:
+                        self.service("disable", name)
+                result.update(success=False, phase="verification-required", verification_required=True,
+                              message=message, progress=None)
             any_unverified = any(item.get("verification_required") for item in self.private.values() if isinstance(item, dict))
-            should_resume = not any_unverified and (verified or not write_started)
+            should_resume = not release_failed and not any_unverified and (verified or not write_started)
             if should_resume:
                 resume = active
                 completed_maintenance = verified and action in ("program", "verify", "editor-write", "repair-upload")

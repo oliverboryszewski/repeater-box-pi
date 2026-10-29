@@ -32,7 +32,7 @@ from software_updates import SoftwareUpdates
 from radio_programming import RadioProgramming
 from radio_editor import MODELS
 
-VERSION = "0.9.1"
+VERSION = "0.10.0"
 STATIC = Path(__file__).parent / "static"
 MEDIA_TYPES = {".wav": "audio/wav", ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".flac": "audio/flac"}
 
@@ -171,8 +171,13 @@ class Monitor:
         ssid = command(["nmcli", "-g", "802-11-wireless.ssid", "connection", "show", "repeater-ap"]) if hotspot else None
         state = command(["systemctl", "show", "repeater-engine.service", "--property=ActiveState", "--value"]) if linux else None
         rx_state = command(["systemctl", "show", "repeater-rx-monitor.service", "--property=ActiveState", "--value"]) if linux else None
+        live_state = command(["systemctl", "show", "repeater-live.service", "--property=ActiveState", "--value"]) if linux else None
+        rf_enabled = live_state == "active"
         if rx_state == "active":
             state = rx_state
+        if rf_enabled:
+            state = live_state
+        mode = "repeater" if rf_enabled else "receive_only" if rx_state == "active" else "bench"
         installed = bool(shutil.which("svxlink"))
         capture = audio_cards(command(["arecord", "-l"])) if linux else []
         playback = audio_cards(command(["aplay", "-l"])) if linux else []
@@ -182,9 +187,9 @@ class Monitor:
         aioc_count = count_aioc_usb_devices() if linux else None
         clock = command(["timedatectl", "show", "--property=NTPSynchronized", "--value"]) if linux else None
         recordings = media_files(self.recordings)
-        notes = ["Transmission is disabled in the supplied bench and receiver-monitor services.",
+        notes = ["The live repeater service is active." if rf_enabled else "Transmission is disabled in bench and receive-only modes.",
                  "Channel values are the planned radio settings, not live radio telemetry.",
-                 "Recordings appear after live audio and the SvxLink recorder are commissioned."]
+                 "The dashboard does not measure the radio's PTT state."]
         if not is_pi:
             notes.insert(0, "Development preview: this server is not running on a Raspberry Pi.")
         return {"version": VERSION, "hostname": socket.gethostname(), "platform": model or platform.system(),
@@ -195,13 +200,13 @@ class Monitor:
                 "power": power, "network": {"hotspot_active": hotspot, "ssid": ssid,
                     "addresses": addresses, "dashboard_url": "http://10.42.0.1", "internet_required": False},
                 "svxlink": {"installed": installed, "state": state if state else "unavailable",
-                            "mode": "receive_only" if rx_state == "active" else "bench",
-                            "transmit_control": "not_configured"},
+                            "mode": mode, "transmit_control": "enabled" if rf_enabled else "disabled",
+                            "transmitting": None},
                 "audio": {"capture": capture, "playback": playback, "serial_ports": serial,
                           "usb_aioc_count": aioc_count},
                 "recordings": {"count": len(recordings), "total_bytes": sum(f["bytes"] for f in recordings),
                                "files": recordings},
-                "setup": {"phase": "Receive monitor" if rx_state == "active" else "bench", "rf_enabled": False,
+                "setup": {"phase": "Live repeater" if rf_enabled else "Receive monitor" if rx_state == "active" else "bench", "rf_enabled": rf_enabled,
                           "radio_plan": None, "notes": notes},
                 "clock_synchronized": {"yes": True, "no": False}.get(clock)}
 

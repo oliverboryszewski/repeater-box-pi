@@ -1,7 +1,7 @@
 [Unit]
 Description=Repeater Box SvxLink receive-only audio monitor
 After=network.target sound.target repeater-engine.service svxlink.service
-Conflicts=repeater-engine.service svxlink.service
+Conflicts=repeater-engine.service repeater-live.service svxlink.service
 
 [Service]
 Type=simple

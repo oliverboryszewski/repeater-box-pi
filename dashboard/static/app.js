@@ -196,7 +196,7 @@
     setText("tx-frequency", typeof plan.tx_mhz === "string" ? plan.tx_mhz : "—");
     setText("tone-frequency", (typeof plan.tone_hz === "string" || finite(plan.tone_hz)) ? `${plan.tone_hz} Hz` : plan.tone_hz === null ? "Off" : absent);
     setText("radio-power", textOrAbsent(plan.power));
-    pill("phase-badge", data.setup?.phase === "bench" ? "Bench preparation" : textOrAbsent(data.setup?.phase), "amber");
+    pill("phase-badge", data.setup?.phase === "bench" ? "Bench preparation" : textOrAbsent(data.setup?.phase), data.setup?.rf_enabled === true ? "good" : "amber");
     setText("cpu-temp", finite(data.cpu_temp_c) ? `${data.cpu_temp_c.toFixed(1)} °C` : absent);
     setText("cpu-load", finite(data.load_1m) ? `1-minute load ${data.load_1m.toFixed(2)}` : "Load unavailable");
     byId("cpu-temp").classList.toggle("warning-text", finite(data.cpu_temp_c) && data.cpu_temp_c >= 80);
@@ -216,6 +216,7 @@
     const service = serviceStates[svxlink.state] || ["Unavailable", "muted"];
     pill("svxlink-state", ...service);
     setText("svxlink-installed", svxlink.installed === true ? "Installed" : svxlink.installed === false ? "Not installed" : absent);
+    setText("transmit-control", svxlink.transmit_control === "enabled" ? "Enabled" : svxlink.transmit_control === "disabled" ? "Disabled" : absent);
     setText("memory-available", finite(data.memory?.available_bytes) ? `${formatBytes(data.memory.available_bytes)} / ${formatBytes(data.memory.total_bytes)}` : absent);
     setText("clock-status", data.clock_synchronized === true ? "Synchronized" : data.clock_synchronized === false ? "Not synchronized" : absent);
     const audio = data.audio || {};
@@ -671,14 +672,18 @@
     const presets=pairPresets(state);
     const select=byId("radio-pair-select");
     const previous=select.value;
-    select.replaceChildren();
-    if (!presets.length) { const option=document.createElement("option"); option.value=""; option.textContent="Channel pairs unavailable"; select.append(option); }
-    for (const preset of presets) {
-      const option=document.createElement("option"); option.value=preset.id;
-      option.textContent=`${preset.label} · ${preset.name} · ${pairFrequency(preset.input_hz)} → ${pairFrequency(preset.output_hz)}`;
-      select.append(option);
+    const optionsKey=JSON.stringify(presets);
+    if (select.dataset.presetKey !== optionsKey) {
+      select.replaceChildren();
+      if (!presets.length) { const option=document.createElement("option"); option.value=""; option.textContent="Channel pairs unavailable"; select.append(option); }
+      for (const preset of presets) {
+        const option=document.createElement("option"); option.value=preset.id;
+        option.textContent=`${preset.label} · ${preset.name} · ${pairFrequency(preset.input_hz)} → ${pairFrequency(preset.output_hz)}`;
+        select.append(option);
+      }
+      select.dataset.presetKey=optionsKey;
+      select.value=presets.some((preset) => preset.id === previous) ? previous : presets[0]?.id || "";
     }
-    select.value=presets.some((preset) => preset.id === previous) ? previous : presets[0]?.id || "";
     const pair=state?.pair;
     const pairPending=state?.pending === true && state.action === "change-pair";
     const stored=pair?.stored_verified === true && pairRoleVerified(pair,"rx") && pairRoleVerified(pair,"tx");
@@ -860,7 +865,7 @@
       && Array.isArray(capture) && capture.some((card) => card?.id === "AIOC_RX")
       && Array.isArray(playback) && playback.some((card) => card?.id === "AIOC_TX");
     byId("checklist-aioc").hidden = aiocsAssigned;
-    const receiveMonitorReady = data?.svxlink?.mode === "receive_only";
+    const receiveMonitorReady = ["receive_only", "repeater"].includes(data?.svxlink?.mode);
     const audioSeen = typeof data?.live_audio?.last_packet_at === "string" && data.live_audio.last_packet_at.trim() !== "";
     byId("audio-setup-help").hidden = !data || (receiveMonitorReady && audioSeen);
     byId("input-setup-help").hidden = !data || receiveMonitorReady;

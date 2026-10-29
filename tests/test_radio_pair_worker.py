@@ -356,6 +356,36 @@ class PairTransactionTests(unittest.TestCase):
         self.assertFalse(result["verification_required"])
         self.assertEqual(self.active, {"repeater-engine.service"})
 
+    def test_live_service_is_restored_only_after_both_radios_verify_and_release(self):
+        self.active, self.enabled = {"repeater-live.service"}, {"repeater-live.service"}
+        result = self.instance.run(self.request(), CONFIG)
+        self.assertTrue(result["success"], result)
+        start = self.events.index(("start", "repeater-live.service"))
+        self.assertGreater(start, self.events.index(("release", "tx", 3)))
+        self.assertEqual(self.active, {"repeater-live.service"})
+        self.assertEqual(self.enabled, self.active)
+        self.assertNotIn(("start", "repeater-engine.service"), self.events)
+        self.assertNotIn(("start", "repeater-rx-monitor.service"), self.events)
+
+    def test_live_service_stays_disabled_across_failed_pair_and_worker_reload(self):
+        self.active, self.enabled = {"repeater-live.service"}, {"repeater-live.service"}
+        self.hardware.fail_verify = "tx"
+        result = self.instance.run(self.request(), CONFIG)
+        self.assertFalse(result["success"], result)
+        self.assertTrue(result["verification_required"])
+        self.assertFalse(self.active); self.assertFalse(self.enabled)
+        saved = json.loads((self.backups / "state.json").read_text())["_pair"]
+        self.assertEqual(saved["resume_services"], ["repeater-live.service"])
+        self.assertEqual(saved["resume_enabled"], ["repeater-live.service"])
+        recovered = worker.Worker(self.hardware, self.state, self.backups, service=self.instance.service,
+                                  owner_uid=os.getuid(), pair_config_file=self.qualification)
+        recovered.catalog = CATALOG
+        self.hardware.fail_verify = None
+        result = recovered.run(self.request(2), CONFIG)
+        self.assertTrue(result["success"], result)
+        self.assertEqual(self.active, {"repeater-live.service"})
+        self.assertEqual(self.enabled, self.active)
+
     def test_release_failure_before_candidate_preparation_persists_interlock(self):
         self.hardware.fail_download.add(("tx", 1))
         self.hardware.fail_release.add(("rx", 1))

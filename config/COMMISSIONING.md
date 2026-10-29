@@ -25,9 +25,11 @@ The Debian package installs `/usr/share/svxlink/events.tcl` and its supporting T
 1. Keep the TX radio disconnected from its AIOC while discovering interfaces. Label one AIOC RX and the other TX; connect one at a time and save `arecord -l`, `aplay -l`, `ls -l /dev/serial/by-id/`, and `udevadm info` for each. These are discovery commands, not a PTT test.
 2. Confirm each device's USB serial number, USB path, ALSA identity, and tty device. Do not rely on `hw:1`, `hw:2`, or `/dev/ttyACM0` remaining stable after reboot. Two identical audio devices can also collide in their default ALSA names. Establish persistent aliases from the actual observed identities or physical USB paths, then repeat the mapping after a reboot and unplug/replug.
 3. The service account needs `audio` access and permission to the selected serial device, normally through `dialout`. Verify actual permissions. An RX AIOC using software VOX does not need its programming/PTT serial port opened.
-4. Confirm the installed AIOC firmware and settings before using serial PTT. Upstream default firmware from 1.2.0 keys with DTR asserted and RTS clear. SvxLink's later live TX settings are `PTT_TYPE=SerialPin`, `PTT_PIN=DTR`, `SERIAL_SET_PINS=!RTS`, and the TX AIOC's persistent `PTT_PORT`. Opening a serial port may change line states, so initial mapping and behavior checks occur with the radio unplugged.
+4. Confirm the installed AIOC firmware and settings before using serial PTT. Upstream default firmware from 1.2.0 keys with DTR asserted and RTS clear. SvxLink's later live TX settings are `PTT_TYPE=SerialPin`, `PTT_PIN=DTR`, `SERIAL_SET_PINS=!DTR!RTS`, and the TX AIOC's persistent `PTT_PORT`. SvxLink applies the static pin settings in order: clear DTR before RTS, since clearing RTS while DTR remains asserted can key that mapping. Opening a serial port may also change line states, so initial mapping and behavior checks occur with the radio unplugged.
 
 ## Commission receive audio, then transmission
+
+The supported activation procedure is [Live repeater commissioning](LIVE_REPEATER.md). It generates a protected local configuration and checks radio verification before starting the separate live service. The older template below remains a source reference; it is not installed as an active configuration.
 
 1. Keep `TX=NONE` while replacing the bench receiver with the RX AIOC configuration. Set the RX radio's intended input frequency, hardware squelch, and CTCSS decode. Turn radio VOX off and battery saving off. Audio comes from its speaker socket, so the radio has already applied audio filtering/deemphasis; leave `DEEMPHASIS=0` and do not assume its speaker output preserves CTCSS for a second software tone detector.
 2. Start with a consistent RX volume and adjust capture level using real received speech. Avoid clipping; verify that an idle muted radio stays closed. `VOX_THRESH=1000` and `SQL_HANGTIME=1000` are uncalibrated starting values. Software VOX detects audio activity, so long speech pauses may close it and reopen it. Evaluate its delay and first-syllable behavior before calling the repeater ready. A properly supported hardware COS solution could improve this later.
@@ -54,6 +56,7 @@ The configured state PTY is a local text event stream. The command PTY supports 
 - [Upstream 24.02 configuration manual](https://github.com/sm0svx/svxlink/blob/24.02/src/doc/man/svxlink.conf.5)
 - [24.02 receiver factory: NONE creates a dummy receiver](https://github.com/sm0svx/svxlink/blob/24.02/src/svxlink/trx/Rx.cpp)
 - [24.02 transmitter factory: NONE creates a dummy transmitter](https://github.com/sm0svx/svxlink/blob/24.02/src/svxlink/trx/Tx.cpp)
+- [24.02 serial PTT initialization and pin-setting order](https://github.com/sm0svx/svxlink/blob/24.02/src/svxlink/trx/PttSerialPin.cpp)
 - [Upstream English voice language packs](https://github.com/sm0svx/svxlink-sounds-en_US-heather/releases)
 - [AIOC upstream: serial PTT, mono 48 kHz audio, firmware behavior](https://github.com/skuep/AIOC#how-to-use)
 - [NA6D AIOC getting started](https://na6d.com/pages/aioc-getting-started)

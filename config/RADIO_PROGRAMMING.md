@@ -8,7 +8,7 @@ The worker uses pinned upstream CHIRP commit `0b4076d9b19a2a133d11f31546cff8153b
 
 ## Install and bind the interfaces
 
-Connect the Pi to the internet over Ethernet. Download the current repository and rerun `sudo bash scripts/install-pi.sh` as described in the README. Version 0.9.1 adds per-radio settling to paired changes and requires update API 11. This needs a one-time terminal installation; an older browser updater refuses the release before replacing the dashboard. Existing passwords, hotspot, private channel pairs, bindings, qualification, backups, recordings and settings are preserved.
+Connect the Pi to the internet over Ethernet. Download the current repository and rerun `sudo bash scripts/install-pi.sh` as described in the README. Version 0.10.0 adds live-service programming interlocks and requires update API 12. This needs a one-time terminal installation; an older browser updater refuses the release before replacing the dashboard. Existing passwords, hotspot, private channel pairs, bindings, qualification, backups, recordings and settings are preserved.
 
 Keep the assigned AIOCs in their labeled USB ports. Confirm their stable names with:
 

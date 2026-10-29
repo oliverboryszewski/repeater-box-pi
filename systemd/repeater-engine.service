@@ -1,6 +1,7 @@
 [Unit]
 Description=Repeater Box SvxLink bench engine (no radio hardware)
 After=network.target sound.target
+Conflicts=repeater-live.service repeater-rx-monitor.service svxlink.service
 
 [Service]
 Type=simple

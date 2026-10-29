@@ -61,6 +61,37 @@ class USBInventoryTest(unittest.TestCase):
         self.assertEqual(status["audio"]["usb_aioc_count"], 2)
 
 
+class EngineModeTest(unittest.TestCase):
+    def status(self, live="inactive", rx="inactive", bench="inactive"):
+        states = {"repeater-live.service": live, "repeater-rx-monitor.service": rx,
+                  "repeater-engine.service": bench}
+        def read_command(args):
+            return states.get(args[2]) if args[:2] == ["systemctl", "show"] else None
+        with tempfile.TemporaryDirectory() as temporary, \
+                mock.patch.object(dashboard.platform, "system", return_value="Linux"), \
+                mock.patch.object(dashboard, "read_text", return_value=None), \
+                mock.patch.object(dashboard, "command", side_effect=read_command), \
+                mock.patch.object(dashboard, "count_aioc_usb_devices", return_value=2):
+            return dashboard.Monitor(temporary).status()
+
+    def test_active_live_service_reports_rf_enabled_without_claiming_ptt_telemetry(self):
+        status = self.status(live="active")
+        self.assertEqual(status["svxlink"]["mode"], "repeater")
+        self.assertEqual(status["svxlink"]["state"], "active")
+        self.assertEqual(status["svxlink"]["transmit_control"], "enabled")
+        self.assertIsNone(status["svxlink"]["transmitting"])
+        self.assertEqual(status["setup"]["phase"], "Live repeater")
+        self.assertTrue(status["setup"]["rf_enabled"])
+
+    def test_inactive_failed_or_starting_live_service_does_not_claim_rf_active(self):
+        for state in ("inactive", "failed", "activating", None):
+            with self.subTest(state=state):
+                status = self.status(live=state, rx="active")
+                self.assertEqual(status["svxlink"]["mode"], "receive_only")
+                self.assertEqual(status["svxlink"]["transmit_control"], "disabled")
+                self.assertFalse(status["setup"]["rf_enabled"])
+
+
 class DashboardHTTPTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

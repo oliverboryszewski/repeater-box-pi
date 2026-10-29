@@ -1,6 +1,6 @@
 # Repeater Box — Pi dashboard
 
-Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.9.1.
+Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.10.0.
 
 Source: [GitHub repository](https://github.com/oliverboryszewski/repeater-box-pi).
 
@@ -158,7 +158,9 @@ Then sign in under **Settings / Admin**, select **Enable receiver audio feed**, 
 
 The feed contains **incoming RX speaker audio**, sent locally by SvxLink as mono **48 kHz float32 little-endian PCM**. It is tapped before SvxLink software squelch, gain processing, and DTMF muting, so hardware squelch/CTCSS and speaker level matter. Control tones or idle noise passed by the radio may be audible. Outgoing IDs and transmit messages are not included. [The live-audio guide](config/LIVE_AUDIO.md#primary-references) links the official SvxLink source and configuration references behind this arrangement.
 
-Optional **[radio DTMF control](config/DTMF_CONTROL.md)** controls spoken status after actions and recording on/off. It is off by default and uses a separate six-character password, configured in Admin or privately on the Pi. Its alphabet is `0–9` and uppercase `A–D`; `#` submits a step and `*` cancels. SvxLink decodes the received tones using its existing audio device; the dashboard does not open another AIOC input. The receive-only monitor keeps `TX=NONE` and `NO_REPEAT=1`, so commands do not produce an on-air voice response at this stage. Radio repeating, real PTT, callsign/ID and timed messages remain separate commissioning work. The full live repeater configuration is a reference only and is not activated by the installer or dashboard.
+Optional **[radio DTMF control](config/DTMF_CONTROL.md)** controls spoken status after actions and recording on/off. It is off by default and uses a separate six-character password, configured in Admin or privately on the Pi. Its alphabet is `0–9` and uppercase `A–D`; `#` submits a step and `*` cancels. SvxLink decodes the received tones using its existing audio device; the dashboard does not open another AIOC input. The receive-only monitor keeps `TX=NONE` and `NO_REPEAT=1`, so commands do not produce an on-air voice response at this stage.
+
+After separate receive-audio and transmit key/release/audio tests pass, follow **[Live repeater commissioning](config/LIVE_REPEATER.md)**. The separate `repeater-live.service` uses private station configuration, synthesized CW identification, the existing receiver feed and restricted DTMF menu. Installation leaves live RF stopped; activation is a deliberate local terminal step. Radio programming pauses this service and leaves it paused if verification or connection release fails. Remote pair changes can resume the previously active live service only after both radios verify against the authorized private catalog.
 
 ## Recording and station settings
 
@@ -216,7 +218,7 @@ Setup guidance appears only while the related setup is incomplete. Password inst
 
 ## Updating an installed box
 
-Version 0.9.1 requires rerunning the Pi installer once (update API 11). It installs the radio helper's per-radio settling behavior together with the matching dashboard. Reading the partner radio counts toward its five-second quiet interval; immediate reuse still waits for the remaining time, and same-radio upload and verification delays remain. Download the current bundle using section 3 and rerun the installer; existing passwords, hotspot, private channel pairs, radio bindings, backups, recordings and settings are preserved. Older browser updaters refuse this release before replacing the dashboard. Do not rerun password or hotspot setup when those are already working. Later dashboard updates compatible with API 11 can use the browser updater again.
+Version 0.10.0 requires rerunning the Pi installer once (update API 12). It installs the optional live service, private configuration guards, CW identification policy and programming interlocks together with the matching dashboard. Download the current bundle using section 3 and rerun the installer; existing passwords, hotspot, private channel pairs, radio bindings, backups, recordings and settings are preserved. Older browser updaters refuse this release before replacing the dashboard. An existing live service is stopped and disabled during a manual installation; review the result and deliberately start it again, then re-enable boot startup if appropriate. Do not rerun password or hotspot setup when those are already working. Later dashboard updates compatible with API 12 can use the browser updater again.
 
 During an upgrade, the installer migrates an older installed channel table into the private Pi catalog before replacing that helper. An existing valid private catalog is retained. Migration preserves the existing frequencies, tones and pair order, while assigning generic pair labels and the numbered `BOX-RXn` / `BOX-TXn` radio names. Device qualification and protected backups remain intact. Saving or migrating a catalog does not rename physical radio memories: review and program the default pair afterward to apply the new names. A fresh installation supplies no implicit frequencies; run the local configuration command above.
 
@@ -262,7 +264,7 @@ sudo nmcli connection up "YOUR_SAVED_HOME_WIFI_PROFILE"
 To stop this project's services:
 
 ```bash
-sudo systemctl disable --now repeater-dashboard.service repeater-engine.service repeater-rx-monitor.service repeater-wifi-visibility.path repeater-software-update.path repeater-radio-programming.path
+sudo systemctl disable --now repeater-dashboard.service repeater-engine.service repeater-rx-monitor.service repeater-live.service repeater-wifi-visibility.path repeater-software-update.path repeater-radio-programming.path
 ```
 
 Keep the vendor SvxLink service masked until its configuration is reviewed separately. Installation itself does not program a radio.

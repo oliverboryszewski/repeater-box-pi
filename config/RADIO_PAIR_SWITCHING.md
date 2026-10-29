@@ -20,9 +20,9 @@ This command does not program radios or enable transmission. Resolve unfinished 
 
 ## Install the matching helper
 
-Version **0.9.1 / update API 11** requires downloading the current bundle and rerunning `sudo bash scripts/install-pi.sh` from its directory on the Pi. See the [README installation steps](../README.md#3-download-and-install-this-package). This installs the per-radio settling helper; older browser updaters refuse the release before replacing the dashboard.
+Version **0.10.0 / update API 12** requires downloading the current bundle and rerunning `sudo bash scripts/install-pi.sh` from its directory on the Pi. See the [README installation steps](../README.md#3-download-and-install-this-package). This installs the live-service guards and updated programming interlocks; older browser updaters refuse the release before replacing the dashboard.
 
-The installer preserves passwords, hotspot configuration, device bindings, qualification, backups, archives and saved settings. It migrates an older installed channel table into the private catalog before replacing the helper, using generic pair labels and the numbered radio names. An existing valid private catalog is kept. A fresh installation has no implicit pairs and requires the terminal command above. Saving or migrating a catalog does not alter radio memories; review and program the first configured pair when ready to apply its new names. Later dashboard updates compatible with API 11 can use the browser updater.
+The installer preserves passwords, hotspot configuration, device bindings, qualification, backups, archives and saved settings. It migrates an older installed channel table into the private catalog before replacing the helper, using generic pair labels and the numbered radio names. An existing valid private catalog is kept. A fresh installation has no implicit pairs and requires the terminal command above. Saving or migrating a catalog does not alter radio memories; review and program the first configured pair when ready to apply its new names. Later dashboard updates compatible with API 12 can use the browser updater.
 
 ## Check live reload behavior locally
 

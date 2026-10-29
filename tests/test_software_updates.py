@@ -31,7 +31,7 @@ def payload(version="0.3.0"):
 
 def archive(files=None, manifest=None, extra=()):
     files = payload() if files is None else files
-    manifest = {"version": "0.3.0", "update_api": 11} if manifest is None else manifest
+    manifest = {"version": "0.3.0", "update_api": 12} if manifest is None else manifest
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w:gz") as stream:
         directory = tarfile.TarInfo("project-sha")
@@ -335,7 +335,7 @@ class SoftwareUpdateWorkerTest(unittest.TestCase):
             extra.append((member, content))
         selected, manifest = worker.read_archive(archive(extra=extra))
         self.assertEqual(set(selected), set(worker.ALLOWED_FILES))
-        self.assertEqual(manifest, {"version": "0.3.0", "update_api": 11})
+        self.assertEqual(manifest, {"version": "0.3.0", "update_api": 12})
 
     def test_archive_traversal_symlinks_hardlinks_devices_duplicates_and_mixed_roots_fail(self):
         for name, kind in (("project-sha/../../etc/passwd", tarfile.REGTYPE),
@@ -366,8 +366,9 @@ class SoftwareUpdateWorkerTest(unittest.TestCase):
                       archive(manifest={"version": "0.3.0", "update_api": 8}),
                       archive(manifest={"version": "0.3.0", "update_api": 9}),
                       archive(manifest={"version": "0.3.0", "update_api": 10}),
-                      archive(manifest={"version": "0.3.0", "update_api": 12}),
-                      archive(manifest={"version": "0.4.0", "update_api": 11})):
+                      archive(manifest={"version": "0.3.0", "update_api": 11}),
+                      archive(manifest={"version": "0.3.0", "update_api": 13}),
+                      archive(manifest={"version": "0.4.0", "update_api": 12})):
             with self.subTest(size=len(value)), self.assertRaises(worker.UpdateError):
                 worker.read_archive(value)
 
@@ -422,7 +423,7 @@ class SoftwareUpdateWorkerTest(unittest.TestCase):
         invalid = payload()
         invalid["dashboard/controls.py"] = b"def invalid syntax!!!\n"
         with self.assertRaises(worker.UpdateError):
-            self.installer().install(invalid, {"version": "0.3.0", "update_api": 11}, COMMIT)
+            self.installer().install(invalid, {"version": "0.3.0", "update_api": 12}, COMMIT)
         self.assertEqual(self.actions, [])
         self.assertTrue((self.live / "old-marker").exists())
 
@@ -509,13 +510,13 @@ class SoftwareUpdateWorkerTest(unittest.TestCase):
     def test_untrusted_or_symlinked_install_directories_are_rejected_before_commands(self):
         self.live.chmod(0o777)
         with self.assertRaises(worker.UpdateError):
-            self.installer().install(payload(), {"version": "0.3.0", "update_api": 11}, COMMIT)
+            self.installer().install(payload(), {"version": "0.3.0", "update_api": 12}, COMMIT)
         self.assertEqual(self.actions, [])
         self.live.chmod(0o755)
         self.live.rename(self.root / "real-dashboard")
         self.live.symlink_to(self.root / "real-dashboard", target_is_directory=True)
         with self.assertRaises(worker.UpdateError):
-            self.installer().install(payload(), {"version": "0.3.0", "update_api": 11}, COMMIT)
+            self.installer().install(payload(), {"version": "0.3.0", "update_api": 12}, COMMIT)
         self.assertEqual(self.actions, [])
 
     def test_root_ledger_deduplicates_requests_independently_of_app_result(self):

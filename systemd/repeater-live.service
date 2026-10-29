@@ -1,0 +1,26 @@
+[Unit]
+Description=Repeater Box locally commissioned radio repeater
+After=network.target sound.target repeater-engine.service repeater-rx-monitor.service svxlink.service
+Conflicts=repeater-engine.service repeater-rx-monitor.service svxlink.service
+
+[Service]
+Type=simple
+User=svxlink
+Group=svxlink
+SupplementaryGroups=audio dialout repeater-recordings repeater-control
+RuntimeDirectory=repeater-box
+RuntimeDirectoryMode=0750
+ExecStartPre=+/usr/bin/python3 /opt/repeater-box/scripts/check-live-config.py /etc/repeater-box/svxlink-live.conf
+ExecStart=/usr/bin/python3 /opt/repeater-box/scripts/run-svxlink.py /etc/repeater-box/svxlink-live.conf
+Restart=no
+TimeoutStopSec=10
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+RestrictSUIDSGID=true
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target
