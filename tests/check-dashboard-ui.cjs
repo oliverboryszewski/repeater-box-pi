@@ -468,8 +468,15 @@ function dashboardMarkup() {
     const bar=html.match(/<progress[^>]*id="software-check-progress-bar"[^>]*>/)[0];
     assert.match(bar,/aria-label="Checking for software updates"/);assert.match(bar,/aria-describedby="software-check-progress-note"/);
     assert.doesNotMatch(bar,/\b(?:value|max)=/);assert.match(html,/<div[^>]*id="software-check-progress"[^>]*hidden/);
+    const editor=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/radio-editor.html'),'utf8');
+    for(const [document,ids]of[[html,['software-check-progress-bar','radio-progress-bar','radio-message-job-progress']],[editor,['task-progress-bar']]])for(const id of ids){
+      const progress=document.match(new RegExp('<progress[^>]*id="'+id+'"[^>]*>'))[0];assert.match(progress,/class="task-progress"/);
+      if(id==='radio-progress-bar'||id==='task-progress-bar')assert.match(progress,/max="100"/);
+      else assert.doesNotMatch(progress,/\b(?:value|max)=/);
+    }
+    assert.match(editor,/<link[^>]*href="\/style\.css"/);
     const css=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/style.css'),'utf8');
-    assert.match(css,/@media\(prefers-reduced-motion:reduce\)\{\.software-check-progress progress\{animation:none/);
+    assert.match(css,/@media\(prefers-reduced-motion:reduce\)\{\.task-progress:indeterminate\{animation:none/);
     const h=harness();assert.equal(h.el('software-check-progress').hidden,true);assert.equal(h.el('software-updates-card').attrs['aria-busy'],'false');
   });
   await check('Progress appears immediately during the check POST and stays active while the worker checks',async()=>{

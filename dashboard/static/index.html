@@ -162,7 +162,7 @@
                 <div class="radio-message-actions"><button type="button" class="button primary" id="radio-message-broadcast" aria-haspopup="dialog" aria-controls="radio-message-confirm-dialog" disabled>Broadcast once</button><button type="button" class="button secondary" id="radio-message-delete" aria-haspopup="dialog" aria-controls="radio-message-confirm-dialog" disabled>Delete saved message</button></div>
               </div>
               <p class="help-text" id="radio-messages-empty">No saved messages yet.</p>
-              <div class="radio-message-job" id="radio-message-job" hidden role="status" aria-live="polite"><strong id="radio-message-job-phase"></strong><progress id="radio-message-job-progress" aria-label="Message preparation or playback is in progress"></progress><p class="help-text" id="radio-message-job-detail"></p></div>
+              <div class="radio-message-job" id="radio-message-job" hidden role="status" aria-live="polite"><strong id="radio-message-job-phase"></strong><progress class="task-progress" id="radio-message-job-progress" aria-label="Message preparation or playback is in progress"></progress><p class="help-text" id="radio-message-job-detail"></p></div>
               <p class="form-message" id="radio-message-message" role="status" aria-live="polite"></p>
             </section>
             <section class="card" id="station-id-card" aria-labelledby="station-id-title">
@@ -245,7 +245,7 @@
         <dl class="detail-list software-update-details"><div><dt>Installed version</dt><dd id="software-current-version">Unavailable</dd></div><div><dt>Latest version</dt><dd id="software-latest-version">Not checked</dd></div><div><dt>Last checked</dt><dd id="software-checked-at">Not checked</dd></div></dl>
         <p class="help-text">Updates the dashboard app. Wi-Fi, passwords, saved settings, archives, and radio configuration are preserved.</p>
         <div class="software-update-actions" id="software-update-actions"><button type="button" class="button secondary" id="software-check" disabled>Check for updates</button><button type="button" class="button primary" id="software-install" aria-haspopup="dialog" aria-controls="software-confirm-dialog" disabled>Update software</button></div>
-        <div class="software-check-progress" id="software-check-progress" hidden><progress id="software-check-progress-bar" aria-label="Checking for software updates" aria-describedby="software-check-progress-note"></progress><p class="help-text" id="software-check-progress-note">Checking GitHub for the latest dashboard version…</p></div>
+        <div class="software-check-progress" id="software-check-progress" hidden><progress class="task-progress" id="software-check-progress-bar" aria-label="Checking for software updates" aria-describedby="software-check-progress-note"></progress><p class="help-text" id="software-check-progress-note">Checking GitHub for the latest dashboard version…</p></div>
         <p class="help-text" id="software-updates-lock-note">Admin sign-in required to manage updates</p>
         <p class="form-message" id="software-updates-message" role="status" aria-live="polite">Checking software update status…</p>
       </section>
@@ -265,7 +265,7 @@
         <p class="help-text" id="radio-programming-backup" hidden></p>
         <div class="radio-progress-panel" id="radio-progress-panel" hidden>
           <div class="radio-progress-heading"><strong id="radio-progress-phase">Waiting</strong><span id="radio-progress-count"></span></div>
-          <progress id="radio-progress-bar" max="100" aria-labelledby="radio-progress-phase" aria-describedby="radio-progress-count"></progress>
+          <progress class="task-progress" id="radio-progress-bar" max="100" aria-labelledby="radio-progress-phase" aria-describedby="radio-progress-count"></progress>
           <p class="help-text" id="radio-progress-note">Progress is for the current step. Keep the radio connected and powered.</p>
           <details id="radio-progress-log"><summary>Activity log</summary><pre id="radio-progress-events" role="log" aria-live="polite" aria-relevant="text"></pre></details>
         </div>

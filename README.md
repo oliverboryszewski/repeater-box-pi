@@ -1,6 +1,6 @@
 # Repeater Box — Pi dashboard
 
-Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.11.2.
+Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.11.3.
 
 Source: [GitHub repository](https://github.com/oliverboryszewski/repeater-box-pi).
 
@@ -221,6 +221,8 @@ The visibility worker log is available with `journalctl -u repeater-wifi-visibil
 Setup guidance appears only while the related setup is incomplete. Password instructions disappear once an admin password exists, including while signed out. Wi-Fi instructions and checklist step 2 disappear once the hotspot profile exists, including when it is inactive. Checklist step 1 disappears when the installed software is running on the Pi. AIOC assignment and radio commissioning remain on the checklist; USB detection alone does not complete either step. The first-audio guidance disappears after the receive monitor is running and the dashboard has received audio during this service run. Fresh installations show the relevant instructions again.
 
 ## Updating an installed box
+
+Version 0.11.3 applies the same progress animation to update checks, radio programming, the radio editor and audio-message jobs. Measured progress keeps its actual fill and completed percentage bars stay static. It remains compatible with update API 17.
 
 Version 0.11.2 adds an indeterminate progress bar and lightweight status polling while checking for updates. It uses API 17 and can be installed from Admin without stopping the live repeater.
 

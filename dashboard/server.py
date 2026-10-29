@@ -37,7 +37,7 @@ from radio_editor import MODELS
 from native_state import NativeState
 from radio_messages import RadioMessages, MessageError, MAX_UPLOAD_BYTES, upload_name
 
-VERSION = "0.11.2"
+VERSION = "0.11.3"
 STATIC = Path(__file__).parent / "static"
 STATIC_ROUTES = {
     "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
