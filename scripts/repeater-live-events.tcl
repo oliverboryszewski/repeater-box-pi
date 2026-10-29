@@ -24,7 +24,7 @@ namespace eval RepeaterLogic {
   }
 }
 # At 20 WPM each unit is 60 ms. Leave headroom inside the commissioned
-# 15-second native TX timeout for TX delay, silence and event scheduling.
+# native TX timeout for TX delay, silence and event scheduling.
 if {[RepeaterLogic::box_live_cw_units $mycall] > 166} {
   error "The local callsign exceeds the initial CW identification time limit"
 }
@@ -52,6 +52,17 @@ namespace eval RepeaterLogic {
   variable box_live_dtmf_until -1
   variable box_live_manual_pending 0
   variable box_live_control_results {}
+  variable box_live_active_prompt_id ""
+  variable box_live_prompt_started 0
+  variable box_message_job ""
+  variable box_message_state idle
+  variable box_message_sequence 0
+  variable box_message_seen {}
+  variable box_invocation ""
+  if {[info exists ::env(INVOCATION_ID)]
+      && [regexp {^[0-9a-f]{32}$} $::env(INVOCATION_ID)]} {
+    set box_invocation $::env(INVOCATION_ID)
+  }
 
   # Tcl 8.6 clock clicks -milliseconds aliases wall time. Linux uptime supplies
   # an elapsed clock unaffected by NTP changes; no external command is run.
@@ -64,6 +75,69 @@ namespace eval RepeaterLogic {
       error "The live identification elapsed clock is unavailable"
     }
     return [expr {wide(double($seconds) * 1000)}]
+  }
+
+  proc box_live_publish {} {
+    variable box_invocation; variable box_live_online; variable box_rx_open
+    variable box_live_tx_on; variable box_live_up; variable box_live_identifying
+    variable box_live_prompt_queued; variable box_live_control_results; variable box_live_dtmf_until
+    variable box_message_job; variable box_message_state; variable box_message_sequence
+    if {![regexp {^[0-9a-f]{32}$} $box_invocation]} { return }
+    set folder /run/repeater-message-status
+    # Only non-secret state is exported. Failure must never block radio audio.
+    if {[catch {file lstat $folder info}] || $info(type) ne "directory"
+        || ($info(mode) & 0022) != 0} { return }
+    set busy [expr {$box_live_up || $box_live_identifying || $box_live_prompt_queued
+                    || [llength $box_live_control_results] > 0
+                    || [box_live_now] < $box_live_dtmf_until
+                    || $box_message_state in {accepted playing}}]
+    set text [format {{"schema":1,"invocation_id":"%s","heartbeat_ms":%d,"online":%s,"rx_open":%s,"tx_on":%s,"control_busy":%s,"message_job":"%s","message_state":"%s","message_sequence":%d}} \
+      $box_invocation [box_live_now] [expr {$box_live_online ? "true" : "false"}] \
+      [expr {$box_rx_open ? "true" : "false"}] [expr {$box_live_tx_on ? "true" : "false"}] \
+      [expr {$busy ? "true" : "false"}] $box_message_job $box_message_state $box_message_sequence]
+    set temporary [file join $folder ".state.[pid].tmp"]
+    set handle ""
+    if {[catch {
+      file attributes $folder -permissions 0755
+      set handle [open $temporary {WRONLY CREAT EXCL}]
+      file attributes $temporary -permissions 0644
+      puts $handle $text
+      close $handle
+      set handle ""
+      file rename -force $temporary [file join $folder state.json]
+    }]} {
+      if {$handle ne ""} { catch {close $handle} }
+      catch {file delete $temporary}
+    }
+  }
+
+  proc box_message {invocation job} {
+    variable box_invocation; variable box_message_job; variable box_message_state
+    variable box_message_sequence; variable box_message_seen
+    if {![regexp {^[0-9a-f]{32}$} $invocation]
+        || ![regexp {^[0-9a-f]{32}$} $job] || $invocation ne $box_invocation} { return }
+    if {$job in $box_message_seen} { return }
+    lappend box_message_seen $job
+    set box_message_seen [lrange $box_message_seen end-63 end]
+    if {![box_live_safe_idle]} {
+      # The dispatcher never queues a future transmission on a busy channel.
+      if {$box_message_state ni {accepted playing}} {
+        set box_message_job $job; set box_message_state rejected_busy
+        incr box_message_sequence; box_live_publish
+      }
+      return
+    }
+    set box_message_job $job
+    set path [file join /run/repeater-message-playback "$job.wav"]
+    if {[catch {file lstat $path info}] || $info(type) ne "file" || $info(uid) != 0
+        || ($info(mode) & 0022) != 0 || $info(size) < 46 || $info(size) > 1000000} {
+      set box_message_state failed; incr box_message_sequence; box_live_publish
+      return
+    }
+    set box_message_state accepted; incr box_message_sequence; box_live_publish
+    if {[catch {playFile $path}]} {
+      set box_message_state failed; incr box_message_sequence; box_live_publish
+    }
   }
 
   proc box_live_read_auto {} {
@@ -117,9 +191,11 @@ namespace eval RepeaterLogic {
     variable box_live_identifying; variable box_live_prompt_queued
     variable box_live_dtmf_until; variable box_rx_open
     variable box_live_control_results
+    variable box_message_state
     return [expr {$box_live_online && !$box_live_up && !$box_live_tx_on
                   && !$box_live_identifying && !$box_live_prompt_queued
                   && [llength $box_live_control_results] == 0
+                  && $box_message_state ni {accepted playing}
                   && !$box_rx_open && [box_live_now] >= $box_live_dtmf_until}]
   }
 
@@ -148,6 +224,7 @@ namespace eval RepeaterLogic {
       set box_live_last_id_queued_at [box_live_now]
     }
     # Deliberately silent; do not register the stock wall-clock ID scheduler.
+    box_live_publish
   }
 
   proc logic_online {online} {
@@ -155,6 +232,8 @@ namespace eval RepeaterLogic {
     variable box_live_prompt_queued; variable box_live_dtmf_until
     variable box_live_manual_pending
     variable box_live_control_results
+    variable box_message_state; variable box_message_sequence
+    variable box_live_prompt_started; variable box_live_active_prompt_id
     set box_live_online [expr {$online == 1}]
     if {!$box_live_online} {
       box_live_clear_conversation
@@ -163,7 +242,13 @@ namespace eval RepeaterLogic {
       set box_live_dtmf_until -1
       set box_live_manual_pending 0
       set box_live_control_results {}
+      set box_live_prompt_started 0
+      set box_live_active_prompt_id ""
+      if {$box_message_state in {accepted playing}} {
+        set box_message_state failed; incr box_message_sequence
+      }
     }
+    box_live_publish
   }
 
   proc repeater_up {reason} {
@@ -185,20 +270,41 @@ namespace eval RepeaterLogic {
   proc transmit {is_on} {
     variable box_live_tx_on; variable box_live_identifying
     variable box_live_pending; variable box_live_prompt_queued
+    variable box_live_active_prompt_id; variable box_live_dtmf_until
+    variable box_live_prompt_started
+    variable box_message_state; variable box_message_sequence
     set box_live_tx_on [expr {$is_on == 1}]
     if {$box_live_tx_on} {
+      if {$box_live_prompt_queued} { set box_live_prompt_started 1 }
+      if {$box_message_state eq "accepted"} {
+        set box_message_state playing; incr box_message_sequence
+      }
       if {!$box_live_identifying} { box_live_activity }
     } else {
       set was_identifying $box_live_identifying
       set had_prompt $box_live_prompt_queued
+      set finished_prompt [expr {$had_prompt && $box_live_prompt_started}]
       set box_live_identifying 0
-      set box_live_prompt_queued 0
+      if {!$had_prompt || $finished_prompt} { set box_live_prompt_queued 0 }
+      if {$box_message_state eq "playing"} {
+        set box_message_state finished; incr box_message_sequence
+      }
+      if {$finished_prompt && [regexp {^[0-9a-f]{32}$} $box_live_active_prompt_id]} {
+        set box_live_dtmf_until [expr {[box_live_now] + 30000}]
+        catch {exec /usr/bin/python3 /opt/repeater-box/scripts/dtmf-client.py \
+          --prompt-finished $box_live_active_prompt_id &}
+      }
+      if {!$had_prompt || $finished_prompt} {
+        set box_live_active_prompt_id ""
+        set box_live_prompt_started 0
+      }
       if {!$was_identifying || $box_live_pending || $had_prompt} {
         box_live_activity
       }
       # No audio is queued here. Native PttCtrl still has teardown work after
       # this callback; the next second tick is the earliest safe scheduling point.
     }
+    box_live_publish
   }
 
   rename squelch_open box_live_shared_squelch_open
@@ -208,6 +314,7 @@ namespace eval RepeaterLogic {
     if {$is_open || $box_live_pending || $box_live_up || $box_live_tx_on} {
       box_live_activity
     }
+    box_live_publish
   }
 
   rename dtmf_digit_received box_live_shared_dtmf_digit_received
@@ -229,34 +336,41 @@ namespace eval RepeaterLogic {
   }
 
   rename box_control_result box_live_shared_control_result
-  proc box_control_result {result pair_index recording announce_status identification_enabled} {
+  proc box_control_result {result pair_index recording announce_status identification_enabled {prompt_id -}} {
     variable box_live_online; variable box_live_dtmf_until
     variable box_live_control_results
     if {!$box_live_online
         || $result ni {status authenticated choose_status choose_recording choose_identification status_on status_off recording_on recording_off identification_on identification_off cancelled invalid expired busy unavailable}
         || ![string is integer -strict $pair_index] || $pair_index < 0 || $pair_index > 9
         || $recording ni {0 1} || $announce_status ni {0 1} || $identification_enabled ni {0 1}
+        || ![regexp {^(-|[0-9a-f]{32})$} $prompt_id]
         || [llength $box_live_control_results] >= 4} { return }
     if {$result in {authenticated choose_status choose_recording choose_identification}} {
-      set box_live_dtmf_until [expr {[box_live_now] + 30000}]
+      set box_live_dtmf_until [expr {[box_live_now] + ($prompt_id eq "-" ? 30000 : 45000)}]
     } elseif {$result in {status status_on status_off recording_on recording_off identification_on identification_off cancelled invalid expired busy unavailable}} {
       set box_live_dtmf_until -1
     }
-    lappend box_live_control_results [list $result $pair_index $recording $announce_status $identification_enabled]
+    lappend box_live_control_results [list $result $pair_index $recording $announce_status $identification_enabled $prompt_id]
+    box_live_publish
   }
 
   proc box_live_flush_control_result {} {
     variable box_live_online; variable box_live_up; variable box_live_tx_on
     variable box_live_identifying; variable box_live_prompt_queued
     variable box_rx_open; variable box_live_control_results
+    variable box_live_active_prompt_id; variable box_message_state
+    variable box_live_prompt_started
     if {!$box_live_online || $box_live_up || $box_live_tx_on || $box_rx_open
         || $box_live_identifying || $box_live_prompt_queued
+        || $box_message_state in {accepted playing}
         || [llength $box_live_control_results] == 0} { return }
     set response [lindex $box_live_control_results 0]
     set box_live_control_results [lrange $box_live_control_results 1 end]
-    # Incoming DTMF may have used most of the native 15-second TX timer. Start
+    # Incoming DTMF may have used part of the native TX timer. Start
     # every reply from a fresh idle transmitter; never append it to that turn.
     set box_live_prompt_queued 1
+    set box_live_prompt_started 0
+    set box_live_active_prompt_id [lindex $response 5]
     box_live_shared_control_result {*}$response
   }
 
@@ -294,6 +408,7 @@ namespace eval RepeaterLogic {
     box_tick
     box_live_flush_control_result
     box_live_id_tick
+    box_live_publish
   }
 
   proc manual_identification {} {

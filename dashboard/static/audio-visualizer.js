@@ -140,18 +140,18 @@
 
   function refresh() {
     if (canAnimate()) {
-      setStatus("Live receiver audio · local playback");
+      setStatus("Live radio audio · local playback");
       if (frame === null) frame = window.requestAnimationFrame(tick);
       return;
     }
     cancelFrame();
     draw();
     if (failed) setStatus("Audio visualization is unavailable. Listening still works.");
-    else if (state === "stopped") setStatus("Start listening to view receiver audio.");
+    else if (state === "stopped") setStatus("Start listening to view radio audio.");
     else if (muted) setStatus("Muted on this device");
     else if (graph && graph.context.state !== "running") setStatus("Audio paused on this device");
-    else if (state === "connecting") setStatus("Waiting for receiver audio…");
-    else setStatus("Waiting for receiver audio");
+    else if (state === "connecting") setStatus("Waiting for radio audio…");
+    else setStatus("Waiting for radio audio");
   }
 
   window.addEventListener("repeater-live-audio", (event) => {

@@ -1,13 +1,14 @@
-"""One local SvxLink audio tap for Wi-Fi listening and optional RX archives.
+"""Local SvxLink audio taps for Wi-Fi listening and optional audio archives.
 
 SvxLink 24.02 LocalRx RAW_AUDIO_UDP_DEST is a headerless stream of native float32
 samples at CARD_SAMPLE_RATE, before its software squelch and DTMF muting.
 On a Raspberry Pi that is float32 little-endian.  The supplied live template
 uses 48 kHz mono.  This module never opens ALSA, serial ports, or PTT.
 
-The archive is an independent audio-level-triggered RX recording, not SvxLink's
-QSO recorder or a recording of the transmit mix.  The radio must mute its own
-speaker output when squelched.  Threshold calibration is still required.
+The optional native transmit monitor is 48 kHz mono signed 16-bit little-endian
+PCM on a separate loopback port. In live mode it replaces, rather than sums
+with, raw RX audio because the native transmit mix already includes repeated
+speech. This is generated audio monitoring, not an off-air RF measurement.
 """
 from __future__ import annotations
 
@@ -18,6 +19,7 @@ import math
 from pathlib import Path
 import queue
 import re
+import select
 import shutil
 import socket
 import stat
@@ -31,6 +33,7 @@ import wave
 class AudioHub:
     HOST = "127.0.0.1"
     PORT = 7355
+    TX_PORT = 7356
     SAMPLE_RATE = 48000
     CHANNELS = 1
     STREAM_FORMAT = "f32le"
@@ -41,6 +44,10 @@ class AudioHub:
     PREROLL_FRAMES = SAMPLE_RATE // 2
     HANG_SECONDS = 3.0
     NO_PACKET_SECONDS = 5.0
+    PREROLL_GAP_SECONDS = 0.5
+    MODE_CACHE_SECONDS = 0.2
+    RECEIVE_BATCH = 8
+    DRAIN_BATCH = 64
     MAX_CLIP_SECONDS = 15 * 60
     FREE_DISK_FLOOR = 256 * 1024 * 1024
     FREE_DISK_BUFFER = 16 * 1024 * 1024
@@ -48,7 +55,7 @@ class AudioHub:
     ARCHIVE_NAME = re.compile(r"^rx_\d{8}_\d{6}_[0-9a-f]{12}\.wav$")
 
     def __init__(self, recordings_path, settings, *, monotonic=None,
-                 wall_time=None, disk_usage=None):
+                 wall_time=None, disk_usage=None, live_mode_probe=None):
         self.recordings_path = Path(recordings_path)
         self._clock = monotonic or time.monotonic
         self._wall_time = wall_time or time.time
@@ -56,7 +63,9 @@ class AudioHub:
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread = None
+        # Retain the RX socket alias for existing local integrations.
         self._socket = None
+        self._sockets = {"raw_rx": None, "tx_mix": None}
         self._started = False
         self._closed = False
         self._settings = self._clean_settings(settings)
@@ -65,8 +74,16 @@ class AudioHub:
         self._last_packet_mono = None
         self._last_packet_at = None
         self._input_error = None
+        self._source_errors = {name: None for name in self._sockets}
+        self._bind_errors = {name: None for name in self._sockets}
+        self._source_last_mono = {name: None for name in self._sockets}
+        self._source_last_at = {name: None for name in self._sockets}
+        self._source = "raw_rx"
+        self._live_mode_probe = live_mode_probe
+        self._mode_next_at = float("-inf")
+        self._mode_error = None
         self._recorder_error = None
-        self._retry_at = 0.0
+        self._retry_at = {name: 0.0 for name in self._sockets}
         self._preroll = deque()
         self._preroll_frames = 0
         self._wave = None
@@ -91,6 +108,7 @@ class AudioHub:
                 return default
 
         return {"input_enabled": bool(settings.get("input_enabled", False)),
+                "monitor_transmit_audio": settings.get("monitor_transmit_audio", True) is True,
                 "record_on_startup": bool(settings.get("record_on_startup", False)),
                 "keep_indefinitely": settings.get("keep_indefinitely", False) is True,
                 "retention_days": int(number("retention_days", 7, 1, 90)),
@@ -110,43 +128,129 @@ class AudioHub:
             self._thread.start()
 
     def _bind_locked(self):
-        if self._socket is not None or self._closed or not self._settings["input_enabled"]:
+        if self._closed or not self._settings["input_enabled"]:
             return
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        for source, port in (("raw_rx", self.PORT), ("tx_mix", self.TX_PORT)):
+            if self._sockets[source] is not None or self._clock() < self._retry_at[source]:
+                continue
+            sock = None
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                # No SO_REUSEADDR: another hub must not silently take an input.
+                sock.bind((self.HOST, port))
+                sock.setblocking(False)
+            except OSError as exc:
+                if sock is not None:
+                    sock.close()
+                self._bind_errors[source] = f"Cannot receive local {source} audio on {self.HOST}:{port}: {exc}"
+                self._retry_at[source] = self._clock() + 5
+                continue
+            self._sockets[source] = sock
+            if source == "raw_rx":
+                self._socket = sock
+            self._bind_errors[source] = None
+
+    def _clear_listener_queues_locked(self):
+        for packets in self._listeners.values():
+            while True:
+                try:
+                    packets.get_nowait()
+                except queue.Empty:
+                    break
+
+    def _drain_inputs_locked(self):
+        """Drop bounded stale UDP backlogs when changing the selected source."""
+        for source, sock in tuple(self._sockets.items()):
+            if sock is None:
+                continue
+            for _ in range(self.DRAIN_BATCH):
+                try:
+                    sock.recvfrom(65535)
+                except (BlockingIOError, OSError):
+                    break
+            else:
+                # A full bounded batch may still leave old datagrams. Replace
+                # only that socket so an arbitrarily large backlog cannot leak
+                # into the newly selected stream or archive.
+                sock.close()
+                self._sockets[source] = None
+                self._retry_at[source] = 0.0
+                if source == "raw_rx":
+                    self._socket = None
+        if self._started:
+            self._bind_locked()
+
+    def _refresh_source_locked(self, force=False):
+        now = self._clock()
+        if not force and now < self._mode_next_at:
+            return
+        self._mode_next_at = now + self.MODE_CACHE_SECONDS
         try:
-            # No SO_REUSEADDR: another hub must not silently take this input.
-            sock.bind((self.HOST, self.PORT))
-            sock.settimeout(0.2)
-        except OSError as exc:
-            sock.close()
-            self._input_error = f"Cannot receive local audio on {self.HOST}:{self.PORT}: {exc}"
-            self._retry_at = self._clock() + 5
+            live = self._live_mode_probe is not None and self._live_mode_probe() is True
+            self._mode_error = None
+        except Exception:
+            live = False
+            self._mode_error = "Cannot determine whether the native transmit monitor is active"
+        source = "tx_mix" if live and self._settings["monitor_transmit_audio"] else "raw_rx"
+        if source != self._source:
+            self._finish_clip_locked()
+            self._clear_preroll_locked()
+            self._clear_listener_queues_locked()
+            self._drain_inputs_locked()
+            self._source = source
+            self._last_packet_mono = None
+            self._last_packet_at = None
+            self._last_voice = None
+
+    def _source_error_locked(self, source):
+        return self._bind_errors[source] or self._source_errors[source] or self._mode_error
+
+    def _receive_failed_locked(self, source, sock, error):
+        if sock is not self._sockets[source] or self._closed:
             return
-        self._socket = sock
-        self._input_error = None
+        sock.close()
+        self._sockets[source] = None
+        if source == "raw_rx":
+            self._socket = None
+        self._bind_errors[source] = f"Local {source} audio receive failed: {error}"
+        self._retry_at[source] = self._clock() + 5
 
     def _run(self):
         while not self._stop.is_set():
             with self._lock:
-                if (self._settings["input_enabled"] and self._socket is None
-                        and self._clock() >= self._retry_at):
-                    self._bind_locked()
-                sock = self._socket
-            if sock is None:
+                self._bind_locked()
+                self._refresh_source_locked()
+                sockets = {sock: source for source, sock in self._sockets.items() if sock is not None}
+            if not sockets:
                 self._stop.wait(0.2)
             else:
                 try:
-                    data, _peer = sock.recvfrom(65535)
-                    self.feed_packet(data)
-                except socket.timeout:
-                    pass
-                except OSError as exc:
+                    ready, _, _ = select.select(list(sockets), [], [], 0.2)
+                except (OSError, ValueError) as exc:
                     with self._lock:
-                        if sock is self._socket and not self._closed:
-                            self._socket = None
-                            sock.close()
-                            self._input_error = f"Local audio receive failed: {exc}"
-                            self._retry_at = self._clock() + 5
+                        current = {sock for sock in self._sockets.values() if sock is not None}
+                        # Closing/replacing sockets during a settings change is
+                        # expected; only fail unchanged descriptors.
+                        if current == set(sockets):
+                            for sock, source in sockets.items():
+                                self._receive_failed_locked(source, sock, exc)
+                    ready = []
+                for sock in ready:
+                    source = sockets[sock]
+                    for _ in range(self.RECEIVE_BATCH):
+                        with self._lock:
+                            self._refresh_source_locked()
+                            if sock is not self._sockets[source]:
+                                break
+                        try:
+                            data, _peer = sock.recvfrom(65535)
+                        except BlockingIOError:
+                            break
+                        except OSError as exc:
+                            with self._lock:
+                                self._receive_failed_locked(source, sock, exc)
+                            break
+                        self._feed_source(source, data)
             self.tick()
 
     def update_settings(self, settings):
@@ -158,15 +262,19 @@ class AudioHub:
             was_enabled = self._settings["input_enabled"]
             self._settings = value
             self._space_retry_at = 0.0
+            self._refresh_source_locked(force=True)
             if not value["input_enabled"]:
                 self._close_socket_locked()
                 self._finish_clip_locked()
                 self._clear_preroll_locked()
                 self._last_packet_mono = None
+                self._last_packet_at = None
                 self._input_error = None
+                self._source_errors = {name: None for name in self._sockets}
+                self._bind_errors = {name: None for name in self._sockets}
                 self._end_listeners_locked()
             elif not was_enabled and self._started:
-                self._retry_at = 0
+                self._retry_at = {name: 0.0 for name in self._sockets}
                 self._bind_locked()
             self._prune_locked()
 
@@ -217,32 +325,68 @@ class AudioHub:
                 pass
 
     def feed_packet(self, data):
-        """Ingest one RAWUDP packet. Public for deterministic offline checks.
+        """Ingest raw RX float32 PCM; empty datagrams are RX flush markers."""
+        return self._feed_source("raw_rx", data)
 
-        Nonempty datagrams must contain complete finite float32 samples.  Empty
-        datagrams are SvxLink flush markers and finalize an open archive clip.
-        Subscriber bytes retain the source float32 format, without a WAV header.
-        """
+    def feed_tx_packet(self, data):
+        """Ingest native TX signed 16-bit PCM; publish only if TX is selected."""
+        return self._feed_source("tx_mix", data)
+
+    def _feed_source(self, source, data):
+        """Validate each source independently; never sum repeated RX and TX."""
         with self._lock:
             if self._closed or not self._settings["input_enabled"]:
                 return False
+            self._refresh_source_locked()
             if not data:
-                self._finish_clip_locked()
-                self._clear_preroll_locked()
+                if source != "raw_rx":
+                    self._source_errors[source] = "Ignored empty transmit PCM packet"
+                    return False
+                if source == self._source:
+                    self._finish_clip_locked()
+                    self._clear_preroll_locked()
                 return True
-            if len(data) % 4 or len(data) > 65504:
-                self._input_error = "Ignored malformed RAWUDP packet (expected complete float32 samples)"
+            width = 4 if source == "raw_rx" else 2
+            if len(data) % width or len(data) > 65504:
+                format_name = "float32" if source == "raw_rx" else "signed 16-bit"
+                self._source_errors[source] = f"Ignored malformed {source} packet (expected complete {format_name} samples)"
                 return False
-            values = array("f")
-            values.frombytes(data)
-            if sys.byteorder != "little":
-                values.byteswap()
-            if any(not math.isfinite(sample) for sample in values):
-                self._input_error = "Ignored RAWUDP packet containing non-finite samples"
-                return False
+            input_pcm = data if source == "tx_mix" else None
+            if source == "raw_rx":
+                values = array("f")
+                values.frombytes(data)
+                if sys.byteorder != "little":
+                    values.byteswap()
+                if any(not math.isfinite(sample) for sample in values):
+                    self._source_errors[source] = "Ignored RAWUDP packet containing non-finite samples"
+                    return False
+            else:
+                integers = array("h")
+                integers.frombytes(data)
+                if sys.byteorder != "little":
+                    integers.byteswap()
+                values = array("f", (sample / 32768.0 for sample in integers))
+                if sys.byteorder != "little":
+                    values.byteswap()
+                    data = values.tobytes()
+                    values.byteswap()
+                else:
+                    data = values.tobytes()
             now = self._clock()
+            self._source_last_mono[source] = now
+            self._source_last_at[source] = dt.datetime.fromtimestamp(self._wall_time(), dt.timezone.utc).isoformat()
+            self._source_errors[source] = None
+            if source != self._source:
+                return True
+            if self._last_packet_mono is not None:
+                gap = now - self._last_packet_mono
+                if gap >= self.PREROLL_GAP_SECONDS:
+                    self._clear_preroll_locked()
+                timeout = self.HANG_SECONDS if source == "tx_mix" else self.NO_PACKET_SECONDS
+                if gap >= timeout:
+                    self._finish_clip_locked()
             self._last_packet_mono = now
-            self._last_packet_at = dt.datetime.fromtimestamp(self._wall_time(), dt.timezone.utc).isoformat()
+            self._last_packet_at = self._source_last_at[source]
             self._input_error = None
             chunk_bytes = self.STREAM_CHUNK_FRAMES * 4
             for offset in range(0, len(data), chunk_bytes):
@@ -255,10 +399,13 @@ class AudioHub:
             rms = math.sqrt(sum(sample * sample for sample in clipped) / len(clipped))
             threshold = 10 ** (self._settings["recording_threshold_dbfs"] / 20)
             voiced = rms >= threshold
-            pcm = array("h", (int(sample * 32767) for sample in clipped))
-            if sys.byteorder != "little":
-                pcm.byteswap()
-            raw_pcm = pcm.tobytes()
+            if input_pcm is not None:
+                raw_pcm = input_pcm
+            else:
+                pcm = array("h", (int(sample * 32767) for sample in clipped))
+                if sys.byteorder != "little":
+                    pcm.byteswap()
+                raw_pcm = pcm.tobytes()
             if voiced:
                 self._last_voice = now
             if self._wave is None:
@@ -442,25 +589,44 @@ class AudioHub:
         with self._lock:
             if self._closed:
                 return
+            self._refresh_source_locked()
             now = self._clock()
-            if (self._wave is not None and self._last_packet_mono is not None
-                    and now - self._last_packet_mono >= self.NO_PACKET_SECONDS):
-                self._finish_clip_locked()
-                self._clear_preroll_locked()
+            if self._last_packet_mono is not None:
+                gap = now - self._last_packet_mono
+                if gap >= self.PREROLL_GAP_SECONDS:
+                    self._clear_preroll_locked()
+                timeout = self.HANG_SECONDS if self._source == "tx_mix" else self.NO_PACKET_SECONDS
+                if self._wave is not None and gap >= timeout:
+                    self._finish_clip_locked()
             if now >= self._next_retention_check:
                 self._prune_locked()
                 self._next_retention_check = now + 60
 
     def status(self):
         with self._lock:
+            self._refresh_source_locked()
+            now = self._clock()
             receiving = (self._settings["input_enabled"] and self._last_packet_mono is not None
-                         and self._clock() - self._last_packet_mono < 2)
+                         and now - self._last_packet_mono < 2)
+            error = self._source_error_locked(self._source)
+            includes_outgoing = (self._settings["input_enabled"] and self._source == "tx_mix"
+                                 and error is None)
+            sources = {name: {
+                "selected": name == self._source,
+                "port": self.PORT if name == "raw_rx" else self.TX_PORT,
+                "format": "f32le" if name == "raw_rx" else "s16le",
+                "receiving": bool(self._settings["input_enabled"] and self._source_last_mono[name] is not None
+                                  and now - self._source_last_mono[name] < 2),
+                "last_packet_at": self._source_last_at[name],
+                "last_error": self._source_error_locked(name),
+            } for name in self._sockets}
             return {"live_audio": {"configured": self._settings["input_enabled"],
                         "receiving": bool(receiving), "sample_rate": self.SAMPLE_RATE,
                         "channels": self.CHANNELS, "format": self.STREAM_FORMAT,
-                        "stream_url": self.STREAM_URL, "source": "raw_rx",
+                        "stream_url": self.STREAM_URL, "source": self._source,
+                        "includes_outgoing": includes_outgoing, "sources": sources,
                         "listeners": len(self._listeners), "last_packet_at": self._last_packet_at,
-                        "last_error": self._input_error},
+                        "last_error": error},
                     "recorder": {"enabled": self._recording, "active": self._wave is not None,
                         "current_file": self._part_path.name if self._part_path else None,
                         "last_error": self._recorder_error, "trigger": "audio_level",
@@ -470,9 +636,11 @@ class AudioHub:
                         "max_archive_mb": self._settings["max_archive_mb"]}}
 
     def _close_socket_locked(self):
-        if self._socket is not None:
-            self._socket.close()
-            self._socket = None
+        for name, sock in self._sockets.items():
+            if sock is not None:
+                sock.close()
+                self._sockets[name] = None
+        self._socket = None
 
     def _end_listeners_locked(self):
         for packets in self._listeners.values():

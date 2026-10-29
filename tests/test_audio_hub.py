@@ -4,6 +4,7 @@ import importlib.util
 import os
 from pathlib import Path
 import queue
+import socket
 import sys
 import tempfile
 import unittest
@@ -19,6 +20,13 @@ AudioHub = module.AudioHub
 
 def packet(value, frames=960):
     samples = array("f", [value] * frames)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    return samples.tobytes()
+
+
+def tx_packet(value, frames=960):
+    samples = array("h", [value] * frames)
     if sys.byteorder != "little":
         samples.byteswap()
     return samples.tobytes()
@@ -407,12 +415,194 @@ class AudioHubTest(unittest.TestCase):
 
     def test_bind_failure_is_reported_and_close_does_not_leak_thread(self):
         with mock.patch.object(module.socket, "socket") as factory:
-            factory.return_value.bind.side_effect = OSError("Address already in use")
+            sockets = [mock.Mock(), mock.Mock()]
+            for sock in sockets:
+                sock.bind.side_effect = OSError("Address already in use")
+            factory.side_effect = sockets
             self.hub.start()
             self.assertIn("Cannot receive", self.hub.status()["live_audio"]["last_error"])
             self.hub.close()
             self.assertFalse(self.hub._thread.is_alive())
-            factory.return_value.close.assert_called_once()
+            for sock in sockets:
+                sock.close.assert_called_once()
+
+    def use_live_probe(self, live=True):
+        state = {"live": live}
+        probe = mock.Mock(side_effect=lambda: state["live"])
+        self.hub._live_mode_probe = probe
+        self.hub._mode_next_at = float("-inf")
+        return state, probe
+
+    def test_transmit_mix_replaces_raw_rx_and_generated_audio_reaches_archive_and_listener(self):
+        self.use_live_probe()
+        _key, listener = self.hub.subscribe()
+        self.hub.set_recording(True)
+        self.assertTrue(self.hub.feed_packet(packet(0.75)))
+        self.assertTrue(listener.empty())
+        generated = tx_packet(8192)
+        self.assertTrue(self.hub.feed_tx_packet(generated))
+        self.assertEqual(listener.get_nowait(), packet(0.25))
+        self.assertTrue(listener.empty())  # Repeated RX was not added a second time.
+        state = self.hub.status()["live_audio"]
+        self.assertEqual(state["source"], "tx_mix")
+        self.assertTrue(state["includes_outgoing"])
+        self.assertTrue(state["sources"]["raw_rx"]["receiving"])
+        self.hub.set_recording(False)
+        with wave.open(str(self.clips()[0]), "rb") as clip:
+            self.assertEqual(clip.getnframes(), 960)
+            self.assertEqual(clip.readframes(960), generated)
+
+    def test_receive_only_mode_ignores_transmit_packets_and_transmit_setting_selects_raw_rx(self):
+        state, _probe = self.use_live_probe(live=False)
+        _key, listener = self.hub.subscribe()
+        self.hub.feed_tx_packet(tx_packet(8192))
+        self.assertTrue(listener.empty())
+        self.hub.feed_packet(packet(0.5))
+        self.assertEqual(listener.get_nowait(), packet(0.5))
+        state["live"] = True
+        self.hub.update_settings(dict(self.settings, monitor_transmit_audio=False))
+        self.hub.feed_tx_packet(tx_packet(8192))
+        self.assertTrue(listener.empty())
+        self.hub.feed_packet(packet(0.125))
+        self.assertEqual(listener.get_nowait(), packet(0.125))
+        self.assertEqual(self.hub.status()["live_audio"]["source"], "raw_rx")
+        self.assertFalse(self.hub.status()["live_audio"]["includes_outgoing"])
+
+    def test_transmit_conversion_handles_full_signed_range_and_preserves_archive_pcm(self):
+        self.use_live_probe()
+        _key, listener = self.hub.subscribe()
+        samples = array("h", [-32768, -16384, 0, 16384, 32767])
+        if sys.byteorder != "little":
+            samples.byteswap()
+        raw = samples.tobytes()
+        self.hub.set_recording(True)
+        self.hub.feed_tx_packet(raw)
+        floats = array("f")
+        floats.frombytes(listener.get_nowait())
+        if sys.byteorder != "little":
+            floats.byteswap()
+        self.assertEqual(list(floats), [-1.0, -0.5, 0.0, 0.5, 32767 / 32768])
+        self.hub.set_recording(False)
+        with wave.open(str(self.clips()[0]), "rb") as clip:
+            self.assertEqual(clip.readframes(5), raw)
+
+    def test_malformed_transmit_packets_do_not_flush_recording_or_poison_raw_source_error(self):
+        self.use_live_probe()
+        _key, listener = self.hub.subscribe()
+        self.hub.set_recording(True)
+        self.hub.feed_tx_packet(tx_packet(8192))
+        listener.get_nowait()
+        for data in (b"", b"x", b"x" * 65506):
+            self.assertFalse(self.hub.feed_tx_packet(data))
+        self.assertTrue(listener.empty())
+        self.assertTrue(self.hub.status()["recorder"]["active"])
+        self.assertIn("Ignored", self.hub.status()["live_audio"]["last_error"])
+        self.assertIsNone(self.hub.status()["live_audio"]["sources"]["raw_rx"]["last_error"])
+        self.hub.feed_tx_packet(tx_packet(8192))
+        self.assertIsNone(self.hub.status()["live_audio"]["last_error"])
+        self.hub.feed_packet(packet(float("nan")))
+        self.assertIsNone(self.hub.status()["live_audio"]["last_error"])
+
+    def test_transmit_packet_gap_finalizes_after_hang_and_drops_stale_preroll(self):
+        self.use_live_probe()
+        self.hub.set_recording(True)
+        self.hub.feed_tx_packet(tx_packet(8192))
+        self.advance(self.hub.HANG_SECONDS + 0.1)
+        self.hub.tick()
+        self.assertEqual(len(self.clips()), 1)
+        self.assertFalse(self.hub.status()["recorder"]["active"])
+        self.hub.feed_tx_packet(tx_packet(1))
+        self.assertGreater(self.hub._preroll_frames, 0)
+        self.advance(self.hub.PREROLL_GAP_SECONDS + 0.1)
+        self.hub.tick()
+        self.assertEqual(self.hub._preroll_frames, 0)
+        self.hub.feed_tx_packet(tx_packet(4096))
+        self.hub.set_recording(False)
+        counts = []
+        for path in self.clips():
+            with wave.open(str(path), "rb") as clip:
+                counts.append(clip.getnframes())
+        self.assertEqual(counts, [960, 960])
+
+    def test_source_switch_finalizes_clip_clears_listener_backlog_and_caches_probe(self):
+        state, probe = self.use_live_probe(live=False)
+        _key, listener = self.hub.subscribe()
+        self.hub.set_recording(True)
+        self.hub.feed_packet(packet(0.5))
+        self.hub.status()
+        self.hub.tick()
+        self.assertEqual(probe.call_count, 1)
+        state["live"] = True
+        self.advance(0.21)
+        self.hub.feed_tx_packet(tx_packet(8192))
+        self.assertEqual(probe.call_count, 2)
+        self.assertEqual(len(self.clips()), 1)
+        self.assertEqual(listener.qsize(), 1)
+        self.assertEqual(listener.get_nowait(), packet(0.25))
+        self.hub.update_settings(dict(self.settings, monitor_transmit_audio=False))
+        self.assertEqual(len(self.clips()), 2)
+        self.assertEqual(self.hub._preroll_frames, 0)
+        self.assertFalse(self.hub.status()["live_audio"]["receiving"])
+
+    def test_recording_off_does_not_interrupt_transmit_listeners(self):
+        self.use_live_probe()
+        _key, listener = self.hub.subscribe()
+        self.hub.feed_tx_packet(tx_packet(8192))
+        self.assertEqual(listener.get_nowait(), packet(0.25))
+        self.assertFalse(self.hub.status()["recorder"]["enabled"])
+        self.assertEqual(self.clips(), [])
+        self.hub.set_recording(True)
+        self.hub.feed_tx_packet(tx_packet(4096))
+        self.hub.set_recording(False)
+        self.hub.feed_tx_packet(tx_packet(8192))
+        self.assertEqual(listener.qsize(), 2)
+        self.assertEqual(len(self.clips()), 1)
+
+    def test_transmit_bind_failure_is_reported_without_falling_back_to_raw_rx(self):
+        self.use_live_probe()
+        rx, tx = mock.Mock(), mock.Mock()
+        rx.recvfrom.side_effect = BlockingIOError()
+        tx.bind.side_effect = OSError("Address already in use")
+        with mock.patch.object(module.socket, "socket", side_effect=(rx, tx)):
+            self.hub._bind_locked()
+        state = self.hub.status()["live_audio"]
+        self.assertEqual(state["source"], "tx_mix")
+        self.assertIn("tx_mix", state["last_error"])
+        self.assertFalse(state["includes_outgoing"])
+        self.assertIsNone(state["sources"]["raw_rx"]["last_error"])
+        _key, listener = self.hub.subscribe()
+        self.hub.feed_packet(packet(0.5))
+        self.assertTrue(listener.empty())
+        rx.close.assert_not_called()
+
+    def test_source_change_discards_oversized_udp_backlog_with_bounded_work(self):
+        state, _probe = self.use_live_probe(live=False)
+        self.hub.status()
+        stale = mock.Mock()
+        stale.recvfrom.return_value = (b"old", ("127.0.0.1", 1))
+        self.hub._sockets["tx_mix"] = stale
+        state["live"] = True
+        self.advance(0.21)
+        self.hub.status()
+        self.assertEqual(stale.recvfrom.call_count, self.hub.DRAIN_BATCH)
+        stale.close.assert_called_once()
+        self.assertIsNone(self.hub._sockets["tx_mix"])
+
+    def test_dual_loopback_sockets_stream_only_the_selected_source_and_close_cleanly(self):
+        self.use_live_probe()
+        self.hub.PORT = self.hub.TX_PORT = 0
+        _key, listener = self.hub.subscribe()
+        self.hub.start()
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+                sender.sendto(packet(0.75), self.hub._socket.getsockname())
+                sender.sendto(tx_packet(8192), self.hub._sockets["tx_mix"].getsockname())
+            self.assertEqual(listener.get(timeout=2), packet(0.25))
+            self.assertTrue(listener.empty())
+        finally:
+            self.hub.close()
+        self.assertFalse(self.hub._thread.is_alive())
+        self.assertTrue(all(sock is None for sock in self.hub._sockets.values()))
 
     def test_disable_and_close_finalize_wav_and_unblock_subscribers(self):
         _key, listener = self.hub.subscribe()

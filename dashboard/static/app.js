@@ -41,6 +41,19 @@
   let radioPairAttempt = null;
   let radioToolsMode = null;
   let dtmfPasswordMode = null;
+  let radioMessageSelection = "";
+  let radioMessageListKey = null;
+  let radioMessagePreviewKey = "";
+  let radioMessageProposal = null;
+  let radioMessageError = "";
+  let radioMessageActionBusy = false;
+  let radioMessageRefreshing = false;
+  let radioMessageUncertain = false;
+  let activityTimer = null;
+  let activityController = null;
+  let activityGeneration = 0;
+  let activityRunning = false;
+  let activityLastPoll = null;
   let audioContext = null;
   let audioGain = null;
   let liveController = null;
@@ -51,9 +64,9 @@
   const tabNames = ["overview", "live", "archives", "settings"];
   const tabCopy = {
     overview: ["Station overview", "Pi health, radio interfaces, and your portable station at a glance."],
-    live: ["Live audio", "Incoming receiver audio, directly over the box’s Wi-Fi."],
-    archives: ["Audio archives", "Control traffic recording and listen to saved receiver audio."],
-    settings: ["Settings / Admin", "Manage the dashboard and receiver audio service on your Pi."]
+    live: ["Live audio", "Radio audio, directly over the box’s Wi-Fi."],
+    archives: ["Audio archives", "Control traffic recording and listen to saved radio audio."],
+    settings: ["Settings / Admin", "Manage the dashboard and radio audio service on your Pi."]
   };
 
   function formatBytes(bytes, decimals = 1) {
@@ -193,13 +206,98 @@
     else selectRecording("");
   }
 
+  function renderChannelPair(data) {
+    const plan = data?.setup?.radio_plan || {};
+    const radio = data?.radio_programming;
+    const pair = radio?.pair;
+    const pending = radio?.pending === true || radioVerificationRoles(radio).length > 0 || pair?.verification_required === true || pair?.activation_required === true;
+    const savedPair = pair?.stored_verified === true && pair.catalog_changed !== true;
+    const verified = !pending && pair?.catalog_changed !== true &&
+      (plan.verified === true || typeof plan.verified !== "boolean" && savedPair);
+    const pairPlan = verified && savedPair ? pair.plan : null;
+    const rx = finite(pairPlan?.rx_hz) ? (pairPlan.rx_hz / 1000000).toFixed(6) : plan.rx_mhz;
+    const tx = finite(pairPlan?.tx_hz) ? (pairPlan.tx_hz / 1000000).toFixed(6) : plan.tx_mhz;
+    const tone = pairPlan && Object.hasOwn(pairPlan,"tone_hz") ? pairPlan.tone_hz : plan.tone_hz;
+    setText("rx-frequency", typeof rx === "string" ? rx : "—");
+    setText("tx-frequency", typeof tx === "string" ? tx : "—");
+    setText("tone-frequency", typeof tone === "string" || finite(tone) ? `${tone} Hz` : tone === null ? "Off" : absent);
+    setText("radio-power", textOrAbsent(pairPlan?.power || plan.power));
+    setText("channels-title", verified ? "Active channel pair" : pending ? "Channel pair needs verification" : "Planned radio channels");
+    setText("tone-label", verified ? "Tone" : "Planned tone");
+    setText("power-label", verified ? "TX power" : "Planned TX power");
+    const selectedId = pair?.pair_id || plan.pair_id;
+    const preset = pairPresets(radio).find((entry) => entry.id === selectedId);
+    const label = typeof plan.label === "string" ? plan.label : preset?.label;
+    const rxName = typeof plan.rx_name === "string" ? plan.rx_name : preset?.rx_name;
+    const txName = typeof plan.tx_name === "string" ? plan.tx_name : preset?.tx_name;
+    const names = rxName && txName ? `${rxName} / ${txName}` : pairPlan?.name;
+    const caption = verified ? [label,names].filter((value) => typeof value === "string" && value.trim()).join(" · ") : "";
+    setText("channel-pair-caption",caption);
+    byId("channel-pair-caption").hidden = !caption;
+    setText("rf-notice", verified ? "Values from the last verified pair. Dots show receiver squelch and the Pi’s transmit command."
+      : pending ? "Radio work is unfinished. The channel pair is not yet verified."
+      : pair?.catalog_changed === true ? "The channel catalog changed. Verify the selected pair again."
+      : data?.setup?.rf_enabled === true ? "Live mode is running. Verify a channel pair to confirm these saved values."
+      : "Configure and verify a channel pair to display its saved values.");
+  }
+
+  function renderRadioActivity(activity) {
+    for (const [role,key] of [["rx","receiving"],["tx","transmitting"]]) {
+      const known = activity?.available === true && typeof activity[key] === "boolean";
+      const active = known && activity[key];
+      const dot = byId(`${role}-activity`);
+      dot.className = `radio-activity-dot activity-${known ? active ? "on" : "off" : "unknown"}`;
+      const label = role === "rx" ? known ? `Receiver squelch ${active ? "open" : "closed"}` : "Receiver activity unavailable"
+        : known ? `Transmit command ${active ? "active" : "idle"}` : "Transmit activity unavailable";
+      dot.setAttribute("aria-label",label); dot.setAttribute("title",label);
+    }
+  }
+
+  async function pollRadioActivity(generation) {
+    if (!activityRunning || document.hidden || generation !== activityGeneration || activityController) return;
+    const controller = new AbortController();
+    activityController = controller;
+    const timeout = setTimeout(() => controller.abort(),1200);
+    try {
+      const response = await fetch("/api/activity",{cache:"no-store",signal:controller.signal,headers:{Accept:"application/json"}});
+      if (!response.ok) throw new Error("Activity unavailable");
+      const activity = await response.json();
+      if (!activity || typeof activity.available !== "boolean" ||
+          ![activity.receiving,activity.transmitting].every((value) => value === null || typeof value === "boolean")) throw new Error("Invalid activity");
+      if (generation === activityGeneration && !controller.signal.aborted && !document.hidden) {
+        activityLastPoll = Date.now(); renderRadioActivity(activity);
+      }
+    } catch (_) {
+      if (generation === activityGeneration) { activityLastPoll = Date.now(); renderRadioActivity(null); }
+    } finally {
+      clearTimeout(timeout);
+      if (activityController === controller) activityController = null;
+      if (activityRunning && generation === activityGeneration && !document.hidden) {
+        activityTimer = setTimeout(() => { activityTimer = null; return pollRadioActivity(generation); },500);
+      }
+    }
+  }
+
+  function startRadioActivity() {
+    if (activityRunning || document.hidden) return;
+    activityRunning = true;
+    return pollRadioActivity(++activityGeneration);
+  }
+
+  function stopRadioActivity() {
+    activityRunning = false; activityGeneration += 1;
+    if (activityTimer !== null) clearTimeout(activityTimer);
+    activityTimer = null;
+    activityController?.abort(); activityController = null;
+    activityLastPoll = null; renderRadioActivity(null);
+  }
+
   function renderStatus(data) {
     latestStatus = data;
-    const plan = data.setup?.radio_plan || {};
-    setText("rx-frequency", typeof plan.rx_mhz === "string" ? plan.rx_mhz : "—");
-    setText("tx-frequency", typeof plan.tx_mhz === "string" ? plan.tx_mhz : "—");
-    setText("tone-frequency", (typeof plan.tone_hz === "string" || finite(plan.tone_hz)) ? `${plan.tone_hz} Hz` : plan.tone_hz === null ? "Off" : absent);
-    setText("radio-power", textOrAbsent(plan.power));
+    if (data.radio_messages && typeof data.radio_messages === "object") radioMessageUncertain = false;
+    renderChannelPair(data);
+    if (document.hidden) renderRadioActivity(null);
+    else if (activityLastPoll === null || Date.now() - activityLastPoll > 1500) renderRadioActivity(data.radio_activity);
     pill("phase-badge", data.setup?.phase === "bench" ? "Bench preparation" : textOrAbsent(data.setup?.phase), data.setup?.rf_enabled === true ? "good" : "amber");
     setText("cpu-temp", finite(data.cpu_temp_c) ? `${data.cpu_temp_c.toFixed(1)} °C` : absent);
     setText("cpu-load", finite(data.load_1m) ? `1-minute load ${data.load_1m.toFixed(2)}` : "Load unavailable");
@@ -318,15 +416,16 @@
     byId("admin-options").hidden=!signedIn;
     byId("recorder-admin-controls").hidden=!signedIn;
     if (!signedIn) {
-      wifiVisibilityProposal=null;softwareUpdateProposal=null;radioProgrammingProposal=null;radioPairProposal=null;dtmfProposal=null;stationIdProposal=null;
+      wifiVisibilityProposal=null;softwareUpdateProposal=null;radioProgrammingProposal=null;radioPairProposal=null;dtmfProposal=null;stationIdProposal=null;radioMessageProposal=null;
       clearDtmfPasswords();byId("radio-pair-confirm-password").value="";
-      for (const id of ["wifi-confirm-dialog","software-confirm-dialog","radio-confirm-dialog","radio-pair-confirm-dialog","dtmf-confirm-dialog","station-id-confirm-dialog"]) {
+      byId("radio-message-file").value="";
+      for (const id of ["wifi-confirm-dialog","software-confirm-dialog","radio-confirm-dialog","radio-pair-confirm-dialog","dtmf-confirm-dialog","station-id-confirm-dialog","radio-message-confirm-dialog"]) {
         if (byId(id).open) byId(id).close();
       }
     }
     renderDtmf();
     renderStationIdentification();
-    const updatePending = latestStatus?.software_updates?.pending === true || softwareUpdateBusy || radioTaskPending() || dtmfCodePending();
+    const updatePending = latestStatus?.software_updates?.pending === true || softwareUpdateBusy || radioTaskPending() || dtmfCodePending() || messageTaskPending();
     pill("admin-state", !sessionKnown ? "Checking" : signedIn ? "Signed in" : session.configured ? "Signed out" : "Not configured", signedIn ? "good" : sessionKnown ? "amber" : "muted");
     setText("admin-description", !sessionKnown ? "Checking admin access…" : signedIn
       ? "You can manage recording, station settings, Wi-Fi, software updates, and radio programming."
@@ -351,6 +450,7 @@
     renderRadioProgrammingControls();
     renderRadioPairControls();
     renderAdminLayout();
+    renderRadioMessages();
   }
 
   function radioToolsNeedAttention(state = latestStatus?.radio_programming) {
@@ -415,7 +515,7 @@
   function canManageSoftware(updates = latestStatus?.software_updates) {
     return sessionKnown && session.authenticated && typeof session.csrf_token === "string" && !!session.csrf_token &&
       updates?.available === true && updates?.preview !== true && updates.pending !== true &&
-      !mutationBusy && !softwareUpdateBusy && !wifiVisibilityBusy && latestStatus?.wifi_visibility?.pending !== true && !radioTaskPending() && !dtmfCodePending();
+      !mutationBusy && !softwareUpdateBusy && !wifiVisibilityBusy && latestStatus?.wifi_visibility?.pending !== true && !radioTaskPending() && !dtmfCodePending() && !messageTaskPending();
   }
 
   function softwareInstalledKey(updates) {
@@ -510,7 +610,7 @@
       (ignoreBusy || !mutationBusy) && !softwareUpdateBusy && !wifiVisibilityBusy && !radioProgrammingBusy &&
       latestStatus?.software_updates?.pending !== true && latestStatus?.wifi_visibility?.pending !== true &&
       latestStatus?.dtmf_control?.code_change?.pending !== true &&
-      !radioTaskPending() && !radioVerificationRoles(radio).length && radio?.pair?.verification_required !== true;
+      !radioTaskPending() && !messageTaskPending() && !radioVerificationRoles(radio).length && radio?.pair?.verification_required !== true;
   }
 
   function canManageDtmf(ignoreBusy = false) {
@@ -615,6 +715,10 @@
     return radioProgrammingBusy || latestStatus?.radio_programming?.pending === true;
   }
 
+  function messageTaskPending() {
+    return radioMessageActionBusy || radioMessageUncertain || latestStatus?.radio_messages?.upload_pending === true || latestStatus?.radio_messages?.job?.pending === true;
+  }
+
   function radioPlanKey(plan) {
     if (!plan || typeof plan !== "object") return null;
     const selected = {};
@@ -643,7 +747,7 @@
     return sessionKnown && session.authenticated && typeof session.csrf_token === "string" && !!session.csrf_token &&
       state?.available === true && state.configured === true && state.preview !== true && state.pending !== true &&
       !mutationBusy && !radioProgrammingBusy && !softwareUpdateBusy &&
-      latestStatus?.software_updates?.pending !== true && !wifiVisibilityBusy && latestStatus?.wifi_visibility?.pending !== true && !dtmfCodePending();
+      latestStatus?.software_updates?.pending !== true && !wifiVisibilityBusy && latestStatus?.wifi_visibility?.pending !== true && !dtmfCodePending() && !messageTaskPending();
   }
 
   function canRequestRadio(role, action, state = latestStatus?.radio_programming) {
@@ -1058,6 +1162,227 @@
     } finally { clearTimeout(timeout); }
   }
 
+  function radioMessageEntries() {
+    const entries = latestStatus?.radio_messages?.messages;
+    return Array.isArray(entries) ? entries.filter((entry) => entry && /^[0-9a-f]{32}$/.test(entry.id) &&
+      /^[0-9a-f]{64}$/.test(entry.sha256) && typeof entry.name === "string" &&
+      finite(entry.duration_seconds) && entry.duration_seconds > 0 && entry.duration_seconds <= 30 &&
+      finite(entry.bytes) && entry.bytes > 0) : [];
+  }
+
+  function radioMessagePreviewUrl(entry) {
+    if (!entry || typeof entry.preview_url !== "string") return null;
+    const expected = `/api/messages/${entry.id}/audio`;
+    try {
+      const url = new URL(entry.preview_url, location.origin);
+      return url.origin === location.origin && url.pathname === expected && !url.search && !url.hash &&
+        entry.preview_url === expected ? url.href : null;
+    } catch (_) { return null; }
+  }
+
+  function radioMessageMaintenanceClear(ignoreBusy = false) {
+    const radio = latestStatus?.radio_programming;
+    return sessionKnown && session.authenticated && typeof session.csrf_token === "string" && !!session.csrf_token &&
+      (ignoreBusy || !mutationBusy) && !radioMessageActionBusy && !radioMessageUncertain && !radioProgrammingBusy && !softwareUpdateBusy && !wifiVisibilityBusy &&
+      latestStatus?.software_updates?.pending !== true && latestStatus?.wifi_visibility?.pending !== true &&
+      !radioTaskPending() && !dtmfCodePending() && !messageTaskPending() && !radioVerificationRoles(radio).length && radio?.pair?.verification_required !== true &&
+      latestStatus?.radio_messages?.upload_pending !== true && latestStatus?.radio_messages?.job?.pending !== true;
+  }
+
+  function radioMessageSnapshot(action, entry) {
+    const state = latestStatus?.radio_messages;
+    if (!entry || !session.authenticated || !session.csrf_token) return null;
+    const snapshot = {action, id:entry.id, sha256:entry.sha256, csrf:session.csrf_token};
+    if (action === "broadcast") {
+      if (typeof state?.pair_id !== "string" || !state.pair_id || !/^[0-9a-f]{64}$/.test(state.catalog_digest) ||
+          !/^[0-9a-f]{32}$/.test(state.invocation_id)) return null;
+      Object.assign(snapshot, {pair_id:state.pair_id, catalog_digest:state.catalog_digest, invocation_id:state.invocation_id});
+    }
+    return snapshot;
+  }
+
+  function radioMessageAllowed(action, ignoreBusy = false) {
+    const state = latestStatus?.radio_messages;
+    const entry = radioMessageEntries().find((item) => item.id === radioMessageSelection);
+    if (state?.available !== true || !radioMessageMaintenanceClear(ignoreBusy)) return false;
+    if (action === "upload") return state.can_upload === true;
+    return !!entry && (action === "delete" || state.can_broadcast === true && !!radioMessageSnapshot(action, entry));
+  }
+
+  function radioMessageProposalCurrent(proposal) {
+    const entry = radioMessageEntries().find((item) => item.id === radioMessageSelection);
+    const current = radioMessageSnapshot(proposal.action, entry);
+    return !!current && JSON.stringify(current) === JSON.stringify(proposal) && radioMessageAllowed(proposal.action, true);
+  }
+
+  function clearRadioMessagePreview() {
+    if (!radioMessagePreviewKey) return;
+    const audio = byId("radio-message-audio");
+    audio.pause(); audio.removeAttribute("src"); audio.load();
+    radioMessagePreviewKey = "";
+  }
+
+  function renderRadioMessages() {
+    const signedIn = sessionKnown && session.authenticated;
+    const state = latestStatus?.radio_messages;
+    byId("radio-messages-card").hidden = !signedIn;
+    const entries = signedIn ? radioMessageEntries() : [];
+    const select = byId("radio-message-select");
+    const key = JSON.stringify(entries.map((entry) => [entry.id,entry.sha256,entry.name]));
+    if (key !== radioMessageListKey) {
+      select.replaceChildren();
+      const placeholder = document.createElement("option"); placeholder.value = ""; placeholder.textContent = "Select a message…"; select.append(placeholder);
+      for (const entry of entries) {
+        const option = document.createElement("option"); option.value = entry.id; option.textContent = entry.name; select.append(option);
+      }
+      radioMessageListKey = key;
+    }
+    if (!entries.some((entry) => entry.id === radioMessageSelection)) radioMessageSelection = "";
+    select.value = radioMessageSelection;
+    select.disabled = !signedIn || !entries.length || radioMessageActionBusy;
+    byId("radio-message-library").hidden = !entries.length;
+    byId("radio-messages-empty").hidden = entries.length > 0;
+    const entry = entries.find((item) => item.id === radioMessageSelection);
+    const url = radioMessagePreviewUrl(entry);
+    const previewKey = url ? `${entry.id}:${entry.sha256}:${url}` : "";
+    if (previewKey !== radioMessagePreviewKey) {
+      clearRadioMessagePreview();
+      if (url) { byId("radio-message-audio").src = url; radioMessagePreviewKey = previewKey; }
+    }
+    byId("radio-message-preview").hidden = !entry;
+    byId("radio-message-audio").hidden = !url;
+    setText("radio-message-name", entry?.name || "");
+    setText("radio-message-detail", entry ? `${entry.duration_seconds.toFixed(1)} seconds · ${formatBytes(entry.bytes)} · ${localTime(entry.created_at,true)}${url ? "" : " · Preview unavailable"}` : "");
+    const uploadAllowed = radioMessageAllowed("upload");
+    const limits = state?.limits;
+    setText("radio-message-limits", `WAV, MP3 or M4A · Up to ${finite(limits?.max_duration_seconds) ? limits.max_duration_seconds : 30} seconds and ${formatBytes(finite(limits?.max_upload_bytes) ? limits.max_upload_bytes : 8388608,0)} · ${finite(limits?.max_messages) ? limits.max_messages : 10} saved messages`);
+    const draft = byId("radio-message-file").files?.[0];
+    setText("radio-message-file-detail", draft ? `${draft.name} · ${formatBytes(draft.size)}` : "No file selected");
+    byId("radio-message-file").disabled = !uploadAllowed;
+    byId("radio-message-upload").disabled = !uploadAllowed || !draft;
+    byId("radio-message-delete").disabled = !radioMessageAllowed("delete");
+    byId("radio-message-broadcast").disabled = !radioMessageAllowed("broadcast");
+    const pending = messageTaskPending();
+    const job = state?.job;
+    const phases = {queued:"Queued", accepted:"Preparing broadcast", playing:"Broadcasting", finished:"Broadcast complete", failed:"Broadcast failed", rejected:"Broadcast rejected", interrupted:"Broadcast interrupted", expired:"Broadcast expired"};
+    pill("radio-messages-state", pending ? "In progress" : state?.available === true ? `${entries.length} saved` : "Unavailable", pending ? "amber" : state?.available === true ? "good" : "muted");
+    setText("radio-messages-availability", state?.reason || (state?.available === true ? "Preview is local. Each broadcast sends the selected clip once on the configured pair." : "Install and configure the Pi message helper to use saved broadcasts."));
+    byId("radio-message-job").hidden = !pending && !job;
+    byId("radio-message-job-progress").hidden = !pending;
+    setText("radio-message-job-phase", state?.upload_pending === true ? "Saving audio message" : radioMessageUncertain ? "Confirming message result" : radioMessageActionBusy ? "Processing message request" : phases[job?.phase] || (pending ? "Message in progress" : "Message result"));
+    setText("radio-message-job-detail", job?.message || (pending ? "Keep the Pi connected. The current message task will appear here." : ""));
+    message("radio-message-message", radioMessageError, radioMessageError ? "error" : "");
+    if (radioMessageProposal && !radioMessageProposalCurrent(radioMessageProposal)) {
+      radioMessageProposal = null;
+      if (byId("radio-message-confirm-dialog").open) byId("radio-message-confirm-dialog").close();
+      radioMessageError = "The message, radio status, or admin session changed. Review the current details again.";
+      message("radio-message-message", radioMessageError, "error");
+    }
+    byId("radio-message-confirm-apply").disabled = !radioMessageProposal || !radioMessageAllowed(radioMessageProposal.action) || !byId("radio-message-confirm-dialog").open;
+  }
+
+  function closeRadioMessageConfirmation() {
+    radioMessageProposal = null;
+    if (byId("radio-message-confirm-dialog").open) byId("radio-message-confirm-dialog").close();
+    renderRadioMessages();
+  }
+
+  function showRadioMessageConfirmation(action) {
+    if (!radioMessageAllowed(action)) return;
+    const entry = radioMessageEntries().find((item) => item.id === radioMessageSelection);
+    radioMessageProposal = radioMessageSnapshot(action,entry);
+    radioMessageError = "";
+    const broadcast = action === "broadcast";
+    setText("radio-message-confirm-title", broadcast ? "Broadcast this message once?" : "Delete this saved message?");
+    setText("radio-message-confirm-description", `${entry.name} · ${entry.duration_seconds.toFixed(1)} seconds`);
+    setText("radio-message-confirm-effect", broadcast
+      ? "The repeater will transmit this clip once using the current configured channel pair. New recordings include it when recording and outgoing audio are enabled."
+      : "This removes the saved clip from the Pi’s message library. Existing traffic recordings are kept.");
+    setText("radio-message-confirm-apply", broadcast ? "Broadcast once" : "Delete message");
+    message("radio-message-confirm-error", "");
+    const dialog = byId("radio-message-confirm-dialog");
+    if (typeof dialog.showModal !== "function") {
+      radioMessageProposal = null; radioMessageError = "Use a current browser to review and confirm this action."; renderRadioMessages(); return;
+    }
+    dialog.showModal(); renderRadioMessages(); byId("radio-message-confirm-cancel").focus();
+  }
+
+  async function applyRadioMessage() {
+    const proposal = radioMessageProposal;
+    if (!proposal || !byId("radio-message-confirm-dialog").open || !radioMessageAllowed(proposal.action)) return;
+    mutationBusy = true; renderAdmin();
+    const previousUpdate = lastSuccess;
+    await refreshAfterMutation();
+    mutationBusy = false;
+    if (lastSuccess === previousUpdate || radioMessageProposal !== proposal || !byId("radio-message-confirm-dialog").open || !radioMessageProposalCurrent(proposal)) {
+      closeRadioMessageConfirmation(); radioMessageError = "The current message and radio status could not be confirmed. Review the details and try again."; renderAdmin(); return;
+    }
+    closeRadioMessageConfirmation();
+    radioMessageActionBusy = true; radioMessageError = ""; renderAdmin();
+    if (proposal.action === "broadcast") radioMessageUncertain = true;
+    try {
+      const payload = {id:proposal.id,sha256:proposal.sha256};
+      if (proposal.action === "broadcast") Object.assign(payload,{pair_id:proposal.pair_id,catalog_digest:proposal.catalog_digest,invocation_id:proposal.invocation_id});
+      const result = await postJson(`/api/messages/${proposal.action}`,payload);
+      if (!result.radio_messages || typeof result.radio_messages !== "object") throw new Error("The Pi returned an unreadable message status.");
+      radioMessageUncertain = false;
+      latestStatus = {...latestStatus,radio_messages:result.radio_messages};
+    } catch (error) { radioMessageError = `${error.message} Check the message result before trying again.`; }
+    finally { radioMessageActionBusy = false; await refreshAfterMutation(); renderAdmin(); }
+  }
+
+  async function uploadRadioMessage(event) {
+    event.preventDefault();
+    if (!radioMessageAllowed("upload")) return;
+    const file = byId("radio-message-file").files?.[0];
+    const limits = latestStatus.radio_messages.limits;
+    const extension = typeof file?.name === "string" ? file.name.split(".").pop().toLowerCase() : "";
+    if (!file || !finite(file.size) || file.size <= 0 || file.size > Math.min(limits?.max_upload_bytes || 8388608,8388608) || !["wav","mp3","m4a"].includes(extension)) {
+      radioMessageError = "Choose a nonempty WAV, MP3 or M4A file up to 8 MB. The Pi checks the 30-second duration before saving."; renderRadioMessages(); return;
+    }
+    const csrf = session.csrf_token;
+    radioMessageActionBusy = true; radioMessageError = ""; renderAdmin();
+    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(),60000);
+    try {
+      const response = await fetch("/api/messages/upload", {method:"POST",cache:"no-store",credentials:"same-origin",signal:controller.signal,
+        headers:{"Content-Type":"application/octet-stream","X-File-Name":encodeURIComponent(file.name),"X-CSRF-Token":csrf,Accept:"application/json"},body:file});
+      const result = await readJson(response);
+      if (!result.radio_messages || typeof result.radio_messages !== "object") throw new Error("The Pi returned an unreadable message status.");
+      if (session.authenticated && session.csrf_token === csrf) {
+        latestStatus = {...latestStatus,radio_messages:result.radio_messages};
+        radioMessageSelection = typeof result.message?.id === "string" ? result.message.id : "";
+        byId("radio-message-file").value = "";
+      }
+    } catch (error) { radioMessageError = error.name === "AbortError" ? "The upload timed out. Check the message library before uploading again." : error.message; }
+    finally { clearTimeout(timeout); radioMessageActionBusy = false; await refreshAfterMutation(); renderAdmin(); }
+  }
+
+  async function refreshRadioMessages() {
+    if (radioMessageRefreshing || document.hidden || !session.authenticated || !messageTaskPending() || radioMessageActionBusy) return;
+    const csrf = session.csrf_token;
+    radioMessageRefreshing = true;
+    const controller = new AbortController(), timeout = setTimeout(() => controller.abort(),8000);
+    try {
+      const response = await fetch("/api/messages",{cache:"no-store",credentials:"same-origin",signal:controller.signal,headers:{Accept:"application/json"}});
+      const result = await readJson(response);
+      if (session.authenticated && session.csrf_token === csrf && result.radio_messages && typeof result.radio_messages === "object") {
+        radioMessageUncertain = false; latestStatus = {...latestStatus,radio_messages:result.radio_messages}; renderAdmin();
+      }
+    } catch (_) { /* Keep the pending state until the Pi confirms a result. */ }
+    finally { clearTimeout(timeout); radioMessageRefreshing = false; }
+  }
+
+  byId("radio-message-upload-form").addEventListener("submit",uploadRadioMessage);
+  byId("radio-message-file").addEventListener("change",() => { radioMessageError = ""; renderRadioMessages(); });
+  byId("radio-message-select").addEventListener("change",(event) => { radioMessageSelection = event.target.value; renderRadioMessages(); });
+  byId("radio-message-broadcast").addEventListener("click",() => showRadioMessageConfirmation("broadcast"));
+  byId("radio-message-delete").addEventListener("click",() => showRadioMessageConfirmation("delete"));
+  byId("radio-message-confirm-cancel").addEventListener("click",closeRadioMessageConfirmation);
+  byId("radio-message-confirm-apply").addEventListener("click",applyRadioMessage);
+  byId("radio-message-confirm-dialog").addEventListener("cancel",(event) => { event.preventDefault(); closeRadioMessageConfirmation(); });
+  byId("radio-message-confirm-dialog").addEventListener("close",() => { radioMessageProposal = null; });
+  byId("radio-message-audio").addEventListener("play",() => { if (liveState !== "stopped") stopListening(true); });
+
   function renderSettings(settings) {
     if (!settings || settingsDirty) return;
     byId("station-name").value = typeof settings.station_name === "string" ? settings.station_name : "";
@@ -1065,6 +1390,7 @@
     byId("archive-limit").value = finite(settings.max_archive_mb) ? settings.max_archive_mb : "";
     byId("recording-threshold").value = finite(settings.recording_threshold_dbfs) ? settings.recording_threshold_dbfs : -45;
     byId("input-enabled").checked = settings.input_enabled === true;
+    byId("monitor-transmit").checked = settings.monitor_transmit_audio !== false;
     byId("record-startup").checked = settings.record_on_startup === true;
     byId("keep-indefinitely").checked = settings.keep_indefinitely === true;
     renderSettingsSwitches();
@@ -1078,6 +1404,7 @@
 
   function renderSettingsSwitches() {
     setText("input-enabled-value", byId("input-enabled").checked ? "On" : "Off");
+    setText("monitor-transmit-value", byId("monitor-transmit").checked ? "On" : "Off");
     setText("record-startup-value", byId("record-startup").checked ? "On" : "Off");
     const keepIndefinitely = byId("keep-indefinitely").checked;
     setText("keep-indefinitely-value", keepIndefinitely ? "On" : "Off");
@@ -1113,15 +1440,15 @@
     let label = "Off", detail = "No new audio is being saved.", kind = "muted";
     if (recorder.active === true) {
       label = "Recording"; kind = "good";
-      detail = typeof recorder.current_file === "string" ? `Saving ${recorder.current_file}` : "Saving receiver audio.";
+      detail = typeof recorder.current_file === "string" ? `Saving ${recorder.current_file}` : "Saving radio audio.";
     } else if (recorder.enabled === true) {
-      label = "Armed"; kind = "amber"; detail = "Waiting for receive audio above the recording threshold.";
+      label = "Armed"; kind = "amber"; detail = "Waiting for radio audio above the recording threshold.";
     }
     if (typeof recorder.last_error === "string" && recorder.last_error.trim()) {
       label = "Check audio"; kind = "error"; detail = recorder.last_error;
     }
     pill("recorder-state", label, kind);
-    setText("recorder-description", recorder.enabled === true ? "Recording is enabled for incoming receiver audio." : "Recording is turned off. Existing archives remain available.");
+    setText("recorder-description", recorder.enabled === true ? "Recording is enabled for the selected radio audio feed." : "Recording is turned off. Existing archives remain available.");
     setText("recorder-message", detail);
   }
 
@@ -1140,9 +1467,12 @@
   function renderLive(live) {
     const configured = live?.configured === true;
     const receiving = live?.receiving === true;
+    const outgoing = live?.source === "tx_mix";
     const sourceError = typeof live?.last_error === "string" && live.last_error.trim();
     pill("live-source-state", !live ? "Unavailable" : sourceError ? "Check feed" : !configured ? "Not configured" : receiving ? "Feed connected" : "Waiting for feed", sourceError ? "error" : receiving ? "good" : configured ? "amber" : "muted");
-    setText("live-input-state", !live ? absent : sourceError ? live.last_error : !configured ? "Receiver feed not configured" : receiving ? "Receiver audio arriving" : "Waiting for receiver audio");
+    setText("live-input-state", !live ? absent : sourceError ? live.last_error : !configured ? "Radio feed not configured"
+      : outgoing ? receiving ? "Repeater audio arriving · outgoing included" : "Repeater audio · waiting for traffic"
+      : receiving ? "Receiver audio arriving · receiver only" : "Receiver audio · waiting for traffic");
     setText("live-listeners", finite(live?.listeners) ? String(live.listeners) : absent);
     setText("live-format", finite(live?.sample_rate) && finite(live?.channels) ? `${(live.sample_rate / 1000).toFixed(live.sample_rate % 1000 ? 1 : 0)} kHz · ${live.channels === 1 ? "mono" : `${live.channels} channels`}` : absent);
     setText("live-last-packet", live?.last_packet_at ? localTime(live.last_packet_at) : "No audio received yet");
@@ -1150,10 +1480,11 @@
     byId("listen-button").disabled = !canListen || liveState !== "stopped";
     byId("stop-button").disabled = liveState === "stopped";
     if (liveState === "stopped") {
-      setText("live-player-state", !audioSupported() ? "Browser audio is unavailable" : !live ? "Waiting for the Pi" : sourceError ? "Check the receiver feed" : !configured ? "Ready when the receiver is connected" : "Ready to listen");
+      setText("live-player-state", !audioSupported() ? "Browser audio is unavailable" : !live ? "Waiting for the Pi" : sourceError ? "Check the radio feed" : !configured ? "Ready when the receiver is connected" : "Ready to listen");
       setText("live-player-description", !audioSupported() ? "Try a current Safari, Chrome, Firefox, or Edge browser, or use the audio archives."
         : sourceError ? live.last_error : !configured ? "Assign the receiver audio source and enable its feed on the Pi to start listening."
-        : "Tap Start listening. You will hear incoming receiver audio when the feed is active.");
+        : outgoing ? "Tap Start listening to hear received traffic, menu replies, identification and broadcast messages. This is the Pi’s audio feed, not an off-air reception test."
+        : "Tap Start listening to hear the receiver. Outgoing repeater audio is not included in the current feed.");
     }
   }
 
@@ -1226,7 +1557,7 @@
     liveState = "playing";
     emitLiveAudio();
     setText("live-player-state", "Listening on this device");
-    setText("live-player-description", "Incoming receiver audio is playing. Quiet periods are normal between transmissions.");
+    setText("live-player-description", "Radio audio is playing. Quiet periods are normal between transmissions.");
     byId("listening-strip").hidden = false;
     byId("tab-live-dot").hidden = false;
     document.querySelector(".live-player").classList.add("listening");
@@ -1241,8 +1572,8 @@
     message("live-error", "");
     liveState = "connecting";
     renderLive(live);
-    setText("live-player-state", "Connecting to receiver audio…");
-    setText("live-player-description", "Stay on the box’s Wi-Fi. The stream will begin when receiver audio arrives.");
+    setText("live-player-state", "Connecting to radio audio…");
+    setText("live-player-description", "Stay on the box’s Wi-Fi. The stream will begin when radio audio arrives.");
     byId("recording-audio").pause();
     liveController = new AbortController();
     try {
@@ -1259,7 +1590,7 @@
       if (!response.ok) {
         let detail;
         try { detail = (await response.json()).error; } catch (_) { /* Plain HTTP error. */ }
-        throw new Error(typeof detail === "string" ? detail : `The receiver stream is unavailable (${response.status}). Check the Pi audio setup.`);
+        throw new Error(typeof detail === "string" ? detail : `The radio stream is unavailable (${response.status}). Check the Pi audio setup.`);
       }
       if (!response.body || !response.body.getReader) throw new Error("This browser cannot stream live audio. Try another browser or use the audio archives.");
       const reader = response.body.getReader();
@@ -1350,7 +1681,7 @@
   byId("wifi-broadcast").addEventListener("click", () => {
     const wifi = latestStatus?.wifi_visibility;
     const preview = wifi?.preview === true;
-    if (!sessionKnown || !session.authenticated || mutationBusy || softwareUpdateBusy || latestStatus?.software_updates?.pending === true || radioTaskPending() || dtmfCodePending() || wifiVisibilityBusy || wifi?.pending === true || (!preview && (wifi?.available !== true || typeof wifi.profile_hidden !== "boolean"))) return;
+    if (!sessionKnown || !session.authenticated || mutationBusy || softwareUpdateBusy || latestStatus?.software_updates?.pending === true || radioTaskPending() || dtmfCodePending() || messageTaskPending() || wifiVisibilityBusy || wifi?.pending === true || (!preview && (wifi?.available !== true || typeof wifi.profile_hidden !== "boolean"))) return;
     const hidden = wifi?.profile_hidden !== true;
     wifiVisibilityProposal = { hidden, priorHidden: wifi?.profile_hidden, priorRequestId: wifi?.request_id, ssid: wifi?.ssid, csrf: session.csrf_token };
     wifiVisibilityError = "";
@@ -1384,7 +1715,7 @@
   });
   byId("wifi-confirm-apply").addEventListener("click", async () => {
     const proposal = wifiVisibilityProposal;
-    if (!proposal || mutationBusy || softwareUpdateBusy || latestStatus?.software_updates?.pending === true || radioTaskPending() || dtmfCodePending() || wifiVisibilityBusy || latestStatus?.wifi_visibility?.preview === true) return;
+    if (!proposal || mutationBusy || softwareUpdateBusy || latestStatus?.software_updates?.pending === true || radioTaskPending() || dtmfCodePending() || messageTaskPending() || wifiVisibilityBusy || latestStatus?.wifi_visibility?.preview === true) return;
     // Recheck the saved profile and session before accepting a possibly stale dialog.
     mutationBusy = true;
     renderAdmin();
@@ -1393,7 +1724,7 @@
     const wifi = latestStatus?.wifi_visibility;
     const unchanged = lastSuccess !== previousUpdate && wifi?.available === true && wifi?.preview !== true && wifi.pending !== true &&
       wifi.profile_hidden === proposal.priorHidden && wifi.request_id === proposal.priorRequestId &&
-      wifi.ssid === proposal.ssid && session.authenticated && session.csrf_token === proposal.csrf && latestStatus?.software_updates?.pending !== true && !radioTaskPending() && !dtmfCodePending();
+      wifi.ssid === proposal.ssid && session.authenticated && session.csrf_token === proposal.csrf && latestStatus?.software_updates?.pending !== true && !radioTaskPending() && !dtmfCodePending() && !messageTaskPending();
     if (!unchanged || !wifiVisibilityProposal || wifiVisibilityProposal !== proposal) {
       mutationBusy = false;
       closeWifiConfirmation();
@@ -1618,7 +1949,7 @@
       updates.update_available === true && validCommit(updates.latest_commit) && updates.latest_commit === proposal.commit &&
       softwareInstalledKey(updates) === proposal.priorInstalled && updates.request_id === proposal.priorRequestId &&
       freshSoftwareCheck(updates) && softwareUpdateCheck === proposal.check &&
-      session.authenticated && session.csrf_token === proposal.csrf && !wifiVisibilityBusy && latestStatus?.wifi_visibility?.pending !== true && !radioTaskPending() && !dtmfCodePending();
+      session.authenticated && session.csrf_token === proposal.csrf && !wifiVisibilityBusy && latestStatus?.wifi_visibility?.pending !== true && !radioTaskPending() && !dtmfCodePending() && !messageTaskPending();
     if (!unchanged || softwareUpdateProposal !== proposal) {
       mutationBusy = false;
       closeSoftwareConfirmation();
@@ -1824,10 +2155,11 @@
 
   byId("settings-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    if (mutationBusy || softwareUpdateBusy || latestStatus?.software_updates?.pending === true || radioTaskPending() || dtmfCodePending()) return;
+    if (mutationBusy || softwareUpdateBusy || latestStatus?.software_updates?.pending === true || radioTaskPending() || dtmfCodePending() || messageTaskPending()) return;
     const values = {
       station_name: byId("station-name").value.trim(),
       input_enabled: byId("input-enabled").checked,
+      monitor_transmit_audio: byId("monitor-transmit").checked,
       record_on_startup: byId("record-startup").checked,
       keep_indefinitely: byId("keep-indefinitely").checked,
       retention_days: Number(byId("retention-days").value),
@@ -1844,13 +2176,13 @@
     finally { mutationBusy = false; renderAdmin(); }
   });
   byId("recording-toggle").addEventListener("change", async () => {
-    if (mutationBusy || softwareUpdateBusy || latestStatus?.software_updates?.pending === true || radioTaskPending() || dtmfCodePending()) return;
+    if (mutationBusy || softwareUpdateBusy || latestStatus?.software_updates?.pending === true || radioTaskPending() || dtmfCodePending() || messageTaskPending()) return;
     const enabled = byId("recording-toggle").checked;
     mutationBusy = true; renderAdmin(); message("recording-action-message", "Updating recording…");
     try {
       const result = await postJson("/api/recording", { enabled });
       if (result.recorder) renderRecorder(result.recorder);
-      message("recording-action-message", enabled ? "Recording enabled. It will save audio when the receiver feed is active." : "Recording turned off. Saved archives are kept.", "success");
+      message("recording-action-message", enabled ? "Recording enabled. It will save audio when the selected radio feed is active." : "Recording turned off. Saved archives are kept.", "success");
     } catch (error) { message("recording-action-message", error.message, "error"); }
     finally {
       mutationBusy = false; await refreshAfterMutation(); renderAdmin();
@@ -1867,14 +2199,20 @@
     emitLiveAudio();
   });
   byId("recording-audio").addEventListener("play", () => { if (liveState !== "stopped") stopListening(true); });
-  window.addEventListener("pagehide", () => stopListening());
+  window.addEventListener("pagehide", () => { stopListening(); stopRadioActivity(); });
+  window.addEventListener("pageshow", startRadioActivity);
   selectTab(location.hash.slice(1));
   loadSession();
   byId("refresh-button").addEventListener("click", () => { refresh(); loadSession(); });
   byId("recording-select").addEventListener("change", (event) => selectRecording(event.target.value));
   window.addEventListener("online", refresh);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) stopRadioActivity();
+    else { refresh(); startRadioActivity(); }
+  });
   refresh();
+  startRadioActivity();
   setInterval(() => { if (!document.hidden) refresh(); }, 10000);
   setInterval(refreshRadioProgress, 1000);
+  setInterval(refreshRadioMessages, 2000);
 })();

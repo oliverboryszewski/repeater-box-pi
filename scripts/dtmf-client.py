@@ -13,25 +13,26 @@ COMMAND_PATHS = (Path("/run/repeater-rx-monitor/svxlink-command"),
                  Path("/run/repeater-box/svxlink-command"))
 RESULTS = frozenset(("status", "authenticated", "choose_status", "choose_recording", "choose_identification", "status_on", "status_off",
                      "recording_on", "recording_off", "identification_on", "identification_off", "cancelled", "invalid", "expired", "disabled", "denied", "busy", "unavailable"))
+PROMPT_RE = re.compile(r"[0-9a-f]{32}\Z")
 
 
 def validate_response(value):
-    if (not isinstance(value, dict) or set(value) != {"schema", "result", "pair_index", "recording", "announce_status", "identification_enabled"}
+    if (not isinstance(value, dict) or set(value) != {"schema", "result", "pair_index", "recording", "announce_status", "identification_enabled", "prompt_id"}
             or type(value["schema"]) is not int or value["schema"] != 1
             or not isinstance(value["result"], str) or value["result"] not in RESULTS or type(value["pair_index"]) is not int
             or not 0 <= value["pair_index"] <= 9 or type(value["recording"]) is not bool
-            or type(value["announce_status"]) is not bool or type(value["identification_enabled"]) is not bool):
+            or type(value["announce_status"]) is not bool or type(value["identification_enabled"]) is not bool
+            or not isinstance(value["prompt_id"], str)
+            or value["prompt_id"] != "" and PROMPT_RE.fullmatch(value["prompt_id"]) is None):
         raise ValueError("Invalid local control response")
     return value
 
 
-def request(command, socket_path=SOCKET_PATH):
-    if not isinstance(command, str) or re.fullmatch(r"(?:[0-9ABCD]{6}|[0-9ABCD]|\*)", command) is None:
-        raise ValueError("Invalid radio command")
+def _exchange(payload, socket_path, validator):
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
         connection.settimeout(2)
         connection.connect(socket_path)
-        connection.sendall((json.dumps({"schema": 1, "command": command}, separators=(",", ":")) + "\n").encode("ascii"))
+        connection.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode("ascii"))
         data = bytearray()
         while b"\n" not in data and len(data) <= 256:
             chunk = connection.recv(257 - len(data))
@@ -40,7 +41,27 @@ def request(command, socket_path=SOCKET_PATH):
             data.extend(chunk)
         if len(data) > 256 or not data.endswith(b"\n") or data.count(b"\n") != 1:
             raise ValueError("Invalid local response length")
-    return validate_response(json.loads(data))
+    return validator(json.loads(data))
+
+
+def request(command, socket_path=SOCKET_PATH):
+    if not isinstance(command, str) or re.fullmatch(r"(?:[0-9ABCD]{6}|[0-9ABCD]|\*)", command) is None:
+        raise ValueError("Invalid radio command")
+    return _exchange({"schema": 1, "command": command}, socket_path, validate_response)
+
+
+def validate_prompt_ack(value):
+    if (not isinstance(value, dict) or set(value) != {"schema", "accepted"}
+            or type(value["schema"]) is not int or value["schema"] != 1
+            or type(value["accepted"]) is not bool):
+        raise ValueError("Invalid prompt completion response")
+    return value
+
+
+def prompt_finished(prompt_id, socket_path=SOCKET_PATH):
+    if not isinstance(prompt_id, str) or PROMPT_RE.fullmatch(prompt_id) is None:
+        raise ValueError("Invalid prompt completion identifier")
+    return _exchange({"schema": 1, "prompt_finished": prompt_id}, socket_path, validate_prompt_ack)
 
 
 def response_event(response):
@@ -50,7 +71,8 @@ def response_event(response):
         return None
     return ("EVENT RepeaterLogic::box_control_result " + value["result"] + " "
             + str(value["pair_index"]) + " " + str(int(value["recording"])) + " "
-            + str(int(value["announce_status"])) + " " + str(int(value["identification_enabled"])) + "\n").encode("ascii")
+            + str(int(value["announce_status"])) + " " + str(int(value["identification_enabled"])) + " "
+            + (value["prompt_id"] or "-") + "\n").encode("ascii")
 
 
 def announce(response, command_paths=COMMAND_PATHS, owner_uid=None):
@@ -81,8 +103,16 @@ def announce(response, command_paths=COMMAND_PATHS, owner_uid=None):
     return False
 
 
-def main():
+def main(argv=None):
     try:
+        argv = sys.argv[1:] if argv is None else argv
+        if argv:
+            if len(argv) != 2 or argv[0] != "--prompt-finished":
+                return 1
+            # A duplicate/stale acknowledgment is a valid no-op. Never write a
+            # control PTY or consume radio-command stdin in this callback mode.
+            prompt_finished(argv[1])
+            return 0
         line = sys.stdin.buffer.readline(65)
         if not line.endswith(b"\n") or len(line) not in (2, 7):
             return 1

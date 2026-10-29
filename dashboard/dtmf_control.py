@@ -25,6 +25,7 @@ RESULTS = frozenset(("status", "authenticated", "choose_status", "choose_recordi
                      "recording_on", "recording_off", "identification_on", "identification_off", "cancelled", "invalid", "expired",
                      "disabled", "denied", "busy", "unavailable"))
 CODE_RE = re.compile(r"[0-9ABCD]{6}\Z")
+PROMPT_RE = re.compile(r"[0-9a-f]{32}\Z")
 CONFIG_PATH = Path("/etc/repeater-box/dtmf.json")
 SOCKET_PATH = Path("/run/repeater-box-control/dtmf.sock")
 
@@ -41,13 +42,15 @@ def unique_object(pairs):
 class DtmfControl:
     def __init__(self, server, config_file=CONFIG_PATH, socket_path=SOCKET_PATH,
                  owner_uid=0, group_id=None, allowed_uids=None, clock=time.monotonic,
-                 state_dir="/var/lib/repeater-dashboard", code_supported=None, runner=None):
+                 state_dir="/var/lib/repeater-dashboard", code_supported=None, runner=None,
+                 prompt_feedback=False):
         self.server = server
         self.config_file, self.socket_path = Path(config_file), Path(socket_path)
         self.owner_uid, self.clock = owner_uid, clock
         self.state_dir = Path(state_dir)
         self.code_supported = is_pi() if code_supported is None else code_supported
         self.run = runner or system_command
+        self.prompt_feedback = prompt_feedback
         self.rf_session = None
         self.group_id = group_id
         if self.group_id is None:
@@ -172,6 +175,7 @@ class DtmfControl:
                 or (radio.get("pair") or {}).get("verification_required") is True
                 or self.server.updates.status().get("pending") is True
                 or self.server.wifi.status().get("pending") is True
+                or getattr(getattr(self.server, "messages", None), "active", False)
                 or self.code_status(probe=False)["pending"])
 
     def set_enabled(self, enabled):
@@ -198,13 +202,15 @@ class DtmfControl:
             return self.status()
 
     @staticmethod
-    def response(result, pair_index=0, recording=False, announce_status=False, identification_enabled=False):
+    def response(result, pair_index=0, recording=False, announce_status=False,
+                 identification_enabled=False, prompt_id=""):
         return {"schema": 1, "result": result if result in RESULTS else "unavailable",
                 "pair_index": pair_index if type(pair_index) is int and 0 <= pair_index <= 9 else 0,
                 "recording": recording is True, "announce_status": announce_status is True,
-                "identification_enabled": identification_enabled is True}
+                "identification_enabled": identification_enabled is True,
+                "prompt_id": prompt_id if isinstance(prompt_id, str) and PROMPT_RE.fullmatch(prompt_id) else ""}
 
-    def _current_response(self, result, committed=False):
+    def _current_response(self, result, committed=False, prompt_id=""):
         identification = self.server.station_identification.status()
         identification_available = (identification.get("available") is True
                                     and type(identification.get("enabled")) is bool)
@@ -220,7 +226,52 @@ class DtmfControl:
             index = selected.get("index", 0)
         announce = (committed or result == "status") and self.server.settings.get().get("dtmf_status_announcements") is True
         return self.response(result, index, recording, announce,
-                             identification.get("enabled") is True if identification_available else False)
+                             identification.get("enabled") is True if identification_available else False,
+                             prompt_id)
+
+    def _prepare_prompt(self, session, now):
+        """Grant the idle window after playback when a live engine can report it."""
+        try:
+            feedback = self.prompt_feedback() if callable(self.prompt_feedback) else self.prompt_feedback
+        except Exception:
+            feedback = False
+        prompt_id = secrets.token_hex(16) if feedback is True else ""
+        session["prompt_id"] = prompt_id
+        # A missing playback report must not keep radio authorization alive.
+        session["expires"] = now + (45 if prompt_id else 30)
+        return prompt_id
+
+    @staticmethod
+    def prompt_ack(accepted=False):
+        return {"schema": 1, "accepted": accepted is True}
+
+    def _prompt_finished(self, request, peer_uid):
+        """Accept one trusted completion for the currently awaited prompt only."""
+        if (peer_uid not in self.allowed_uids or set(request) != {"schema", "prompt_finished"}
+                or type(request.get("schema")) is not int or request["schema"] != 1
+                or not isinstance(request.get("prompt_finished"), str)
+                or PROMPT_RE.fullmatch(request["prompt_finished"]) is None):
+            return self.prompt_ack()
+        if not self.server.mutation_lock.acquire(blocking=False):
+            return self.prompt_ack()
+        try:
+            session = self.rf_session
+            if (not session or session["peer_uid"] != peer_uid
+                    or session.get("prompt_id") != request["prompt_finished"]):
+                return self.prompt_ack()
+            now = self.clock()
+            if (now >= session["expires"] or not self.server.settings.get().get("dtmf_enabled")
+                    or self._record() != session["record"] or self._busy()):
+                self.rf_session = None
+                return self.prompt_ack()
+            session["prompt_id"] = ""
+            session["expires"] = now + 30
+            return self.prompt_ack(True)
+        except Exception:
+            self.rf_session = None
+            return self.prompt_ack()
+        finally:
+            self.server.mutation_lock.release()
 
     def _authenticate(self, code, record):
         with self.security_lock:
@@ -240,10 +291,11 @@ class DtmfControl:
     def command(self, request, peer_uid):
         # A single RX source has one menu. Concurrent duplicate frames cannot
         # erase or reuse the authorization being consumed by another frame.
+        feedback = isinstance(request, dict) and "prompt_finished" in request
         if not self.rf_command_lock.acquire(blocking=False):
-            return self.response("denied")
+            return self.prompt_ack() if feedback else self.response("denied")
         try:
-            return self._command(request, peer_uid)
+            return self._prompt_finished(request, peer_uid) if feedback else self._command(request, peer_uid)
         finally:
             self.rf_command_lock.release()
 
@@ -288,8 +340,9 @@ class DtmfControl:
                 return self.response("busy" if authorized else "denied")
             now = self.clock()
             if password:
-                self.rf_session = {"stage": "option", "expires": now + 30, "record": record, "peer_uid": peer_uid}
-                return self._current_response("authenticated")
+                self.rf_session = {"stage": "option", "record": record, "peer_uid": peer_uid}
+                prompt_id = self._prepare_prompt(self.rf_session, now)
+                return self._current_response("authenticated", prompt_id=prompt_id)
             session = self.rf_session
             if not session or session["peer_uid"] != peer_uid:
                 return self.response("denied")
@@ -312,7 +365,9 @@ class DtmfControl:
                     return self._current_response("unavailable")
                 session["stage"] = "value"
                 session["option"] = command
-                return self._current_response({"1": "choose_status", "2": "choose_recording", "3": "choose_identification"}[command])
+                prompt_id = self._prepare_prompt(session, now)
+                return self._current_response({"1": "choose_status", "2": "choose_recording", "3": "choose_identification"}[command],
+                                              prompt_id=prompt_id)
             if session["stage"] == "value" and command in ("0", "1"):
                 # Consume authorization before applying; a failed action or a
                 # repeated frame cannot reuse the menu to change anything.

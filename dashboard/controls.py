@@ -9,7 +9,7 @@ import secrets
 import threading
 import time
 
-DEFAULTS = {"station_name": "Repeater Box", "input_enabled": False,
+DEFAULTS = {"station_name": "Repeater Box", "input_enabled": False, "monitor_transmit_audio": True,
             "dtmf_enabled": False, "dtmf_status_announcements": True, "automatic_station_id": True, "record_on_startup": False, "keep_indefinitely": False, "retention_days": 7,
             "max_archive_mb": 4096, "recording_threshold_dbfs": -45}
 ITERATIONS = 600_000
@@ -58,7 +58,7 @@ class SettingsStore:
         if not isinstance(name, str) or not 1 <= len(name.strip()) <= 48 or any(ord(c) < 32 for c in name):
             raise ValueError("Station name must contain 1–48 printable characters")
         merged["station_name"] = name.strip()
-        for key in ("input_enabled", "dtmf_enabled", "dtmf_status_announcements", "automatic_station_id", "record_on_startup", "keep_indefinitely"):
+        for key in ("input_enabled", "monitor_transmit_audio", "dtmf_enabled", "dtmf_status_announcements", "automatic_station_id", "record_on_startup", "keep_indefinitely"):
             if type(merged[key]) is not bool:
                 raise ValueError(f"{key} must be true or false")
         for key, low, high in (("retention_days", 1, 90), ("max_archive_mb", 64, 16384),

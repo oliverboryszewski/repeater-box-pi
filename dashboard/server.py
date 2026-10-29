@@ -10,6 +10,7 @@ import argparse
 import datetime as dt
 import json
 import mimetypes
+import math
 import os
 from pathlib import Path
 import platform
@@ -33,8 +34,10 @@ from wifi_visibility import WifiVisibility
 from software_updates import SoftwareUpdates
 from radio_programming import RadioProgramming
 from radio_editor import MODELS
+from native_state import NativeState
+from radio_messages import RadioMessages, MessageError, MAX_UPLOAD_BYTES, upload_name
 
-VERSION = "0.10.4"
+VERSION = "0.11.0"
 STATIC = Path(__file__).parent / "static"
 STATIC_ROUTES = {
     "/": "index.html", "/index.html": "index.html", "/app.js": "app.js", "/style.css": "style.css",
@@ -43,6 +46,100 @@ STATIC_ROUTES = {
     "/radio-editor.css": "radio-editor.css",
 }
 MEDIA_TYPES = {".wav": "audio/wav", ".ogg": "audio/ogg", ".mp3": "audio/mpeg", ".flac": "audio/flac"}
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def radio_work_unfinished(radio):
+    roles = radio.get("roles") if isinstance(radio.get("roles"), dict) else {}
+    pair = radio.get("pair") if isinstance(radio.get("pair"), dict) else {}
+    return (radio.get("pending") is True or radio.get("verification_required") is True
+            or any(isinstance(role, dict) and role.get("verification_required") is True
+                   for role in roles.values())
+            or pair.get("verification_required") is True or pair.get("activation_required") is True)
+
+
+def valid_saved_plan(plan):
+    return (isinstance(plan, dict)
+            and all(type(plan.get(key)) is int and 0 < plan[key] < 10**10 for key in ("rx_hz", "tx_hz"))
+            and "tone_hz" in plan and (plan["tone_hz"] is None or type(plan["tone_hz"]) in (int, float)
+                 and math.isfinite(plan["tone_hz"]) and 0 < plan["tone_hz"] < 1000)
+            and plan.get("power", "High") in ("High", "Low"))
+
+
+def verified_pair(radio):
+    pair = radio.get("pair") if isinstance(radio.get("pair"), dict) else {}
+    roles = pair.get("roles") if isinstance(pair.get("roles"), dict) else {}
+    if (radio_work_unfinished(radio) or pair.get("stored_verified") is not True
+            or pair.get("catalog_changed") is True or not valid_saved_plan(pair.get("plan"))
+            or not isinstance(pair.get("pair_id"), str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,15}", pair["pair_id"])
+            or not isinstance(radio.get("catalog_digest"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", radio["catalog_digest"])
+            or not all(isinstance(roles.get(role), dict) and roles[role].get("verified") is True for role in ("rx", "tx"))):
+        return None
+    return pair
+
+
+def public_radio_plan(radio):
+    pair = radio.get("pair") if isinstance(radio.get("pair"), dict) else {}
+    saved = pair.get("plan")
+    if valid_saved_plan(saved):
+        switching = radio.get("pair_switching") if isinstance(radio.get("pair_switching"), dict) else {}
+        presets = switching.get("presets") if isinstance(switching.get("presets"), list) else []
+        preset = next((item for item in presets if isinstance(item, dict) and item.get("id") == pair.get("pair_id")), {})
+        return {"rx_mhz": f"{saved['rx_hz'] / 1000000:.6f}", "tx_mhz": f"{saved['tx_hz'] / 1000000:.6f}",
+                "tone_hz": saved["tone_hz"], "power": saved.get("power", "High"),
+                "verified": verified_pair(radio) is not None, "pair_id": pair.get("pair_id"),
+                "label": preset.get("label"), "rx_name": saved.get("rx_name", preset.get("rx_name")),
+                "tx_name": saved.get("tx_name", preset.get("tx_name"))}
+    plan = radio.get("plan")
+    if (isinstance(plan, dict) and all(isinstance(plan.get(role), dict)
+            and isinstance(plan[role].get("frequency_mhz"), str)
+            and re.fullmatch(r"[0-9]{2,4}\.[0-9]{3,6}", plan[role]["frequency_mhz"]) for role in ("rx", "tx"))
+            and "receive_tone_hz" in plan["rx"]):
+        return {"rx_mhz": plan["rx"]["frequency_mhz"], "tx_mhz": plan["tx"]["frequency_mhz"],
+                "tone_hz": plan["rx"]["receive_tone_hz"], "power": plan["tx"].get("power", "High"),
+                "verified": False, "pair_id": None, "label": None,
+                "rx_name": plan["rx"].get("name"), "tx_name": plan["tx"].get("name")}
+    return None
+
+
+def message_busy_reason(server):
+    # This callback deliberately never calls messages.status/active: status()
+    # invokes it itself, and active is the separate mutation exclusion check.
+    if radio_work_unfinished(server.programming.status()):
+        return "Finish the current radio work before managing messages."
+    if server.updates.status().get("pending") is True or server.wifi.status().get("pending") is True:
+        return "Wait for the current maintenance task before managing messages."
+    if server.dtmf.code_status(probe=False).get("pending") is True:
+        return "Wait for the DTMF password change before managing messages."
+    return None
+
+
+def radio_message_status(server, radio=None):
+    state = server.messages.status()
+    radio = server.programming.status() if radio is None else radio
+    pair = verified_pair(radio)
+    state.update(pair_id=pair["pair_id"] if pair else None,
+                 catalog_digest=radio.get("catalog_digest") if pair else None)
+    if not pair:
+        state["can_broadcast"] = False
+        state["reason"] = state.get("reason") or "A verified channel pair is required to broadcast."
+    return state
+
+
+def radio_activity(server):
+    value = server.native_state.read()
+    available = bool(value and value["online"])
+    return {"available": available, "receiving": value["rx_open"] if available else None,
+            "transmitting": value["tx_on"] if available else None}
 
 
 def static_files_ready():
@@ -232,6 +329,13 @@ class Monitor:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def log_request(self, code="-", size="-"):
+        # Visible dashboards poll activity twice per second. Keep errors in the
+        # journal without writing every successful indicator refresh to the SD.
+        if code == 200 and urlsplit(self.path).path == "/api/activity":
+            return
+        super().log_request(code, size)
+
     protocol_version = "HTTP/1.1"
 
     def headers_for(self, code, content_type, size, extra=None):
@@ -274,6 +378,9 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             self.json_response(403, {"error": "Cross-origin changes are not allowed"})
             return
+        if path == "/api/messages/upload":
+            self.upload_message()
+            return
         try:
             size = int(self.headers.get("Content-Length", "0"))
             maximum = 65536 if path == "/api/radio-editor/write" else 4096
@@ -282,7 +389,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.headers.get_content_type() != "application/json":
                 raise ValueError("Send JSON")
             self.connection.settimeout(10)
-            data = json.loads(self.rfile.read(size))
+            data = json.loads(self.rfile.read(size), object_pairs_hook=unique_object)
             if not isinstance(data, dict):
                 raise ValueError("Expected a JSON object")
         except (ValueError, TimeoutError, OSError) as error:
@@ -297,14 +404,20 @@ class Handler(BaseHTTPRequestHandler):
             except (ValueError, PermissionError) as error:
                 self.json_response(401, {"error": str(error)})
             return
-        if path not in ("/api/admin/logout", "/api/recording", "/api/settings", "/api/wifi-visibility", "/api/software-updates/check", "/api/software-updates/install", "/api/radio-programming", "/api/radio-pair", "/api/radio-editor/read", "/api/radio-editor/write", "/api/dtmf-control", "/api/dtmf-password", "/api/station-identification"):
+        if path not in ("/api/admin/logout", "/api/recording", "/api/settings", "/api/wifi-visibility", "/api/software-updates/check", "/api/software-updates/install", "/api/radio-programming", "/api/radio-pair", "/api/radio-editor/read", "/api/radio-editor/write", "/api/dtmf-control", "/api/dtmf-password", "/api/station-identification", "/api/messages/delete", "/api/messages/broadcast"):
             self.json_response(404, {"error": "Unknown endpoint"})
             return
         if not self.server.auth.authorize(token, self.headers.get("X-CSRF-Token")):
             self.json_response(403, {"error": "Sign in as admin before changing settings or recording"})
             return
+        if path != "/api/admin/logout" and self.server.messages.active:
+            self.json_response(409, {"error": "Wait for the current audio message task before changing settings."})
+            return
         # Keep cross-controller pending checks and queue writes atomic.
         with self.server.mutation_lock:
+            if path != "/api/admin/logout" and self.server.messages.active:
+                self.json_response(409, {"error": "Wait for the current audio message task before changing settings."})
+                return
             if path != "/api/admin/logout" and self.server.programming.status()["pending"]:
                 self.json_response(409, {"error": "A radio programming task is in progress. Wait for its result before changing settings."})
                 return
@@ -315,6 +428,29 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/api/admin/logout":
                     self.server.auth.logout(token)
                     self.json_response(200, self.server.auth.session(None), {"Set-Cookie": "repeater_admin=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"})
+                elif path in ("/api/messages/delete", "/api/messages/broadcast"):
+                    fields = {"id", "sha256"}
+                    if path.endswith("/broadcast"):
+                        fields |= {"pair_id", "catalog_digest", "invocation_id"}
+                    if (set(data) != fields or not isinstance(data["id"], str) or not re.fullmatch(r"[0-9a-f]{32}", data["id"])
+                            or not isinstance(data["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", data["sha256"])):
+                        raise ValueError("Send only the reviewed message and current broadcast identifiers")
+                    if path.endswith("/delete"):
+                        self.server.messages.delete_message(data["id"], data["sha256"])
+                        code = 200
+                    else:
+                        if (not isinstance(data["pair_id"], str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,15}", data["pair_id"])
+                                or not isinstance(data["catalog_digest"], str) or not re.fullmatch(r"[0-9a-f]{64}", data["catalog_digest"])
+                                or not isinstance(data["invocation_id"], str) or not re.fullmatch(r"[0-9a-f]{32}", data["invocation_id"])):
+                            raise ValueError("Review the current channel pair and live repeater before broadcasting")
+                        radio = self.server.programming.status()
+                        pair = verified_pair(radio)
+                        if not pair or pair["pair_id"] != data["pair_id"] or radio["catalog_digest"] != data["catalog_digest"]:
+                            self.json_response(409, {"error": "The verified channel pair changed. Review the message broadcast again."})
+                            return
+                        self.server.messages.request_broadcast(data["id"], data["sha256"], data["pair_id"], data["catalog_digest"], data["invocation_id"])
+                        code = 202
+                    self.json_response(code, {"radio_messages": radio_message_status(self.server)})
                 elif path == "/api/station-identification":
                     if set(data) != {"enabled"}:
                         raise ValueError("Send only the automatic identification enabled flag")
@@ -428,10 +564,58 @@ class Handler(BaseHTTPRequestHandler):
                             arguments.append(data["supersede_id"])
                         state = self.server.programming.request_editor(*arguments)
                     self.json_response(202, {"radio_programming": state})
+            except MessageError as error:
+                self.json_response(409, {"error": str(error)})
             except PermissionError as error:
                 self.json_response(403, {"error": str(error)})
             except (ValueError, OSError) as error:
                 self.json_response(400, {"error": str(error)})
+
+    def upload_message(self):
+        # Authenticate before reading any part of a potentially large body.
+        if not self.server.auth.authorize(self.session_token(), self.headers.get("X-CSRF-Token")):
+            self.close_connection = True
+            self.json_response(403, {"error": "Sign in as admin before uploading a radio message"})
+            return
+        try:
+            lengths = self.headers.get_all("Content-Length", [])
+            if (self.headers.get("Transfer-Encoding") is not None or len(lengths) != 1
+                    or not re.fullmatch(r"[0-9]+", lengths[0]) or not 0 < int(lengths[0]) <= MAX_UPLOAD_BYTES):
+                raise ValueError("Upload a nonempty audio file no larger than 8 MiB with a fixed Content-Length")
+            if self.headers.get_content_type() != "application/octet-stream":
+                raise ValueError("Send the audio file as application/octet-stream")
+            encoded = self.headers.get("X-File-Name", "")
+            if len(encoded) > 1024 or re.search(r"%(?![0-9a-fA-F]{2})", encoded):
+                raise ValueError("Send a valid encoded audio filename")
+            name, _extension = upload_name(unquote(encoded, encoding="utf-8", errors="strict"))
+            with self.server.mutation_lock:
+                reason = message_busy_reason(self.server)
+                if reason or self.server.messages.active:
+                    self.close_connection = True
+                    self.json_response(409, {"error": reason or "Wait for the current audio message task."})
+                    return
+            size = int(lengths[0])
+            self.connection.settimeout(15)
+            payload = self.rfile.read(size)
+            if len(payload) != size:
+                raise ValueError("The audio upload was incomplete")
+            if not self.server.auth.authorize(self.session_token(), self.headers.get("X-CSRF-Token")):
+                self.close_connection = True
+                self.json_response(403, {"error": "The admin session changed. Sign in again before uploading."})
+                return
+            # The module reserves under the shared lock, then releases it for
+            # bounded conversion while its active flag excludes mutations.
+            entry = self.server.messages.store_upload(name, payload)
+            self.json_response(201, {"radio_messages": radio_message_status(self.server), "message": entry})
+        except MessageError as error:
+            self.close_connection = True
+            self.json_response(400, {"error": str(error)})
+        except (TimeoutError, OSError):
+            self.close_connection = True
+            self.json_response(400, {"error": "The audio upload could not be read or saved. Check the connection and try again."})
+        except (ValueError, UnicodeError) as error:
+            self.close_connection = True
+            self.json_response(400, {"error": str(error)})
 
     def serve(self, head=False):
         path = urlsplit(self.path).path
@@ -439,6 +623,19 @@ class Handler(BaseHTTPRequestHandler):
             # Readiness for the updater must not wait for slow hardware inventory.
             ready = static_files_ready()
             self.json_response(200 if ready else 503, {"version": VERSION, "ready": ready}, head=head)
+            return
+        if path == "/api/activity":
+            self.json_response(200, radio_activity(self.server), head=head)
+            return
+        if path == "/api/messages":
+            if not self.server.auth.session(self.session_token())["authenticated"]:
+                self.json_response(403, {"error": "Sign in as admin to view radio messages"}, head=head)
+                return
+            self.json_response(200, {"radio_messages": radio_message_status(self.server)}, head=head)
+            return
+        preview = re.fullmatch(r"/api/messages/([0-9a-f]{32})/audio", path)
+        if preview:
+            self.serve_message_preview(preview[1], head)
             return
         if path == "/api/radio-programming/status":
             self.json_response(200, {"radio_programming": self.server.programming.status()}, head=head)
@@ -453,21 +650,14 @@ class Handler(BaseHTTPRequestHandler):
             data["software_updates"] = self.server.updates.status()
             data["radio_programming"] = self.server.programming.status()
             radio = data["radio_programming"]
-            data.setdefault("setup", {})["radio_plan"] = None
-            pair = radio.get("pair") or {}
-            if pair.get("stored_verified") and pair.get("plan"):
-                plan = pair["plan"]
-                data["setup"]["radio_plan"] = {"rx_mhz": f"{plan['rx_hz'] / 1000000:.6f}",
-                    "tx_mhz": f"{plan['tx_hz'] / 1000000:.6f}", "tone_hz": plan["tone_hz"],
-                    "power": "HIGH (radio setting)"}
-            elif radio.get("plan"):
-                plan = radio["plan"]
-                data["setup"]["radio_plan"] = {"rx_mhz": plan["rx"]["frequency_mhz"],
-                    "tx_mhz": plan["tx"]["frequency_mhz"], "tone_hz": plan["rx"]["receive_tone_hz"],
-                    "power": "HIGH (radio setting)"}
+            data.setdefault("setup", {})["radio_plan"] = public_radio_plan(radio)
             data["admin"] = self.server.auth.session(self.session_token())
             data["admin"].pop("csrf_token", None)
-            data["setup"]["notes"][-1] = "Live listening and RX audio recording are available after the receiver feed is commissioned."
+            data["radio_messages"] = radio_message_status(self.server, radio) if data["admin"]["authenticated"] else {"admin_required": True}
+            data["radio_activity"] = radio_activity(self.server)
+            data["setup"]["notes"] = ["Channel values come from the last verified pair." if verified_pair(radio)
+                                      else "Configure and verify a channel pair to confirm the displayed settings.",
+                                      "Activity dots show receiver squelch and the Pi's transmit command."]
             self.json_response(200, data, head=head)
             return
         if path == "/api/session":
@@ -518,6 +708,39 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_recording(unquote(path[len("/recordings/"):]), head)
             return
         self.send_error(404)
+
+    def serve_message_preview(self, identifier, head):
+        if not self.server.auth.session(self.session_token())["authenticated"]:
+            self.json_response(403, {"error": "Sign in as admin to preview radio messages"}, head=head)
+            return
+        try:
+            stream, entry = self.server.messages.open_preview(identifier)
+        except (MessageError, OSError):
+            self.json_response(404, {"error": "The message preview is unavailable"}, head=head)
+            return
+        with stream:
+            size = entry["bytes"]
+            try:
+                span = parse_range(self.headers.get("Range"), size)
+            except ValueError:
+                self.headers_for(416, "audio/wav", 0, {"Content-Range": f"bytes */{size}"})
+                return
+            extra = {"Accept-Ranges": "bytes", "Content-Disposition": "inline; filename*=UTF-8''" + quote(Path(entry["name"]).stem + ".wav", safe="")}
+            if span:
+                first, last = span
+                length = last - first + 1
+                extra["Content-Range"] = f"bytes {first}-{last}/{size}"
+            else:
+                first, length = 0, size
+            self.headers_for(206 if span else 200, "audio/wav", length, extra)
+            if not head:
+                stream.seek(first)
+                while length:
+                    data = stream.read(min(65536, length))
+                    if not data:
+                        break
+                    self.wfile.write(data)
+                    length -= len(data)
 
     def serve_live(self, head):
         live = self.server.hub.status()["live_audio"]
@@ -625,9 +848,12 @@ def make_server(host, port, recordings, state_dir=None, admin_file=None):
         server.wifi = WifiVisibility(state_dir)
         server.updates = SoftwareUpdates(state_dir, current_version=VERSION)
         server.programming = RadioProgramming(state_dir)
-        server.hub = AudioHub(recordings, server.settings.get())
+        server.native_state = NativeState()
+        server.hub = AudioHub(recordings, server.settings.get(), live_mode_probe=server.native_state.live)
         server.hub.start()
-        server.dtmf = DtmfControl(server, state_dir=state_dir)
+        server.dtmf = DtmfControl(server, state_dir=state_dir, prompt_feedback=server.native_state.live)
+        server.messages = RadioMessages(state_dir, native_state_reader=server.native_state.read,
+                                       busy_check=lambda: message_busy_reason(server), mutation_lock=server.mutation_lock)
         bridge_started = server.dtmf.start()
         projection_path = server.dtmf.socket_path.with_name("station-identification.json") if bridge_started else None
         server.station_identification = StationIdentification(server.settings, projection_path=projection_path)

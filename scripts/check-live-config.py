@@ -32,7 +32,7 @@ MORSE = dict(zip('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/',
 
 GLOBAL = {'LOGICS': 'RepeaterLogic', 'TIMESTAMP_FORMAT': '"%Y-%m-%d %H:%M:%S"',
           'CARD_SAMPLE_RATE': '48000', 'CARD_CHANNELS': '1'}
-LOGIC = {'TYPE': 'Repeater', 'RX': 'RxAIOC', 'TX': 'TxAIOC', 'MODULES': '',
+LOGIC = {'TYPE': 'Repeater', 'RX': 'RxAIOC', 'TX': 'TxMonitored', 'MODULES': '',
          'ONLINE': '1', 'NO_REPEAT': '0', 'EVENT_HANDLER': str(EVENT_HANDLER),
          'DEFAULT_LANG': 'en_US', 'SHORT_IDENT_INTERVAL': '0', 'LONG_IDENT_INTERVAL': '0',
          'RGR_SOUND_DELAY': '-1', 'IDLE_SOUND_INTERVAL': '0', 'IDENT_NAG_TIMEOUT': '0',
@@ -47,7 +47,11 @@ RX_TUNING = {'SQL_START_DELAY': (0, 5000), 'SQL_DELAY': (0, 5000),
              'VOX_THRESH': (1, 32767), 'PREAMP': (-40, 40)}
 TX_FIXED = {'TYPE': 'Local', 'AUDIO_CHANNEL': '0', 'LIMITER_THRESH': '-9', 'PREEMPHASIS': '0',
             'PTT_TYPE': 'SerialPin', 'PTT_PIN': 'DTR', 'SERIAL_SET_PINS': '!DTR!RTS',
-            'TIMEOUT': '15', 'PTT_HANGTIME': '0', 'TX_DELAY': '300'}
+            'TIMEOUT': '40', 'PTT_HANGTIME': '0', 'TX_DELAY': '300'}
+TX_COMPOSITE = {'TYPE': 'Multi', 'TRANSMITTERS': 'TxAIOC,TxMonitor'}
+TX_MONITOR = {'TYPE': 'Local', 'AUDIO_DEV': 'udp:127.0.0.1:7356', 'AUDIO_CHANNEL': '0',
+              'PTT_TYPE': 'NONE', 'PREEMPHASIS': '0', 'MASTER_GAIN': '0',
+              'LIMITER_THRESH': '-9', 'TIMEOUT': '40', 'TX_DELAY': '300', 'PTT_HANGTIME': '0'}
 
 
 class DevicesNotReady(ValueError):
@@ -208,11 +212,15 @@ def exact_section(parser, section, expected):
         raise ValueError('The live RF configuration differs from its fixed local operating profile.')
 
 
-def validate_parser(parser, authorization):
-    if set(parser.sections()) != {'GLOBAL', 'RepeaterLogic', 'RxAIOC', 'TxAIOC'} or parser.defaults():
-        raise ValueError('Only the fixed local repeater logic and two AIOC sections are supported.')
+def _validate_profile(parser, authorization, *, legacy):
+    sections = {'GLOBAL', 'RepeaterLogic', 'RxAIOC', 'TxAIOC'}
+    if not legacy:
+        sections.update(('TxMonitored', 'TxMonitor'))
+    if set(parser.sections()) != sections or parser.defaults():
+        raise ValueError('Only the fixed local repeater and its restricted audio sections are supported.')
     exact_section(parser, 'GLOBAL', GLOBAL)
-    exact_section(parser, 'RepeaterLogic', dict(LOGIC, CALLSIGN=authorization['callsign'],
+    exact_section(parser, 'RepeaterLogic', dict(LOGIC, TX='TxAIOC' if legacy else 'TxMonitored',
+                  CALLSIGN=authorization['callsign'],
                   BOX_ID_INTERVAL_MINUTES=str(id_interval(authorization['id_interval_minutes']))))
     rx = dict(parser['RxAIOC'])
     expected_rx = dict(RX_FIXED, AUDIO_DEV='alsa:plughw:CARD=' + authorization['rx_alsa_id'] + ',DEV=0')
@@ -234,9 +242,22 @@ def validate_parser(parser, authorization):
                 raise ValueError('Local receiver calibration is outside supported bounds.')
     if not {'VOX_THRESH', 'VOX_FILTER_DEPTH', 'SQL_HANGTIME'} <= set(rx):
         raise ValueError('The live receiver is missing its local squelch calibration.')
-    exact_section(parser, 'TxAIOC', dict(TX_FIXED,
+    exact_section(parser, 'TxAIOC', dict(TX_FIXED, TIMEOUT='15' if legacy else '40',
         AUDIO_DEV='alsa:plughw:CARD=' + authorization['tx_alsa_id'] + ',DEV=0',
         PTT_PORT=authorization['devices']['tx'], MASTER_GAIN=gain_text(authorization['tx_gain_db'])))
+    if not legacy:
+        exact_section(parser, 'TxMonitored', TX_COMPOSITE)
+        exact_section(parser, 'TxMonitor', TX_MONITOR)
+
+
+def validate_parser(parser, authorization):
+    """Accept only the current profile for normal authorization and startup."""
+    _validate_profile(parser, authorization, legacy=False)
+
+
+def _validate_legacy_parser(parser, authorization):
+    """Recognize the exact previous profile for offline migration only."""
+    _validate_profile(parser, authorization, legacy=True)
 
 
 def usb_identity(path):

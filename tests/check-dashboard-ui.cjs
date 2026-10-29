@@ -7,17 +7,23 @@ const source = fs.readFileSync(path.resolve(__dirname, '../dashboard/static/app.
   session(auth, known=true) { session = auth; sessionKnown = known; renderAdmin(); },
   status(status) { latestStatus = status; renderWifiVisibility(status.wifi_visibility); renderSoftwareUpdates(status.software_updates); renderRadioProgramming(status.radio_programming); renderDtmf(); },
   settings(settings) { renderSettings(settings); },
+  live(live) { renderLive(live); },
+  channelPair(status) { renderChannelPair(status); },
+  activity(value) { renderRadioActivity(value); },
+  startActivity() { return startRadioActivity(); },
+  stopActivity() { stopRadioActivity(); },
+  messagesProgress() { return refreshRadioMessages(); },
   progress() { return refreshRadioProgress(); },
   refresh() { return refreshAfterMutation(); },
   };\n})();`);
-function harness({preview=false, hidden=false, updates={}, radios={}, stationIdentification={}}={}) {
-  let focused = null, onStatus = null, failRefresh = false, pairError = null, stationIdError = null, stationIdResult = null, softwareRequests = 1;
-  const elements = new Map(), calls=[];
+function harness({preview=false, hidden=false, updates={}, radios={}, stationIdentification={},messages={}}={}) {
+  let focused = null, onStatus = null, onActivity = null, failActivity = false, failRefresh = false, pairError = null, messageError = null, stationIdError = null, stationIdResult = null, softwareRequests = 1;
+  const elements = new Map(), calls=[], timers=new Map();let timerId=0;
   class Element {
     constructor(id='') {this.id=id;this.listeners={};this.attrs={};this.dataset={};this.open=false;this.classList={add(){},remove(){},toggle(){}};this.value='';this.children=[];this.firstChild={nodeType:3,nodeValue:''};}
     addEventListener(type,fn){(this.listeners[type]??=[]).push(fn);}
     async dispatch(type,extra={}){const event={type,target:this,...extra,preventDefault(){this.defaultPrevented=true;}};for(const fn of this.listeners[type]??[]) await fn(event);return event;}
-    setAttribute(k,v){this.attrs[k]=v;} removeAttribute(k){delete this.attrs[k];}
+    setAttribute(k,v){this.attrs[k]=v;} removeAttribute(k){delete this.attrs[k];if(k==='src')delete this.src;}
     replaceChildren(...nodes){this.children=nodes;} append(...nodes){this.children.push(...nodes);} add(node){this.children.push(node);}
     focus(){focused=this.id;} pause(){} load(){}
     setSelectionRange(start,end){this.selectionStart=start;this.selectionEnd=end;}
@@ -28,13 +34,29 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
   const auth={configured:true,authenticated:!preview,csrf_token:preview?null:'token-1'};
   const plan={rx:{memory:1,name:'BOX-RX1',frequency_mhz:'145.300000',receive_tone_hz:88.5,transmit_tone_hz:null,transmit:false,power:'High',mode:'NFM'},tx:{memory:1,name:'BOX-TX1',frequency_mhz:'433.500000',receive_tone_hz:null,transmit_tone_hz:88.5,transmit:true,power:'High',mode:'NFM'}};
   let status={dtmf_control:{available:true,configured:true,bridge_ready:true,enabled:false,status_announcements:true,code_change:{available:true,pending:false,request_id:null,success:null,message:null}},radio_programming:{available:!preview,configured:!preview,catalog_configured:true,catalog_digest:'c'.repeat(64),preview,pending:false,request_id:'radio-1',plan,roles:{rx:{inspected:true,compatible:true,firmware:'HN5RV011',identity:'known-rx',programmed:true,verified:true},tx:{inspected:true,compatible:true,firmware:'HN5RV011',identity:'known-tx',programmed:true,verified:true}},...radios},version:'0.2',wifi_visibility:{available:!preview,preview,pending:false,profile_hidden:hidden,ssid:'Repeater-Box',request_id:'req-1'},admin:{configured:true,authenticated:!preview},network:{ssid:'Repeater-Box'},settings:{},recorder:{},software_updates:{available:!preview,preview,pending:false,current_version:'0.2.2',current_commit:'a'.repeat(40),latest_version:'0.2.3',latest_commit:'b'.repeat(40),update_available:true,action:'check',success:true,request_id:'updates-1',checked_at:'2026-10-19T19:00:00+00:00',...updates}};
+  status.radio_messages={available:!preview,can_upload:!preview,can_broadcast:!preview,reason:'',limits:{max_upload_bytes:8388608,max_duration_seconds:30,allowed_extensions:['wav','mp3','m4a'],max_messages:10},messages:[],upload_pending:false,job:null,invocation_id:'b'.repeat(32),pair_id:'default',catalog_digest:'c'.repeat(64),...messages};
   status.station_identification={available:!preview,enabled:true,...stationIdentification};
-  const ctx={console, URL, AbortController, Node:{TEXT_NODE:3}, Option:Element, document:{getElementById:el,querySelector:el,createElement:()=>new Element(),addEventListener(){},hidden:false},location:{hash:'#settings',origin:'http://10.42.0.1'},history:{replaceState(){}},window:{addEventListener(){}},setTimeout:()=>1,clearTimeout(){},setInterval(){},fetch:async(path,options={})=>{
+  const ctx={console, URL, AbortController, Node:{TEXT_NODE:3}, Option:Element, document:{getElementById:el,querySelector:el,createElement:()=>new Element(),addEventListener(){},hidden:false},location:{hash:'#settings',origin:'http://10.42.0.1'},history:{replaceState(){}},window:{addEventListener(){}},setTimeout:(fn,ms)=>{const id=++timerId;timers.set(id,{fn,ms});return id;},clearTimeout(id){timers.delete(id);},setInterval(){},fetch:async(path,options={})=>{
     calls.push({path,options});
     if(path==='/api/status'){
       if(onStatus) await onStatus();
       if(failRefresh)throw new Error('offline');
       return{ok:true,json:async()=>structuredClone(status)};
+    }
+    if(path==='/api/activity'){if(onActivity)await onActivity();if(failActivity)throw new Error('offline');return{ok:true,json:async()=>structuredClone(status.radio_activity||{available:false,receiving:null,transmitting:null})};}
+    if(path==='/api/messages')return{ok:true,json:async()=>({radio_messages:structuredClone(status.radio_messages)})};
+    if(path.startsWith('/api/messages/')){
+      if(messageError)throw new Error(messageError);
+      if(path.endsWith('/upload')){
+        const entry=messageEntry('a'.repeat(32),decodeURIComponent(options.headers['X-File-Name']));
+        status.radio_messages.messages.push(entry);
+        return{ok:true,json:async()=>({radio_messages:structuredClone(status.radio_messages),message:structuredClone(entry)})};
+      }
+      const body=JSON.parse(options.body);
+      if(path.endsWith('/delete'))status.radio_messages.messages=status.radio_messages.messages.filter(item=>item.id!==body.id);
+      else if(path.endsWith('/broadcast'))status.radio_messages.job={request_id:'e'.repeat(32),message_id:body.id,phase:'queued',pending:true,success:null,message:'Waiting for the next clear transmit window.'};
+      else throw new Error(`Unexpected message route ${path}`);
+      return{ok:true,json:async()=>({radio_messages:structuredClone(status.radio_messages)})};
     }
     if(path==='/api/wifi-visibility'){
       const body=JSON.parse(options.body);status.wifi_visibility={...status.wifi_visibility,profile_hidden:body.hidden,request_id:'req-2',success:true,requested_hidden:body.hidden};
@@ -74,7 +96,7 @@ function harness({preview=false, hidden=false, updates={}, radios={}, stationIde
     throw new Error(`unexpected fetch ${path}`);
   }};
   vm.createContext(ctx);vm.runInContext(source,ctx);ctx.testApi.setup(structuredClone(status),structuredClone(auth));
-  return{ctx,el,calls,get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},set stationIdError(value){stationIdError=value;},set stationIdResult(value){stationIdResult=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
+  return{ctx,el,calls,timers,set onActivity(fn){onActivity=fn;},set failActivity(value){failActivity=value;},get focused(){return focused;},get status(){return status;},set onStatus(fn){onStatus=fn;},set failRefresh(v){failRefresh=v;},set pairError(value){pairError=value;},set messageError(value){messageError=value;},set stationIdError(value){stationIdError=value;},set stationIdResult(value){stationIdResult=value;},posts:()=>calls.filter(x=>x.options.method==='POST')};
 }
 const checks=[];
 async function check(name,fn){try{await fn();checks.push(name);}catch(error){throw new Error(name,{cause:error});}}
@@ -112,6 +134,15 @@ function repairHarness(role='rx',kind='editor',options={}) {
   Object.assign(h.status.radio_programming.roles[role],{program_kind:kind,verification_required:true,verified:false,pending_id:'e'.repeat(32)});
   h.ctx.testApi.status(structuredClone(h.status));return h;
 }
+function messageEntry(id='1'.repeat(32),name='Field message.wav') {
+ return{id,sha256:'d'.repeat(64),name,duration_seconds:12.4,bytes:1190444,created_at:'2026-10-29T19:00:00+00:00',preview_url:`/api/messages/${id}/audio`};
+}
+function messageHarness(options={}) {
+ return pairHarness({...options,messages:{messages:[messageEntry()],...options.messages}});
+}
+async function selectMessage(h,id='1'.repeat(32)) {
+ h.el('radio-message-select').value=id;await h.el('radio-message-select').dispatch('change');
+}
 function dashboardMarkup() {
   const html=fs.readFileSync(path.resolve(__dirname,'../dashboard/static/index.html'),'utf8');
   const root={tag:'#document',attrs:{},parent:null}, stack=[root], ids=new Map(), nodes=[];
@@ -131,6 +162,177 @@ function dashboardMarkup() {
   return{html,ids,nodes,inside};
 }
 (async()=>{
+  await check('Overview uses the selected verified pair rather than an old default template',async()=>{
+    const h=pairHarness();Object.assign(h.status.radio_programming.pair,{pair_id:'rpt1',plan:{name:'BOX-RX2 / BOX-TX2',rx_hz:145330000,tx_hz:433525000,tone_hz:88.5,power:'High'}});
+    h.status.setup={rf_enabled:true,radio_plan:{verified:true,rx_mhz:'145.300000',tx_mhz:'433.500000',tone_hz:88.5,power:'High',label:'Pair 2',rx_name:'BOX-RX2',tx_name:'BOX-TX2'}};
+    h.ctx.testApi.channelPair(h.status);assert.equal(h.el('channels-title').textContent,'Active channel pair');
+    assert.equal(h.el('rx-frequency').textContent,'145.330000');assert.equal(h.el('tx-frequency').textContent,'433.525000');
+    assert.equal(h.el('tone-label').textContent,'Tone');assert.equal(h.el('power-label').textContent,'TX power');assert.equal(h.el('tone-frequency').textContent,'88.5 Hz');
+    assert.equal(h.el('channel-pair-caption').textContent,'Pair 2 · BOX-RX2 / BOX-TX2');assert.match(h.el('rf-notice').textContent,/last verified pair/);assert.doesNotMatch(h.el('rf-notice').textContent,/not commissioned/);
+  });
+  await check('Public overview can show the verified setup pair without private admin programming details',async()=>{
+    const h=harness();const status={setup:{rf_enabled:true,radio_plan:{verified:true,rx_mhz:'145.330000',tx_mhz:'433.525000',tone_hz:null,power:'High',label:'Pair 2',rx_name:'BOX-RX2',tx_name:'BOX-TX2'}},radio_programming:{admin_required:true}};
+    h.ctx.testApi.channelPair(status);assert.equal(h.el('channels-title').textContent,'Active channel pair');assert.equal(h.el('tone-frequency').textContent,'Off');assert.equal(h.el('rx-frequency').textContent,'145.330000');assert.match(h.el('channel-pair-caption').textContent,/Pair 2/);
+  });
+  for(const [name,change]of[
+    ['new program pending',s=>{s.radio_programming.pending=true;}],
+    ['unfinished verification',s=>{s.radio_programming.roles.rx.verification_required=true;}],
+    ['pair verification pending',s=>{s.radio_programming.pair.verification_required=true;}],
+    ['activation not confirmed',s=>{s.radio_programming.pair.activation_required=true;}],
+    ['catalog changed',s=>{s.radio_programming.pair.catalog_changed=true;}],
+    ['backend marks plan unverified',s=>{s.setup.radio_plan.verified=false;}]
+  ])await check(`${name} cannot claim an active verified overview pair`,async()=>{
+    const h=pairHarness();h.status.setup={rf_enabled:true,radio_plan:{verified:true,rx_mhz:'145.300000',tx_mhz:'433.500000'}};change(h.status);h.ctx.testApi.channelPair(h.status);
+    assert.doesNotMatch(h.el('channels-title').textContent,/Active/);assert.equal(h.el('tone-label').textContent,'Planned tone');assert.equal(h.el('channel-pair-caption').hidden,true);assert.doesNotMatch(h.el('rf-notice').textContent,/not commissioned/);
+  });
+  await check('Activity dots represent independent receiver squelch and transmit-command states accessibly',async()=>{
+    const h=harness();h.ctx.testApi.activity({available:true,receiving:true,transmitting:false});
+    assert.equal(h.el('rx-activity').className,'radio-activity-dot activity-on');assert.equal(h.el('tx-activity').className,'radio-activity-dot activity-off');
+    assert.equal(h.el('rx-activity').attrs['aria-label'],'Receiver squelch open');assert.equal(h.el('tx-activity').attrs['aria-label'],'Transmit command idle');
+    h.ctx.testApi.activity({available:true,receiving:false,transmitting:true});assert.equal(h.el('rx-activity').className,'radio-activity-dot activity-off');assert.equal(h.el('tx-activity').attrs['aria-label'],'Transmit command active');
+    h.ctx.testApi.activity({available:false,receiving:true,transmitting:true});for(const role of['rx','tx']){assert.equal(h.el(`${role}-activity`).className,'radio-activity-dot activity-unknown');assert.match(h.el(`${role}-activity`).attrs['aria-label'],/unavailable/);}
+    h.ctx.testApi.activity({available:true,receiving:null,transmitting:false});assert.equal(h.el('rx-activity').className,'radio-activity-dot activity-unknown');assert.equal(h.el('tx-activity').className,'radio-activity-dot activity-off');
+  });
+  await check('Activity refresh uses a light endpoint and one 500 ms timer; stop clears it and both indicators',async()=>{
+    const h=harness();h.status.radio_activity={available:true,receiving:true,transmitting:false};await h.ctx.testApi.startActivity();
+    assert.equal(h.calls.length,1);assert.equal(h.calls[0].path,'/api/activity');assert.equal(h.calls[0].options.cache,'no-store');assert.equal(h.posts().length,0);
+    const activityTimers=[...h.timers.values()].filter(timer=>timer.ms===500);assert.equal(activityTimers.length,1);assert.equal(h.el('rx-activity').className,'radio-activity-dot activity-on');
+    await h.ctx.testApi.startActivity();assert.equal(h.calls.length,1,'Starting twice never duplicates the loop');
+    h.ctx.testApi.stopActivity();assert.equal(h.timers.size,0);assert.equal(h.el('rx-activity').className,'radio-activity-dot activity-unknown');assert.equal(h.el('tx-activity').className,'radio-activity-dot activity-unknown');
+  });
+  await check('Activity errors clear stale ON states and keep a single retry timer',async()=>{
+    const h=harness();h.status.radio_activity={available:true,receiving:true,transmitting:true};await h.ctx.testApi.startActivity();
+    h.failActivity=true;const [id,timer]=[...h.timers].find(([,item])=>item.ms===500);h.timers.delete(id);await timer.fn();await Promise.resolve();
+    assert.equal(h.el('rx-activity').className,'radio-activity-dot activity-unknown');assert.equal(h.el('tx-activity').className,'radio-activity-dot activity-unknown');assert.equal([...h.timers.values()].filter(timer=>timer.ms===500).length,1);h.ctx.testApi.stopActivity();
+  });
+  await check('Hidden pages do not poll, and a stopped in-flight activity response cannot restore a stale ON dot',async()=>{
+    const h=harness();h.ctx.document.hidden=true;await h.ctx.testApi.startActivity();assert.equal(h.calls.length,0);assert.equal(h.timers.size,0);
+    h.ctx.document.hidden=false;let release;h.onActivity=()=>new Promise(resolve=>{release=resolve;});h.status.radio_activity={available:true,receiving:true,transmitting:true};
+    const request=h.ctx.testApi.startActivity();await h.ctx.testApi.startActivity();assert.equal(h.calls.length,1);h.ctx.testApi.stopActivity();release();await request;
+    assert.equal(h.el('tx-activity').className,'radio-activity-dot activity-unknown');assert.equal(h.timers.size,0);assert.equal(h.calls[0].options.signal.aborted,true);
+  });
+  await check('Radio messages live in Daily operation with a confirmation dialog and no extra password field',async()=>{
+    const {html,ids,inside}=dashboardMarkup();
+    assert.equal(inside('radio-messages-card','admin-daily'),true);
+    assert.equal(inside('radio-message-confirm-dialog','admin-options'),false);
+    assert.equal(ids.get('radio-message-file').attrs.accept,'.wav,.mp3,.m4a');
+    assert.equal(ids.get('radio-message-audio').attrs.preload,'none');
+    const dialog=html.slice(html.indexOf('<dialog class="confirm-dialog" id="radio-message-confirm-dialog"'),html.indexOf('</dialog>',html.indexOf('id="radio-message-confirm-dialog"')));
+    assert.doesNotMatch(dialog,/type="password"|setInterval|repeat/i);
+  });
+  await check('Message controls, names, draft, playback and confirmation clear on sign-out',async()=>{
+    const h=messageHarness();await selectMessage(h);h.el('radio-message-file').value='draft.wav';
+    await h.el('radio-message-broadcast').dispatch('click');assert.equal(h.el('radio-message-confirm-dialog').open,true);
+    h.ctx.testApi.session({configured:true,authenticated:false,csrf_token:null});
+    assert.equal(h.el('radio-messages-card').hidden,true);assert.equal(h.el('radio-message-confirm-dialog').open,false);
+    assert.equal(h.el('radio-message-name').textContent,'');assert.equal(h.el('radio-message-audio').src,undefined);assert.equal(h.el('radio-message-file').value,'');
+    await h.el('radio-message-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);
+  });
+  await check('Preview and upload drafts survive ordinary status polling without transmitting',async()=>{
+    const h=messageHarness();await selectMessage(h);
+    const options=h.el('radio-message-select').children, audio=h.el('radio-message-audio'), file={name:'Draft voice.mp3',size:8000};
+    h.el('radio-message-file').files=[file];await h.el('radio-message-file').dispatch('change');
+    h.ctx.testApi.status(structuredClone(h.status));
+    assert.equal(h.el('radio-message-select').children,options);assert.equal(h.el('radio-message-select').value,'1'.repeat(32));
+    assert.equal(h.el('radio-message-file').files[0],file);assert.match(h.el('radio-message-file-detail').textContent,/Draft voice/);
+    assert.equal(audio.src,'http://10.42.0.1/api/messages/'+ '1'.repeat(32)+'/audio');
+    await audio.dispatch('play');assert.equal(h.posts().length,0);
+  });
+  for(const url of['https://example.org/audio','//example.org/audio','/api/messages/'+ '2'.repeat(32)+'/audio','/api/messages/'+ '1'.repeat(32)+'/audio?token=leak','/api/messages/'+ '1'.repeat(32)+'/audio#x','/api/messages/../private/audio'])
+    await check(`Unsafe message preview URL is never loaded: ${url}`,async()=>{
+      const h=messageHarness({messages:{messages:[{...messageEntry(),preview_url:url}]}});await selectMessage(h);
+      assert.equal(h.el('radio-message-audio').src,undefined);assert.equal(h.el('radio-message-audio').hidden,true);assert.equal(h.posts().length,0);
+    });
+  await check('Uploaded names render as plain text in selection and confirmation',async()=>{
+    const name='<img src=x onerror=alert(1)>.wav',h=messageHarness({messages:{messages:[messageEntry('1'.repeat(32),name)]}});await selectMessage(h);
+    assert.equal(h.el('radio-message-name').textContent,name);assert.equal(h.el('radio-message-select').children[1].textContent,name);
+    await h.el('radio-message-broadcast').dispatch('click');assert.ok(h.el('radio-message-confirm-description').textContent.startsWith(name));assert.equal(h.posts().length,0);
+  });
+  await check('Upload sends one raw file with encoded name, CSRF and same-origin credentials then selects the saved clip',async()=>{
+    const h=messageHarness(),file={name:'A message #1.M4A',size:1024};h.el('radio-message-file').files=[file];
+    await h.el('radio-message-upload-form').dispatch('submit');
+    assert.equal(h.posts().length,1);const request=h.posts()[0];assert.equal(request.path,'/api/messages/upload');assert.equal(request.options.body,file);
+    assert.equal(request.options.headers['Content-Type'],'application/octet-stream');assert.equal(request.options.headers['X-File-Name'],encodeURIComponent(file.name));assert.equal(request.options.headers['X-CSRF-Token'],'token-1');assert.equal(request.options.credentials,'same-origin');
+    assert.equal(h.el('radio-message-select').value,'a'.repeat(32));assert.equal(h.el('radio-message-name').textContent,file.name);assert.equal(h.el('radio-message-file').value,'');
+    assert.equal(h.posts().some(request=>request.path.endsWith('/broadcast')),false);
+  });
+  for(const file of[null,{name:'empty.wav',size:0},{name:'too-big.wav',size:8388609},{name:'not-audio.txt',size:1024}])
+    await check(`Invalid message draft is rejected before upload: ${JSON.stringify(file)}`,async()=>{
+      const h=messageHarness();h.el('radio-message-file').files=file?[file]:[];await h.el('radio-message-upload-form').dispatch('submit');
+      assert.equal(h.posts().length,0);assert.match(h.el('radio-message-message').textContent,/Choose a nonempty WAV/);
+    });
+  await check('Cancel and Escape never transmit a selected message',async()=>{
+    const h=messageHarness();await selectMessage(h);await h.el('radio-message-broadcast').dispatch('click');
+    await h.el('radio-message-confirm-cancel').dispatch('click');assert.equal(h.el('radio-message-confirm-dialog').open,false);
+    await h.el('radio-message-broadcast').dispatch('click');const event=await h.el('radio-message-confirm-dialog').dispatch('cancel');assert.equal(event.defaultPrevented,true);
+    await h.el('radio-message-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);
+  });
+  await check('Explicit broadcast confirmation sends one bounded message and native/pair snapshot with no password',async()=>{
+    const h=messageHarness();await selectMessage(h);await h.el('radio-message-broadcast').dispatch('click');assert.equal(h.posts().length,0);
+    assert.equal(h.el('radio-message-confirm-apply').disabled,false);await h.el('radio-message-confirm-apply').dispatch('click');
+    assert.equal(h.posts().length,1);const request=h.posts()[0];assert.equal(request.path,'/api/messages/broadcast');
+    assert.deepEqual(JSON.parse(request.options.body),{id:'1'.repeat(32),sha256:'d'.repeat(64),pair_id:'default',catalog_digest:'c'.repeat(64),invocation_id:'b'.repeat(32)});
+    assert.equal(request.options.headers['X-CSRF-Token'],'token-1');assert.equal(h.el('radio-message-confirm-dialog').open,false);
+    assert.equal(h.el('radio-message-job').hidden,false);assert.equal(h.el('radio-message-job-progress').hidden,false);
+    assert.equal(h.el('radio-message-broadcast').disabled,true);await h.el('radio-message-confirm-apply').dispatch('click');assert.equal(h.posts().length,1);
+  });
+  for(const [name,change]of[
+    ['message hash',h=>{h.status.radio_messages.messages[0].sha256='e'.repeat(64);}],
+    ['message removed',h=>{h.status.radio_messages.messages=[];}],
+    ['pair',h=>{h.status.radio_messages.pair_id='rpt1';}],
+    ['catalog',h=>{h.status.radio_messages.catalog_digest='e'.repeat(64);}],
+    ['native invocation',h=>{h.status.radio_messages.invocation_id='e'.repeat(32);}],
+    ['live channel busy',h=>{h.status.radio_messages.can_broadcast=false;}],
+    ['radio maintenance',h=>{h.status.radio_programming.pending=true;}],
+    ['Wi-Fi maintenance',h=>{h.status.wifi_visibility.pending=true;}],
+    ['software maintenance',h=>{h.status.software_updates.pending=true;}],
+    ['DTMF password maintenance',h=>{h.status.dtmf_control.code_change.pending=true;}],
+    ['unfinished radio work',h=>{h.status.radio_programming.roles.rx.verification_required=true;}],
+    ['session signed out',h=>{h.status.admin.authenticated=false;}],
+    ['CSRF session changed',h=>{h.onStatus=()=>h.ctx.testApi.session({configured:true,authenticated:true,csrf_token:'token-2'});}]
+  ])await check(`Changed ${name} invalidates message broadcast review before POST`,async()=>{
+    const h=messageHarness();await selectMessage(h);await h.el('radio-message-broadcast').dispatch('click');change(h);
+    await h.el('radio-message-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);assert.equal(h.el('radio-message-confirm-dialog').open,false);
+  });
+  await check('Failed fresh status and cancellation during status refresh prevent message broadcast',async()=>{
+    for(const cancel of[false,true]){
+      const h=messageHarness();await selectMessage(h);await h.el('radio-message-broadcast').dispatch('click');
+      if(cancel)h.onStatus=()=>h.el('radio-message-confirm-cancel').dispatch('click');else h.failRefresh=true;
+      await h.el('radio-message-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);
+    }
+  });
+  await check('Selected message change closes an open review and never silently broadcasts another clip',async()=>{
+    const h=messageHarness({messages:{messages:[messageEntry(),messageEntry('2'.repeat(32),'Other.wav')]}});await selectMessage(h);await h.el('radio-message-broadcast').dispatch('click');
+    await selectMessage(h,'2'.repeat(32));assert.equal(h.el('radio-message-confirm-dialog').open,false);await h.el('radio-message-confirm-apply').dispatch('click');assert.equal(h.posts().length,0);
+  });
+  await check('Uncertain broadcast result stays locked until the Pi reports its job state',async()=>{
+    const h=messageHarness();await selectMessage(h);await h.el('radio-message-broadcast').dispatch('click');
+    h.messageError='Connection lost';h.onStatus=()=>{if(h.posts().length)h.failRefresh=true;};
+    await h.el('radio-message-confirm-apply').dispatch('click');assert.equal(h.posts().length,1);assert.equal(h.el('radio-message-broadcast').disabled,true);
+    assert.match(h.el('radio-message-job-phase').textContent,/Confirming/);h.failRefresh=false;h.messageError=null;h.onStatus=null;
+    h.status.radio_messages.job={phase:'finished',pending:false,success:true,message:'Message finished.'};await h.ctx.testApi.messagesProgress();
+    assert.equal(h.el('radio-message-broadcast').disabled,false);assert.equal(h.el('radio-message-job-progress').hidden,true);assert.match(h.el('radio-message-job-detail').textContent,/finished/);
+  });
+  await check('Message deletion requires confirmation but works with live transmission unavailable',async()=>{
+    const h=messageHarness({messages:{can_broadcast:false,invocation_id:null,reason:'Live mode is stopped.'}});await selectMessage(h);
+    assert.equal(h.el('radio-message-broadcast').disabled,true);assert.equal(h.el('radio-message-delete').disabled,false);await h.el('radio-message-delete').dispatch('click');assert.equal(h.posts().length,0);
+    await h.el('radio-message-confirm-apply').dispatch('click');assert.equal(h.posts()[0].path,'/api/messages/delete');assert.deepEqual(JSON.parse(h.posts()[0].options.body),{id:'1'.repeat(32),sha256:'d'.repeat(64)});assert.equal(h.el('radio-message-name').textContent,'');
+  });
+  await check('Pending message tasks lock radio changes, DTMF, identification, recording, Wi-Fi and software controls',async()=>{
+    const h=messageHarness({messages:{job:{phase:'playing',pending:true,message:'Message playing.'}}});await selectMessage(h);
+    for(const id of['radio-pair-change','radio-inspect-rx','station-id-enabled','dtmf-enabled','recording-toggle','wifi-visibility-fields','settings-fields','software-check','radio-message-upload','radio-message-broadcast','radio-message-delete'])assert.equal(h.el(id).disabled,true,id);
+    await h.el('radio-pair-change').dispatch('click');await h.el('dtmf-enabled').dispatch('click');assert.equal(h.posts().length,0);
+  });
+  await check('Outgoing audio switch defaults on, preserves an unsaved change and saves its boolean with other settings',async()=>{
+    const h=harness();h.ctx.testApi.settings({input_enabled:true});assert.equal(h.el('monitor-transmit').checked,true);assert.equal(h.el('monitor-transmit-value').textContent,'On');
+    h.el('monitor-transmit').checked=false;await h.el('settings-form').dispatch('input');h.ctx.testApi.settings({monitor_transmit_audio:true});assert.equal(h.el('monitor-transmit').checked,false);assert.equal(h.el('monitor-transmit-value').textContent,'Off');
+    await h.el('settings-form').dispatch('submit');assert.equal(JSON.parse(h.posts().at(-1).options.body).monitor_transmit_audio,false);
+  });
+  await check('Live audio identifies actual TX mix and receiver fallback without claiming off-air monitoring',async()=>{
+    const h=harness();h.ctx.testApi.live({configured:true,receiving:true,source:'tx_mix'});assert.match(h.el('live-input-state').textContent,/outgoing included/);
+    h.ctx.testApi.live({configured:true,receiving:true,source:'raw_rx'});assert.match(h.el('live-input-state').textContent,/receiver only/);
+    const {html}=dashboardMarkup();assert.match(html,/Live radio audio/);assert.match(html,/Each prompt gives you 30 seconds of idle time after it finishes/);
+  });
   await check('Admin groups have valid ordered markup, unique IDs, complete ARIA references and no nested forms',async()=>{
     const {html,ids,nodes,inside}=dashboardMarkup();
     let previous=html.indexOf('id="admin-options"');

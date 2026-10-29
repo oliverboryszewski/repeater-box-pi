@@ -206,7 +206,7 @@ class DtmfIntegrationTests(unittest.TestCase):
     def test_client_protocol_is_bounded_and_carries_command_in_socket_payload(self):
         connection = mock.MagicMock()
         connection.__enter__.return_value = connection
-        response = {"schema": 1, "result": "status", "pair_index": 2, "recording": False, "announce_status": False, "identification_enabled": True}
+        response = {"schema": 1, "result": "status", "pair_index": 2, "recording": False, "announce_status": False, "identification_enabled": True, "prompt_id": ""}
         connection.recv.return_value = (json.dumps(response) + "\n").encode("ascii")
         with mock.patch.object(client.socket, "socket", return_value=connection):
             self.assertEqual(client.request("864209"), response)
@@ -221,32 +221,32 @@ class DtmfIntegrationTests(unittest.TestCase):
             with mock.patch.object(client.socket, "socket", return_value=connection), self.assertRaises(ValueError):
                 client.request("864209")
         for change in ({"pair_index": True}, {"pair_index": 10}, {"recording": 1}, {"identification_enabled": 1}, {"schema": True}, {"result": []}, {"extra": 1}):
-            response = {"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False, "identification_enabled": True, **change}
+            response = {"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False, "identification_enabled": True, "prompt_id": "", **change}
             with self.assertRaises(ValueError): client.validate_response(response)
 
     def test_client_silences_unauthorized_responses_and_event_tokens_are_fixed(self):
         for result in ("denied", "disabled"):
-            response = {"schema": 1, "result": result, "pair_index": 0, "recording": False, "announce_status": False, "identification_enabled": False}
+            response = {"schema": 1, "result": result, "pair_index": 0, "recording": False, "announce_status": False, "identification_enabled": False, "prompt_id": ""}
             self.assertIsNone(client.response_event(response))
-        event = client.response_event({"schema": 1, "result": "recording_on", "pair_index": 3, "recording": True, "announce_status": False, "identification_enabled": True})
-        self.assertEqual(event, b"EVENT RepeaterLogic::box_control_result recording_on 3 1 0 1\n")
+        event = client.response_event({"schema": 1, "result": "recording_on", "pair_index": 3, "recording": True, "announce_status": False, "identification_enabled": True, "prompt_id": ""})
+        self.assertEqual(event, b"EVENT RepeaterLogic::box_control_result recording_on 3 1 0 1 -\n")
         regular = self.root / "ordinary"; regular.write_text("")
-        self.assertFalse(client.announce({"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False, "identification_enabled": True}, [regular]))
+        self.assertFalse(client.announce({"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False, "identification_enabled": True, "prompt_id": ""}, [regular]))
         self.assertEqual(regular.read_text(), "")
 
     def test_client_identification_tokens_keep_the_exact_response_schema(self):
         for result in ("choose_identification", "identification_on", "identification_off"):
-            response = {"schema": 1, "result": result, "pair_index": 2, "recording": False, "announce_status": True, "identification_enabled": True}
+            response = {"schema": 1, "result": result, "pair_index": 2, "recording": False, "announce_status": True, "identification_enabled": True, "prompt_id": ""}
             self.assertEqual(client.validate_response(response), response)
             self.assertEqual(client.response_event(response),
-                             ("EVENT RepeaterLogic::box_control_result " + result + " 2 0 1 1\n").encode("ascii"))
+                             ("EVENT RepeaterLogic::box_control_result " + result + " 2 0 1 1 -\n").encode("ascii"))
             with self.assertRaises(ValueError):
                 client.validate_response({**response, "automatic_station_id": False})
         with self.assertRaises(ValueError):
             client.validate_response({**response, "result": "identification_off;exec nope"})
 
     def test_client_never_writes_radio_or_foreign_tty(self):
-        response = {"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False, "identification_enabled": True}
+        response = {"schema": 1, "result": "status", "pair_index": 1, "recording": False, "announce_status": False, "identification_enabled": True, "prompt_id": ""}
         path = mock.Mock(); path.resolve.return_value = Path("/dev/ttyACM0")
         with mock.patch.object(client.os, "open") as opened:
             self.assertFalse(client.announce(response, [path]))

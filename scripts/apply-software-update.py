@@ -41,6 +41,7 @@ ALLOWED_FILES = (
     "dashboard/server.py", "dashboard/controls.py", "dashboard/audio_hub.py",
     "dashboard/admin_password.py", "dashboard/wifi_visibility.py", "dashboard/software_updates.py",
     "dashboard/radio_programming.py", "dashboard/radio_editor.py", "dashboard/dtmf_control.py", "dashboard/station_identification.py",
+    "dashboard/native_state.py", "dashboard/radio_messages.py",
     "dashboard/static/index.html", "dashboard/static/app.js", "dashboard/static/style.css",
     "dashboard/static/radio-editor.html", "dashboard/static/radio-editor.js", "dashboard/static/radio-editor.css",
     "dashboard/static/audio-visualizer.js", "dashboard/static/audio-visualizer.css",
@@ -273,7 +274,7 @@ def read_archive(data):
     except (ValueError, UnicodeError) as exc:
         raise UpdateError("The dashboard update manifest is invalid.") from exc
     if (not isinstance(manifest, dict) or set(manifest) != {"version", "update_api"}
-            or type(manifest.get("update_api")) is not int or manifest["update_api"] != 16
+            or type(manifest.get("update_api")) is not int or manifest["update_api"] != 17
             or not isinstance(manifest.get("version"), str) or not VERSION_RE.fullmatch(manifest["version"])):
         raise UpdateError("This update needs a newer Pi installer. Update manually using the repository instructions.")
     if source_version(selected["dashboard/server.py"]) != manifest["version"]:

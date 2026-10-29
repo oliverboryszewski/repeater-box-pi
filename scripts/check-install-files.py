@@ -13,14 +13,16 @@ COPY_GROUPS = (
     ("dashboard", "/opt/repeater-box/dashboard", (
         "server.py", "controls.py", "audio_hub.py", "admin_password.py",
         "wifi_visibility.py", "software_updates.py", "radio_programming.py",
-        "radio_editor.py", "dtmf_control.py", "station_identification.py")),
+        "radio_editor.py", "dtmf_control.py", "station_identification.py",
+        "native_state.py", "radio_messages.py")),
     ("scripts", "/opt/repeater-box/scripts", (
         "apply-wifi-visibility.py", "apply-software-update.py", "program-radio.py",
         "radio_plan.py", "configure-channel-pairs.py", "configure-radios.py",
         "configure-pair-switching.py", "configure-dtmf.py", "dtmf-client.py",
         "repeater-box-events.tcl", "run-svxlink.py", "build-dtmf-prompts.py",
         "check-bench-config.py", "configure-live.py", "check-live-config.py",
-        "repeater-live-events.tcl")),
+        "repeater-live-events.tcl", "migrate-live-profile.py",
+        "convert-message-audio.py", "broadcast-message.py")),
     ("dashboard/static", "/opt/repeater-box/dashboard/static", (
         "index.html", "app.js", "style.css", "audio-visualizer.js",
         "audio-visualizer.css", "radio-editor.html", "radio-editor.js",
@@ -31,7 +33,8 @@ COPY_GROUPS = (
         "repeater-wifi-visibility.service", "repeater-wifi-visibility.path",
         "repeater-software-update.service", "repeater-software-update.path",
         "repeater-radio-programming.service", "repeater-radio-programming.path",
-        "repeater-dtmf-code.service", "repeater-dtmf-code.path")),
+        "repeater-dtmf-code.service", "repeater-dtmf-code.path",
+        "repeater-message-broadcast.service", "repeater-message-broadcast.path")),
 )
 COPY_FILES = tuple(
     (f"{source}/{name}", f"{target}/{name}")

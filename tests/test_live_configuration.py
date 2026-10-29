@@ -108,10 +108,19 @@ class LiveConfigurationTests(unittest.TestCase):
         parser = guard.parser_from_bytes(self.paths['config_path'].read_bytes())
         self.assertEqual(parser['RxAIOC']['PREAMP'], '-2.5')
         self.assertEqual(parser['RxAIOC']['RAW_AUDIO_UDP_DEST'], '127.0.0.1:7355')
-        self.assertEqual(parser['TxAIOC']['TIMEOUT'], '15')
+        self.assertEqual(parser['TxAIOC']['TIMEOUT'], '40')
         self.assertEqual(parser['TxAIOC']['SERIAL_SET_PINS'], '!DTR!RTS')
         self.assertEqual(parser['TxAIOC']['MASTER_GAIN'], '-40')
         self.assertEqual(parser['RepeaterLogic']['BOX_ID_INTERVAL_MINUTES'], '9')
+        self.assertEqual(set(parser.sections()),
+                         {'GLOBAL', 'RepeaterLogic', 'RxAIOC', 'TxAIOC', 'TxMonitored', 'TxMonitor'})
+        self.assertEqual(parser['RepeaterLogic']['TX'], 'TxMonitored')
+        self.assertEqual(dict(parser['TxMonitored']),
+                         {'TYPE': 'Multi', 'TRANSMITTERS': 'TxAIOC,TxMonitor'})
+        self.assertEqual(dict(parser['TxMonitor']), {
+            'TYPE': 'Local', 'AUDIO_DEV': 'udp:127.0.0.1:7356', 'AUDIO_CHANNEL': '0',
+            'PTT_TYPE': 'NONE', 'PREEMPHASIS': '0', 'MASTER_GAIN': '0',
+            'LIMITER_THRESH': '-9', 'TIMEOUT': '40', 'TX_DELAY': '300', 'PTT_HANGTIME': '0'})
 
     def test_explicit_enable_and_disable_only_change_authorization(self):
         self.prepare()
@@ -235,7 +244,20 @@ class LiveConfigurationTests(unittest.TestCase):
             lambda value: value['TxAIOC'].update(PTT_PIN='RTS'),
             lambda value: value['TxAIOC'].update(SERIAL_SET_PINS='!RTS'),
             lambda value: value['TxAIOC'].update(TIMEOUT='0'),
+            lambda value: value['TxAIOC'].update(TIMEOUT='15'),
             lambda value: value['TxAIOC'].update(MASTER_GAIN='0'),
+            lambda value: value['RepeaterLogic'].update(TX='TxAIOC'),
+            lambda value: value['TxMonitored'].update(TYPE='Local'),
+            lambda value: value['TxMonitored'].update(TRANSMITTERS='TxMonitor,TxAIOC'),
+            lambda value: value['TxMonitored'].update(TRANSMITTERS='TxAIOC'),
+            lambda value: value['TxMonitor'].update(AUDIO_DEV='udp:192.0.2.1:7356'),
+            lambda value: value['TxMonitor'].update(AUDIO_DEV='udp:127.0.0.1:7355'),
+            lambda value: value['TxMonitor'].update(AUDIO_DEV='alsa:plughw:CARD=AIOC_TX,DEV=0'),
+            lambda value: value['TxMonitor'].update(PTT_TYPE='SerialPin'),
+            lambda value: value['TxMonitor'].update(PTT_PORT=self.devices['tx']),
+            lambda value: value['TxMonitor'].update(TIMEOUT='15'),
+            lambda value: value['TxMonitor'].update(TX_DELAY='0'),
+            lambda value: value.remove_section('TxMonitor'),
             lambda value: value.add_section('Other'),
             lambda value: value['RxAIOC'].update(VOX_THRESH='nan'),
             lambda value: value['RxAIOC'].update(VOX_FILTER_DEPTH='1.5')]
@@ -437,7 +459,7 @@ class LiveConfigurationTests(unittest.TestCase):
                 guard.main(arguments)
                 check_ready.assert_called_once_with(wait)
         for arguments in (['/tmp/other.conf'], ['--wait-for-devices', '999'],
-                          [str(guard.CONFIG_PATH), '--wait-for-devices', '0']):
+                          [str(guard.CONFIG_PATH), '--wait-for-devices', '0'], ['--legacy']):
             with self.subTest(arguments=arguments), self.assertRaises(ValueError):
                 guard.main(arguments)
 
@@ -447,6 +469,8 @@ class LiveConfigurationTests(unittest.TestCase):
         self.assertIn('Restart=no', unit)
         self.assertIn(' --wait-for-devices 30\n', unit)
         self.assertIn('TimeoutStartSec=45\n', unit)
+        self.assertIn('RuntimeDirectory=repeater-box repeater-message-status\n', unit)
+        self.assertIn('RuntimeDirectoryMode=0750\n', unit)
         self.assertIn('Conflicts=repeater-engine.service repeater-rx-monitor.service svxlink.service', unit)
         self.assertNotIn('flock', unit)
         self.assertNotIn('fcntl', (ROOT / 'scripts/check-live-config.py').read_text())

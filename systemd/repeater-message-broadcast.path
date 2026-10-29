@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch for a reviewed Repeater Box audio-message request
+
+[Path]
+PathChanged=/var/lib/repeater-dashboard/message-broadcast-request.json
+Unit=repeater-message-broadcast.service
+
+[Install]
+WantedBy=multi-user.target

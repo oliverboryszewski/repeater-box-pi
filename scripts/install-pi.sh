@@ -60,7 +60,7 @@ fi
 # It remains masked: our separate service uses only the hardware-free bench file.
 systemctl mask svxlink.service
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-serial curl ca-certificates alsa-utils usbutils avahi-daemon network-manager dnsmasq-base wpasupplicant svxlink-server espeak-ng sox
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends python3 python3-serial curl ca-certificates alsa-utils usbutils avahi-daemon network-manager dnsmasq-base wpasupplicant svxlink-server espeak-ng sox ffmpeg
 bash "$bundle_dir/scripts/install-chirp.sh"
 getent group repeater-recordings >/dev/null || groupadd --system repeater-recordings
 getent group repeaterdash >/dev/null || groupadd --system repeaterdash
@@ -71,12 +71,22 @@ usermod -a -G repeater-recordings,audio,dialout,repeater-control svxlink
 # vcgencmd is read-only here; video grants access on Pi OS versions that require it.
 if getent group video >/dev/null; then usermod -a -G video repeaterdash; fi
 install -d -o root -g root -m 755 /opt/repeater-box/dashboard/static /opt/repeater-box/scripts /etc/repeater-box
-install -m 644 "$bundle_dir/dashboard/"{server.py,controls.py,audio_hub.py,admin_password.py,wifi_visibility.py,software_updates.py,radio_programming.py,radio_editor.py,dtmf_control.py,station_identification.py} /opt/repeater-box/dashboard/
+install -m 644 "$bundle_dir/dashboard/"{server.py,controls.py,audio_hub.py,admin_password.py,wifi_visibility.py,software_updates.py,radio_programming.py,radio_editor.py,dtmf_control.py,station_identification.py,native_state.py,radio_messages.py} /opt/repeater-box/dashboard/
 install -m 644 "$bundle_dir/scripts/apply-wifi-visibility.py" /opt/repeater-box/scripts/apply-wifi-visibility.py
 install -m 644 "$bundle_dir/scripts/apply-software-update.py" /opt/repeater-box/scripts/apply-software-update.py
 install -m 644 "$bundle_dir/scripts/"{program-radio.py,radio_plan.py,configure-channel-pairs.py,configure-radios.py,configure-pair-switching.py} /opt/repeater-box/scripts/
 install -m 644 "$bundle_dir/scripts/"{configure-dtmf.py,dtmf-client.py,repeater-box-events.tcl,run-svxlink.py,build-dtmf-prompts.py,check-bench-config.py} /opt/repeater-box/scripts/
-install -m 644 "$bundle_dir/scripts/"{configure-live.py,check-live-config.py,repeater-live-events.tcl} /opt/repeater-box/scripts/
+install -m 644 "$bundle_dir/scripts/"{configure-live.py,check-live-config.py,repeater-live-events.tcl,migrate-live-profile.py,convert-message-audio.py,broadcast-message.py} /opt/repeater-box/scripts/
+# The existing maintenance lock covers this private, offline profile migration.
+# It never opens a radio or starts live operation; authorization is revoked first.
+/usr/bin/python3 - <<'LIVE_PROFILE_PY'
+import importlib.util
+spec = importlib.util.spec_from_file_location('live_profile_migration', '/opt/repeater-box/scripts/migrate-live-profile.py')
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+if module.migrate():
+    print('Preserved private station settings in the monitored live-audio profile.')
+LIVE_PROFILE_PY
 install -d -o root -g root -m 755 /opt/repeater-box/prompts
 /usr/bin/python3 /opt/repeater-box/scripts/build-dtmf-prompts.py
 install -m 644 "$bundle_dir/software-update.json" /opt/repeater-box/software-update.json
@@ -120,6 +130,7 @@ if [[ ! -e /etc/repeater-box/svxlink-bench.conf ]]; then
 fi
 install -d -o svxlink -g repeater-recordings -m 2770 /var/lib/svxlink/recordings
 install -d -o repeaterdash -g repeaterdash -m 750 /var/lib/repeater-dashboard
+install -d -o repeaterdash -g repeater-control -m 2750 /var/lib/repeater-messages
 install -d -o root -g repeaterdash -m 750 /var/lib/repeater-radio-backups
 # Re-project legacy pending uploads for the new repair controls while the
 # installer holds the maintenance lock. No radio adapter is constructed.
@@ -149,6 +160,7 @@ install -m 644 "$bundle_dir/systemd/"{repeater-wifi-visibility.service,repeater-
 install -m 644 "$bundle_dir/systemd/"{repeater-software-update.service,repeater-software-update.path} /etc/systemd/system/
 install -m 644 "$bundle_dir/systemd/"{repeater-radio-programming.service,repeater-radio-programming.path} /etc/systemd/system/
 install -m 644 "$bundle_dir/systemd/"{repeater-dtmf-code.service,repeater-dtmf-code.path} /etc/systemd/system/
+install -m 644 "$bundle_dir/systemd/"{repeater-message-broadcast.service,repeater-message-broadcast.path} /etc/systemd/system/
 # Detect incomplete copies and flush their filesystems before activating them.
 /usr/bin/python3 "$integrity_checker" --bundle "$bundle_dir" --verify-installed
 sync -f /opt/repeater-box /etc/systemd/system
@@ -158,6 +170,8 @@ systemctl enable --now repeater-wifi-visibility.path
 systemctl enable --now repeater-software-update.path
 systemctl enable --now repeater-radio-programming.path
 systemctl enable --now repeater-dtmf-code.path
+systemctl enable repeater-message-broadcast.service
+systemctl enable --now repeater-message-broadcast.path
 systemctl enable repeater-dashboard.service
 systemctl restart repeater-dashboard.service
 # Only start the bench engine when all three hardware-off guards are present.

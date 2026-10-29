@@ -1,5 +1,5 @@
 # NOT INSTALLED OR STARTED AUTOMATICALLY.
-# Future two-AIOC configuration: requires real device identities, audio/PTT
+# Offline two-AIOC example: requires real device identities, audio/PTT
 # calibration, a real station callsign, and the commissioning steps in this folder.
 # This is a source-checked example for SvxLink 24.02, not hardware-tested settings.
 # The RADIO transmitter's own VOX must be OFF. The RX software VOX below is
@@ -14,7 +14,7 @@ CARD_CHANNELS=1
 [RepeaterLogic]
 TYPE=Repeater
 RX=RxAIOC
-TX=TxAIOC
+TX=TxMonitored
 MODULES=
 CALLSIGN=REPLACE_WITH_YOUR_CALLSIGN
 ONLINE=0
@@ -61,11 +61,16 @@ PEAK_METER=1
 DTMF_DEC_TYPE=INTERNAL
 DTMF_MUTING=1
 DTMF_HANGTIME=40
+RAW_AUDIO_UDP_DEST=127.0.0.1:7355
 
 # The values above are starting points for calibration, not measured thresholds.
 # Let the RX RADIO's squelch/CTCSS mute its speaker output. Do not add software
 # CTCSS decoding to this speaker-audio path without measuring tone availability.
 # Set the radio's own VOX OFF and disable battery saving for dependable RX audio.
+
+[TxMonitored]
+TYPE=Multi
+TRANSMITTERS=TxAIOC,TxMonitor
 
 [TxAIOC]
 TYPE=Local
@@ -74,13 +79,15 @@ AUDIO_DEV=alsa:plughw:CARD=REPLACE_TX_ALSA_ID,DEV=0
 AUDIO_CHANNEL=0
 LIMITER_THRESH=-9
 PREEMPHASIS=0
+MASTER_GAIN=-40
 PTT_TYPE=SerialPin
 PTT_PORT=/dev/serial/by-id/REPLACE_TX_AIOC_DEVICE
 PTT_PIN=DTR
 # SvxLink applies these in order. Clear DTR before RTS so initialization does
 # not assert the default AIOC PTT mapping while lowering RTS.
 SERIAL_SET_PINS=!DTR!RTS
-TIMEOUT=60
+TIMEOUT=40
+PTT_HANGTIME=0
 TX_DELAY=300
 DTMF_TONE_LENGTH=100
 DTMF_TONE_SPACING=50
@@ -93,7 +100,22 @@ DTMF_DIGIT_PWR=-15
 # The radio's own VOX MUST remain OFF, and AIOC auto/audio PTT must be disabled.
 # Keep an independent radio TX timeout configured as well.
 
-# OPTIONAL RECORDING: uncomment only after audio commissioning and after making
+# Local generated-audio feed only; this leaf has no radio PTT connection.
+[TxMonitor]
+TYPE=Local
+AUDIO_DEV=udp:127.0.0.1:7356
+AUDIO_CHANNEL=0
+PTT_TYPE=NONE
+PREEMPHASIS=0
+MASTER_GAIN=0
+LIMITER_THRESH=-9
+TIMEOUT=40
+TX_DELAY=300
+PTT_HANGTIME=0
+
+# OPTIONAL NATIVE QSO RECORDING (excludes generated prompts/identification).
+# The dashboard's own recorder can include those through TxMonitor instead.
+# Uncomment only after audio commissioning and after making
 # /var/lib/svxlink/recordings writable by the svxlink service account.
 # Add the following entry to [RepeaterLogic], not to [TxAIOC]:
 # QSO_RECORDER=:QsoRecorder

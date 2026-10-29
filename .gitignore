@@ -29,3 +29,7 @@ channel-pairs.json
 dtmf.json
 dtmf-code-request.json
 dtmf-code-result.json
+message-broadcast-request.json
+message-broadcast-result.json
+repeater-messages/
+repeater-message-dispatcher/

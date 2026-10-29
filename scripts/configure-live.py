@@ -98,6 +98,8 @@ def prepare(station_callsign, tx_alsa_id='AIOC_TX', tx_gain_db=-40, id_interval_
                                               station_callsign, tx_alsa_id, id_interval_minutes)
     parser['TxAIOC'] = dict(guard.TX_FIXED, AUDIO_DEV='alsa:plughw:CARD=' + tx_id + ',DEV=0',
                            PTT_PORT=devices['tx'], MASTER_GAIN=guard.gain_text(tx_gain_db))
+    parser['TxMonitored'] = guard.TX_COMPOSITE
+    parser['TxMonitor'] = guard.TX_MONITOR
     output = io.StringIO()
     parser.write(output, space_around_delimiters=False)
     content = output.getvalue().encode('utf-8')

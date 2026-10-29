@@ -88,7 +88,7 @@ namespace eval RepeaterLogic {
     playFile "/opt/repeater-box/prompts/$name.wav"
   }
 
-  proc box_control_result {result pair_index recording announce_status identification_enabled} {
+  proc box_control_result {result pair_index recording announce_status identification_enabled {prompt_id -}} {
     if {$result ni {status authenticated choose_status choose_recording choose_identification status_on status_off recording_on recording_off identification_on identification_off cancelled invalid expired busy unavailable}
         || ![string is integer -strict $pair_index] || $pair_index < 0 || $pair_index > 9
         || $recording ni {0 1} || $announce_status ni {0 1} || $identification_enabled ni {0 1}} { return }

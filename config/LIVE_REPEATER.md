@@ -14,7 +14,7 @@ sudo python3 /opt/repeater-box/scripts/configure-live.py --prepare
 
 Enter the station callsign locally. The helper derives the receiver from the validated receive-monitor configuration and the transmitter from the existing radio bindings. It writes `/etc/repeater-box/svxlink-live.conf` and a protected local authorization record. Preparation leaves live authorization disabled and does not start a service.
 
-The initial transmitter audio gain is −40 dB and its continuous transmit timeout is 15 seconds. These are commissioning limits. Audio gain changes modulation level, not RF output power. The radio's own VOX must remain off. The factory AIOC serial path uses DTR asserted with RTS clear; initialization clears DTR before RTS.
+The initial transmitter audio gain is −40 dB and its continuous transmit timeout is 40 seconds. Uploaded messages are limited to 30 seconds; configure the radio’s own timeout longer than 40 seconds. Audio gain changes modulation level, not RF output power. The radio's own VOX must remain off. The factory AIOC serial path uses DTR asserted with RTS clear; initialization clears DTR before RTS.
 
 If received speech is too quiet, stop the live service and prepare again with a modest gain increase, such as `--prepare --tx-gain-db -34`. Re-enter the callsign locally, authorize and restart for another short test. The helper accepts −40 through −10 dB and binds the chosen gain to the private authorization. Start quietly and adjust in small steps; the allowed range is not a measured calibration for every radio.
 
@@ -36,7 +36,7 @@ In **Settings / Admin**, the confirmed **Automatic station identification** swit
 
 For deliberate bench testing, preparation also accepts `--id-interval-minutes 30`, for example together with a locally established audio gain. This starts a 30-minute automatic-ID cooldown without a startup transmission. It does not replace on-air identification obligations: in the US, identify on the transmitting channel at communication end and at least every ten minutes during a communication. Use manual identification as required when automatic identification is off or the testing profile is selected.
 
-Use a brief spoken test from a handheld programmed for the configured split pair. A separate receiver on the output frequency lets you hear speech while the test handheld is transmitting. Check that the output stops promptly after release and that RX still hears a weak signal while TX is active. Then test the authenticated DTMF menu one step per transmission. The dashboard's Live audio and archives contain incoming receiver audio; they do not include the transmitter's own identification or prompts.
+Use a brief spoken test from a handheld programmed for the configured split pair. A separate receiver on the output frequency lets you hear speech while the test handheld is transmitting. Check that the output stops promptly after release and that RX still hears a weak signal while TX is active. Then test the authenticated DTMF menu one step per transmission. With **Include outgoing repeater audio** enabled, the dashboard's Live audio and armed recordings include the generated menu, identification and uploaded messages through a separate local transmit-audio monitor. This does not measure the RF signal; keep using the second receiver for that check.
 
 To stop the test immediately:
 

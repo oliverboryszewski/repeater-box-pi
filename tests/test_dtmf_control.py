@@ -131,7 +131,7 @@ class DtmfControlTests(unittest.TestCase):
         self.assertEqual(self.command("1")["result"], "denied")
         result = self.action()
         self.assertEqual(result, {"schema": 1, "result": "recording_on", "pair_index": 3, "recording": True,
-                                  "announce_status": True, "identification_enabled": True})
+                                  "announce_status": True, "identification_enabled": True, "prompt_id": ""})
         self.assertEqual(self.command("0")["result"], "denied")
         self.assertEqual(self.command("1")["result"], "denied")
         self.assertEqual(self.action(value="0")["result"], "recording_off")
@@ -157,7 +157,7 @@ class DtmfControlTests(unittest.TestCase):
         self.assertEqual(self.command("3")["result"], "denied")
         result = self.action("3", "0")
         self.assertEqual(result, {"schema": 1, "result": "identification_off", "pair_index": 3,
-                                  "recording": False, "announce_status": True, "identification_enabled": False})
+                                  "recording": False, "announce_status": True, "identification_enabled": False, "prompt_id": ""})
         self.assertFalse(self.server.station_identification.status()["enabled"])
         self.assertFalse(SettingsStore(self.folder / "settings.json").get()["automatic_station_id"])
         self.assertEqual(self.server.station_identification.path.read_bytes(), b'{"schema":1,"enabled":false}\n')
@@ -171,11 +171,11 @@ class DtmfControlTests(unittest.TestCase):
         self.assertEqual(self.action("3", "1")["result"], "identification_on")
         self.assertTrue(self.server.station_identification.status()["enabled"])
 
-    def test_identification_menu_has_absolute_expiry_and_rejects_nonbinary_values(self):
+    def test_identification_menu_has_idle_expiry_and_rejects_nonbinary_values(self):
         self.enable(); now = [100.0]; self.bridge.clock = lambda: now[0]
         self.command(); now[0] += 29
         self.assertEqual(self.command("3")["result"], "choose_identification")
-        now[0] += 1
+        now[0] += 30
         self.assertEqual(self.command("0")["result"], "expired")
         self.assertTrue(self.server.station_identification.status()["enabled"])
         self.assertEqual(self.command("0")["result"], "denied")
@@ -251,7 +251,7 @@ class DtmfControlTests(unittest.TestCase):
                 response = self.command("0")
                 mutate.assert_not_called()
             self.assertEqual(response, {"schema": 1, "result": "status", "pair_index": 3,
-                "recording": enabled, "announce_status": enabled, "identification_enabled": enabled})
+                "recording": enabled, "announce_status": enabled, "identification_enabled": enabled, "prompt_id": ""})
             self.assertIsNone(self.bridge.rf_session)
             self.assertEqual(self.command("0")["result"], "denied")
             self.assertEqual(self.command("1")["result"], "denied")
@@ -284,11 +284,11 @@ class DtmfControlTests(unittest.TestCase):
         self.assertTrue(all(result in ("status", "denied") for result in results))
         self.assertFalse(self.calls)
 
-    def test_absolute_timeout_does_not_extend_after_selecting_an_option(self):
+    def test_idle_timeout_restarts_after_selecting_a_valid_option(self):
         self.enable(); now = [100.0]; self.bridge.clock = lambda: now[0]
         self.command(); now[0] += 29
         self.assertEqual(self.command("2")["result"], "choose_recording")
-        now[0] += 1
+        now[0] += 30
         self.assertEqual(self.command("1")["result"], "expired")
         self.assertEqual(self.command("1")["result"], "denied"); self.assertFalse(self.calls)
 
@@ -452,7 +452,7 @@ class DtmfControlTests(unittest.TestCase):
             self.assertNotIn(CODE.encode(), connection.sent)
         connection = FakeConnection(json.dumps({"schema": 1, "command": CODE}).encode() + b"\n")
         self.bridge._connection(connection); self.assertEqual(json.loads(connection.sent)["result"], "authenticated")
-        self.assertEqual(set(json.loads(connection.sent)), {"schema", "result", "pair_index", "recording", "announce_status", "identification_enabled"})
+        self.assertEqual(set(json.loads(connection.sent)), {"schema", "result", "pair_index", "recording", "announce_status", "identification_enabled", "prompt_id"})
 
     def test_socket_permissions_cleanup_and_unexpected_file_preservation(self):
         self.bridge.socket_path.write_text("keep")
