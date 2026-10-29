@@ -1,6 +1,6 @@
 # Repeater Box — Pi dashboard
 
-Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.15.0.
+Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.15.1.
 
 Source: [GitHub repository](https://github.com/oliverboryszewski/repeater-box-pi).
 
@@ -14,7 +14,7 @@ This package is ready for installation on a fresh Pi OS card. Automated checks v
 |---|---|
 | **Overview** | Pi temperature, uptime, storage, voltage flags, network/service status, and USB audio/serial inventory |
 | **Live audio** | Start/stop listening over Wi-Fi, with local listening volume |
-| **Data** | Admin-only SSTV Robot 36 live preview and PNG gallery with downloads and confirmed deletion, APRS packet decoding and log downloads |
+| **Data** | Admin-only APRS packet decoding and log downloads, followed by SSTV Robot 36 live preview and a PNG gallery with downloads and confirmed deletion |
 | **Audio archives** | Browse, play, and download saved clips; admin-controlled recording and confirmed deletion |
 | **Settings / Admin** | Password sign-in, station/audio toggle switches, archive limits, Wi-Fi broadcast visibility, optional DTMF station/recording/decoder controls, on-demand radio programming, and software updates |
 
@@ -191,7 +191,7 @@ The receiver-feed and automatic-recording controls are toggle switches. Select *
 
 The Archives switch changes the recording state **now**; it does not change the startup preference. Lower recording thresholds catch quieter speech but can also record noise. Higher thresholds require louder audio and may miss quiet speech. The slider shows the selected dBFS value and a sensitivity description; select **Save settings** to apply it.
 
-Admins can delete an individual saved clip from **Audio archives**, or a saved picture from **Data**. Each Delete button opens a confirmation identifying the selected item. Checkboxes select multiple items independently of playback or the image viewer; **Select all** chooses eligible saved items, up to 100 recordings or 50 pictures per batch. **Delete selected** opens one confirmation listing every selected filename and the total size. The server requires an authenticated session and CSRF protection, rechecks the reviewed file's identity, and refuses active recordings or pictures still being received. Picture deletion also removes its private gallery metadata. Deletion is permanent and does not stop the live repeater or change recording preferences. Public listeners cannot delete files. The entire batch is checked before any removal. If another operation removes or changes an item before confirmation, refresh and review the current list. An I/O failure during removal may leave a partial batch; the dashboard reports the result and refreshes the inventory without retrying automatically.
+Admins can delete an individual saved clip from **Audio archives**, or a saved picture from **Data**. Each Delete button opens a confirmation identifying the selected item. Choose **Select multiple** to show the deletion checkboxes. In the picture gallery, click individual thumbnails or their checkboxes to select only the pictures you want. For recordings, selection mode replaces the playback dropdown until you choose **Cancel selection**; **Select all** chooses eligible saved items, up to 100 recordings or 50 pictures per batch. **Delete selected** opens one confirmation listing every selected filename and the total size. The server requires an authenticated session and CSRF protection, rechecks the reviewed file's identity, and refuses active recordings or pictures still being received. Picture deletion also removes its private gallery metadata. Deletion is permanent and does not stop the live repeater or change recording preferences. Public listeners cannot delete files. The entire batch is checked before any removal. If another operation removes or changes an item before confirmation, refresh and review the current list. An I/O failure during removal may leave a partial batch; the dashboard reports the result and refreshes the inventory without retrying automatically.
 
 The separate **Radio DTMF control** card has an **Enable DTMF control** switch with confirmation and a **Change DTMF password** form requiring the current admin password. The RF menu requires login, an option, then off/on as separate submitted transmissions. It permits recording, identification, APRS and SSTV decoder preferences and the **Spoken status after DTMF actions** preference; it does not change channel pairs, program radios, enable transmission or run arbitrary commands. Recording commands affect the current recorder state and leave **Record automatically after a restart** unchanged. A DTMF password is sent as audible radio tones and can be heard or recorded; choose a different password from the Wi-Fi and web admin passwords.
 
@@ -226,6 +226,8 @@ The visibility worker log is available with `journalctl -u repeater-wifi-visibil
 Setup guidance appears only while the related setup is incomplete. Password instructions disappear once an admin password exists, including while signed out. Wi-Fi instructions and checklist step 2 disappear once the hotspot profile exists, including when it is inactive. Checklist step 1 disappears when the installed software is running on the Pi. AIOC assignment and radio commissioning remain on the checklist; USB detection alone does not complete either step. The first-audio guidance disappears after the receive monitor is running and the dashboard has received audio during this service run. Fresh installations show the relevant instructions again.
 
 ## Updating an installed box
+
+Version 0.15.1 makes multi-selection an explicit admin mode, makes individual pictures clickable for deletion selection, hides recording playback controls while selecting multiple files, and orders APRS before SSTV to match radio menu options 4 and 5. It is a dashboard-only update; no native upgrade or radio-service restart is needed after 0.15.0.
 
 Version 0.15.0 adds admin-only multi-select deletion of audio recordings and SSTV pictures, plus DTMF options 4 (APRS) and 5 (SSTV). The dashboard stays compatible with update API 17. A one-time native menu upgrade described in [DTMF radio controls](config/DTMF_CONTROL.md#upgrade-the-native-menu) installs the extra spoken prompts and reloads the previously running radio service; until then, the original DTMF menu keeps working. Neither decoder control retunes radios or enables transmission.
 

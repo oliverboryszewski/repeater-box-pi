@@ -227,6 +227,7 @@ async function mediaBulkHarness(kind,count=3,options={}) {
  } else {
   setSstv(h,{images:Array.from({length:count},(_,i)=>sstvImage(i.toString(16).padStart(32,'0'),{revision:String(i%10).repeat(64),can_delete:true}))});
  }
+ await h.el(`${kind==='recording'?'recording':'sstv'}-select-multiple`).dispatch('click');
  h.calls.length=0;return h;
 }
 async function selectMediaAll(h,kind,value=true) {
@@ -267,6 +268,42 @@ function dashboardMarkup() {
       assert.equal(ids.get(`${prefix}-delete-selected`).attrs['aria-controls'],'media-delete-dialog');
     }
     assert.equal(ids.get('media-delete-items').tag,'ul');
+  });
+  await check('Data cards follow the APRS then SSTV radio-menu order',async()=>{
+    const {html}=dashboardMarkup();assert.ok(html.indexOf('id="data-card"')<html.indexOf('id="sstv-card"'));
+  });
+  for(const kind of['recording','image'])await check(`${kind} multiple-selection controls appear only after explicit admin entry`,async()=>{
+    const h=await mediaHarness(kind),prefix=kind==='recording'?'recording':'sstv';
+    assert.equal(h.el(`${prefix}-select-multiple`).hidden,false);assert.equal(h.el(`${prefix}-bulk-controls`).hidden,true);
+    if(kind==='recording')assert.equal(h.el('recording-picker').hidden,false);
+    await selectMediaAll(h,kind);await reviewBulkMedia(h,kind);assert.equal(h.el('media-delete-dialog').open,false);assert.equal(h.posts().length,0);
+    const source=h.el('recording-audio').src,pauses=h.el('recording-audio').pauseCount||0;
+    await h.el(`${prefix}-select-multiple`).dispatch('click');
+    assert.equal(h.el(`${prefix}-bulk-controls`).hidden,false);assert.equal(h.el(`${prefix}-select-multiple`).attrs['aria-expanded'],'true');
+    await h.el(`${prefix}-delete`).dispatch('click');assert.equal(h.el('media-delete-dialog').open,false);
+    if(kind==='recording'){
+      assert.equal(h.el('recording-picker').hidden,true);assert.equal(h.el('recording-player').hidden,true);
+      assert.equal(h.el('recording-audio').src,source);assert.equal(h.el('recording-audio').pauseCount,pauses+1);
+    }
+    await selectMediaAll(h,kind);await reviewBulkMedia(h,kind);await h.el(`${prefix}-selection-cancel`).dispatch('click');
+    assert.equal(h.el('media-delete-dialog').open,false);assert.equal(h.el(`${prefix}-bulk-controls`).hidden,true);assert.equal(h.el(`${prefix}-selected-count`).textContent,'0 selected');
+    if(kind==='recording'){assert.equal(h.el('recording-picker').hidden,false);assert.equal(h.el('recording-player').hidden,false);assert.equal(h.el('recording-audio').src,source);assert.equal(h.el('recording-audio').pauseCount,pauses+1);}
+    assert.equal(h.posts().length,0);
+  });
+  await check('Individual picture thumbnails select only chosen pictures for deletion in selection mode',async()=>{
+    const h=await mediaBulkHarness('image',2),gallery=h.el('sstv-gallery'),second=h.status.sstv.images[1],source=h.el('sstv-selected-image').attrs.src;
+    assert.equal(h.el('sstv-selected').hidden,true);await gallery.children[1].children[0].dispatch('click');
+    assert.equal(h.el('sstv-selected-count').textContent,'1 selected');assert.equal(mediaCheckboxes(h,'image')[1].checked,true);assert.equal(mediaCheckboxes(h,'image')[0].checked,false);
+    assert.match(gallery.children[1].children[0].attrs['aria-label'],/^Deselect picture/);assert.equal(h.el('sstv-selected-image').attrs.src,source);
+    await reviewBulkMedia(h,'image');assert.equal(h.el('media-delete-items').children.length,1);assert.match(h.el('media-delete-items').children[0].textContent,new RegExp(second.id));
+    await h.el('media-delete-apply').dispatch('click');assert.deepEqual(JSON.parse(h.posts()[0].options.body),{items:[{id:second.id,revision:second.revision}]});
+    assert.equal(h.status.sstv.images.length,1);assert.notEqual(h.status.sstv.images[0].id,second.id);
+  });
+  for(const kind of['recording','image'])await check(`${kind} navigation exits selection mode and requires a fresh selection`,async()=>{
+    const h=await mediaBulkHarness(kind),prefix=kind==='recording'?'recording':'sstv';await selectMediaAll(h,kind);await reviewBulkMedia(h,kind);
+    h.ctx.testApi.tab('overview');h.ctx.testApi.tab(kind==='recording'?'archives':'data');
+    assert.equal(h.el(`${prefix}-bulk-controls`).hidden,true);assert.equal(h.el(`${prefix}-selected-count`).textContent,'0 selected');assert.equal(h.el('media-delete-dialog').open,false);
+    await reviewBulkMedia(h,kind);await h.el('media-delete-apply').dispatch('click');assert.equal(h.posts().length,0);
   });
   for(const kind of['recording','image']) {
     const prefix=kind==='recording'?'recording':'sstv';
@@ -381,7 +418,7 @@ function dashboardMarkup() {
   await check('Bulk deleting other audio clips preserves the currently playing recording',async()=>{
     const h=await mediaBulkHarness('recording');h.ctx.testApi.selectRecording('clip-2.wav');const source=h.el('recording-audio').src,pauses=h.el('recording-audio').pauseCount;
     for(const checkbox of mediaCheckboxes(h,'recording').slice(0,2)){checkbox.checked=true;await checkbox.dispatch('change');}
-    await reviewBulkMedia(h,'recording');await h.el('media-delete-apply').dispatch('click');assert.equal(h.el('recording-audio').src,source);assert.equal(h.el('recording-audio').pauseCount,pauses);assert.equal(h.el('recording-player').hidden,false);
+    await reviewBulkMedia(h,'recording');await h.el('media-delete-apply').dispatch('click');assert.equal(h.el('recording-audio').src,source);assert.equal(h.el('recording-audio').pauseCount,pauses);assert.equal(h.el('recording-player').hidden,true);await h.el('recording-selection-cancel').dispatch('click');assert.equal(h.el('recording-player').hidden,false);
   });
   await check('Saved-media delete controls are admin-only and use a permanent-delete confirmation dialog',async()=>{
     const {ids}=dashboardMarkup();
