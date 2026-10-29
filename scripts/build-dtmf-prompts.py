@@ -78,10 +78,9 @@ def validate_durations(durations):
     pair_duration = max([durations["pair_unknown"]] + [durations["pair_" + str(n)] for n in range(1, 10)])
     summary = durations["status"] + pair_duration
     summary += max(durations["recording_on"], durations["recording_off"])
-    acknowledgements = ("status_on", "status_off", "recording_on", "recording_off",
-                        "identification_on", "identification_off")
-    if summary + max(durations[name] for name in acknowledgements) > MAX_RESPONSE_SECONDS:
-        raise ValueError("The combined spoken status exceeds the short transmit budget")
+    # Spoken status replaces a setting-change acknowledgment. With optional
+    # announcements off, only the individual acknowledgment clip is queued;
+    # its bound is checked above. Never budget an acknowledgment plus summary.
     explicit_settings = summary + max(durations["identification_on"], durations["identification_off"])
     explicit_settings += max(durations["status_on"], durations["status_off"])
     if explicit_settings > MAX_RESPONSE_SECONDS:
@@ -90,8 +89,6 @@ def validate_durations(durations):
     extended_settings += max(durations["sstv_on"], durations["sstv_off"])
     if extended_settings > MAX_DATA_RESPONSE_SECONDS:
         raise ValueError("The extended current-settings response exceeds the transmit budget")
-    if summary + max(durations[name] for name in ("aprs_on", "aprs_off", "sstv_on", "sstv_off")) > MAX_DATA_RESPONSE_SECONDS:
-        raise ValueError("The extended spoken status exceeds the transmit budget")
 
 
 def build(directory=Path("/opt/repeater-box/prompts")):
@@ -113,8 +110,9 @@ def build(directory=Path("/opt/repeater-box/prompts")):
             durations[name] = write_prompt(output, parts)
             os.chmod(output, 0o644)
             pending[name] = output
-        # Validate the complete menu and longest acknowledgement before replacing
-        # any installed clip. No generated text or private station data is read.
+        # Validate each standalone clip and the full settings summaries before
+        # replacing any installed clip. A summary and acknowledgment are never
+        # queued together. No generated text or private station data is read.
         validate_durations(durations)
         for name, output in pending.items():
             os.replace(output, directory / (name + ".wav"))

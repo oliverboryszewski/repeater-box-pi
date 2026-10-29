@@ -55,7 +55,7 @@ Live spoken replies also wait for the preceding transmission to finish before ke
 
 Recording on means the recorder waits for audio above its configured threshold. This changes its state now; it leaves **Record automatically after a restart**, recording thresholds and retention unchanged. Live listening remains independent.
 
-**Spoken status after DTMF actions** defaults on. It appends the last verified stored pair number and current recording state after a successful off/on action. Turning it off suppresses that extra report; menu prompts and basic action confirmations remain. Stored pair status does not continuously measure the radios' active frequencies.
+**Spoken status after DTMF actions** defaults on. After a successful off/on action it reads the same complete settings as option 0: last verified stored pair number, recording, automatic identification, announcement preference and (with the upgraded menu) APRS/SSTV states. The complete report includes the changed setting once. Turning announcements off leaves the single action confirmation; menu prompts remain. Stored pair status does not continuously measure the radios' active frequencies.
 
 ## Receive-only operation and privacy
 
@@ -67,11 +67,11 @@ The installer generates the bounded prompt clips locally with `espeak-ng` at 120
 
 With **Include outgoing repeater audio** enabled, live listening and armed dashboard recordings use the live service's transmit-audio monitor. They include spoken menu conversations as well as forwarded traffic. This downstream feed mutes decoded DTMF digits. With that switch off or in receive-only mode, the raw receiver tap can still include received keypad tones. See [Live radio audio](LIVE_AUDIO.md) for source selection and message uploads.
 
-DTMF passwords are transmitted as audible tones. Anyone able to hear or record them may recover the sequence. A stored hash protects local persistence; it does not encrypt radio traffic. Application logs filter native DTMF digit and command lines rather than retaining the password.
+DTMF passwords are transmitted as audible tones. Anyone able to hear or record them may recover the sequence. A stored hash protects local persistence; it does not encrypt radio traffic. Application logs filter native DTMF digit and command lines rather than retaining the password. Native frame diagnostics report fixed outcomes such as incomplete, expired or submitted; they never include symbols, credential contents or helper exceptions.
 
 ## Upgrade the native menu
 
-The Admin updater installs the dashboard. Its separate root-owned SvxLink menu files and generated speech clips need one local upgrade for options 4 and 5. Until that upgrade finishes, existing DTMF controls 0–3 continue to work and Admin explains that decoder controls are unavailable.
+The Admin updater installs the dashboard. Its separate root-owned SvxLink menu files and generated speech clips need a local upgrade for options 4 and 5 and for subsequent spoken-handler refinements. Until the extended-menu upgrade finishes, existing DTMF controls 0–3 continue to work and Admin explains that decoder controls are unavailable.
 
 Download the current reviewed source bundle, then run on the Pi:
 

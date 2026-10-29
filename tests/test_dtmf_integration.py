@@ -306,10 +306,11 @@ class DtmfIntegrationTests(unittest.TestCase):
         self.assertEqual(result.stdout.splitlines(), [
             "/opt/repeater-box/prompts/choose_identification.wav",
             "/opt/repeater-box/prompts/identification_off.wav",
-            "/opt/repeater-box/prompts/identification_on.wav",
             "/opt/repeater-box/prompts/status.wav",
             "/opt/repeater-box/prompts/pair_2.wav",
-            "/opt/repeater-box/prompts/recording_off.wav"])
+            "/opt/repeater-box/prompts/recording_off.wav",
+            "/opt/repeater-box/prompts/identification_on.wav",
+            "/opt/repeater-box/prompts/status_on.wav"])
 
     @unittest.skipUnless(shutil.which("tclsh"), "Tcl runtime unavailable")
     def test_native_capture_requires_one_hash_and_one_release_per_stage_and_clears_buffer(self):
@@ -354,7 +355,15 @@ RepeaterLogic::every_second
 """
         result=subprocess.run([shutil.which("tclsh")],input=program,text=True,capture_output=True,check=True)
         self.assertEqual(result.stderr,"")
-        self.assertEqual(result.stdout.splitlines(),["BEFORE","REQUEST:AB1C29","BEFORE","REQUEST:2","BEFORE","REQUEST:1","BEFORE","BEFORE","BEFORE","BEFORE","REQUEST:*","BEFORE","REQUEST:AB1C29"])
+        lines = result.stdout.splitlines()
+        diagnostics = [line for line in lines if line.startswith("RF frame outcome: ")]
+        self.assertEqual(diagnostics, ["RF frame outcome: " + outcome for outcome in
+                         ("frame_submitted", "frame_submitted", "frame_submitted", "frame_overflow",
+                          "frame_incomplete", "frame_incomplete", "frame_submitted", "frame_overflow",
+                          "frame_submitted")])
+        self.assertEqual([line for line in lines if line not in diagnostics],
+                         ["BEFORE", "REQUEST:AB1C29", "BEFORE", "REQUEST:2", "BEFORE", "REQUEST:1",
+                          "BEFORE", "BEFORE", "BEFORE", "BEFORE", "REQUEST:*", "BEFORE", "REQUEST:AB1C29"])
 
 
 if __name__ == "__main__":

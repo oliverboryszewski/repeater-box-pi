@@ -88,6 +88,38 @@ class PromptAudioTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "extended current-settings"):
             prompts.validate_durations(durations)
 
+    def test_full_legacy_summary_replaces_acknowledgment_at_the_exact_budget(self):
+        durations = dict.fromkeys(prompts.PROMPTS, 1.0)
+        # Status + pair + recording + identification + announcements = 12 s.
+        # The separate recording acknowledgment must not be counted twice.
+        durations["recording_on"] = 8.0
+        prompts.validate_durations(durations)
+        durations["recording_on"] += 1 / prompts.SAMPLE_RATE
+        with self.assertRaisesRegex(ValueError, "current-settings"):
+            prompts.validate_durations(durations)
+
+    def test_extended_summary_and_its_separate_ack_share_the_twenty_second_cap(self):
+        durations = dict.fromkeys(prompts.PROMPTS, 1.0)
+        # Five legacy summary clips + APRS + SSTV = 20 s. The APRS
+        # acknowledgment is standalone when announcements are off.
+        durations["aprs_on"] = 14.0
+        prompts.validate_durations(durations)
+        durations["aprs_on"] += 1 / prompts.SAMPLE_RATE
+        with self.assertRaisesRegex(ValueError, "extended current-settings"):
+            prompts.validate_durations(durations)
+
+    def test_standalone_clips_keep_their_original_limits(self):
+        durations = dict.fromkeys(prompts.PROMPTS, 1.0)
+        durations["cancelled"] = prompts.MAX_RESPONSE_SECONDS
+        durations["choose_aprs"] = prompts.MAX_DATA_RESPONSE_SECONDS
+        prompts.validate_durations(durations)
+        for name, limit in (("cancelled", prompts.MAX_RESPONSE_SECONDS),
+                            ("choose_aprs", prompts.MAX_DATA_RESPONSE_SECONDS)):
+            changed = dict(durations)
+            changed[name] = limit + 1 / prompts.SAMPLE_RATE
+            with self.assertRaisesRegex(ValueError, "spoken prompt"):
+                prompts.validate_durations(changed)
+
     def test_build_rejects_an_overlong_menu_before_replacing_installed_clips(self):
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

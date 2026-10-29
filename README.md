@@ -1,6 +1,6 @@
 # Repeater Box — Pi dashboard
 
-Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.15.3.
+Software for a Pi 4, two NA6D AIOCs, and two Baofeng radios. Version 0.15.4.
 
 Source: [GitHub repository](https://github.com/oliverboryszewski/repeater-box-pi).
 
@@ -226,6 +226,8 @@ The visibility worker log is available with `journalctl -u repeater-wifi-visibil
 Setup guidance appears only while the related setup is incomplete. Password instructions disappear once an admin password exists, including while signed out. Wi-Fi instructions and checklist step 2 disappear once the hotspot profile exists, including when it is inactive. Checklist step 1 disappears when the installed software is running on the Pi. AIOC assignment and radio commissioning remain on the checklist; USB detection alone does not complete either step. The first-audio guidance disappears after the receive monitor is running and the dashboard has received audio during this service run. Fresh installations show the relevant instructions again.
 
 ## Updating an installed box
+
+Version 0.15.4 makes enabled DTMF action announcements read the full current settings, including identification, announcements, APRS and SSTV. Each setting is spoken once, keeping the existing response-duration limits. Native diagnostics log fixed frame outcomes without received digits or credentials. The dashboard remains compatible with API 17; use the [native menu upgrade](config/DTMF_CONTROL.md#upgrade-the-native-menu) to install these spoken-handler refinements.
 
 Version 0.15.3 aligns the admin-password field with the six DTMF character boxes on wide and narrow screens. It is a dashboard-only refinement.
 

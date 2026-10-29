@@ -285,6 +285,37 @@ class DataClientTests(unittest.TestCase):
 
 @unittest.skipUnless(shutil.which("tclsh"), "Tcl runtime unavailable")
 class DataTclTests(unittest.TestCase):
+    def test_successful_actions_announce_complete_current_settings_once(self):
+        wrapper = (ROOT / "scripts/repeater-box-events.tcl").read_text()
+        actions = ("status_on", "recording_on", "recording_off", "identification_on",
+                   "identification_off", "aprs_on", "aprs_off", "sstv_on", "sstv_off")
+        for extended in (False, True):
+            for action in actions:
+                if not extended and action.startswith(("aprs_", "sstv_")):
+                    continue
+                with self.subTest(extended=extended, action=action):
+                    program = "proc source {path} {}\nproc playFile {path} {puts $path}\n" + wrapper
+                    call = (f"RepeaterLogic::box_control_result_data {action} 3 0 1 1 1 0"
+                            if extended else f"RepeaterLogic::box_control_result {action} 3 0 1 1")
+                    result = subprocess.run([shutil.which("tclsh")], input=program + "\n" + call + "\n",
+                                            text=True, capture_output=True, check=True)
+                    self.assertEqual(result.stderr, "")
+                    expected = ["status", "pair_3", "recording_off", "identification_on", "status_on"]
+                    if extended:
+                        expected += ["aprs_on", "sstv_off"]
+                    self.assertEqual([Path(name).stem for name in result.stdout.splitlines()], expected)
+
+    def test_disabled_announcements_keep_single_action_acknowledgments(self):
+        wrapper = (ROOT / "scripts/repeater-box-events.tcl").read_text()
+        program = "proc source {path} {}\nproc playFile {path} {puts $path}\n" + wrapper
+        for action in ("status_off", "recording_on", "identification_off", "aprs_on", "sstv_off"):
+            program += f"\nRepeaterLogic::box_control_result_data {action} 3 1 0 0 1 0\n"
+        result = subprocess.run([shutil.which("tclsh")], input=program,
+                                text=True, capture_output=True, check=True)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual([Path(name).stem for name in result.stdout.splitlines()],
+                         ["status_off", "recording_on", "identification_off", "aprs_on", "sstv_off"])
+
     def test_generic_spoken_menu_and_all_current_settings_use_fixed_clips(self):
         wrapper = (ROOT / "scripts/repeater-box-events.tcl").read_text()
         program = "proc source {path} {}\nproc playFile {path} {puts $path}\n" + wrapper
